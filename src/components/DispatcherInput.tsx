@@ -43,9 +43,9 @@ export function DispatcherInput() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   const handleAdd = () => {
-    const name = input.trim()
-    if (!name) return
-    addDispatcher(name, level)
+    const names = input.split(',').map((n) => n.trim()).filter(Boolean)
+    if (names.length === 0) return
+    names.forEach((n) => addDispatcher(n, level))
     setInput('')
     inputRef.current?.focus()
   }
@@ -120,7 +120,8 @@ export function DispatcherInput() {
         </div>
 
         <p className="text-xs text-slate-400">
-          Press Enter to add · Paste a comma-separated list to add multiple at once
+          Separate multiple names with commas — e.g.{' '}
+          <span className="font-medium text-slate-500">Ayrton, Kimberly, Paula</span>
         </p>
       </div>
 
