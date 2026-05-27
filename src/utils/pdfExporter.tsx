@@ -1,9 +1,8 @@
 import { Document, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer'
 import { format, parseISO } from 'date-fns'
-import React from 'react'
 
 import { SLOTS } from '@/data/coverageTemplate'
-import type { Dispatcher, DispatcherLevel, DispatcherSchedule, GeneratedSchedule } from '@/types/schedule'
+import type { DispatcherLevel, DispatcherSchedule, GeneratedSchedule } from '@/types/schedule'
 
 // ---------------------------------------------------------------------------
 // Helpers

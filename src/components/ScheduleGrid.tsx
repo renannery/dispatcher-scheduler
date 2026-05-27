@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { ChevronDown, ChevronRight, Download, FileText, Loader2, RefreshCw, Shield, Users, User } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, FileText, Loader2, RefreshCw, Shield, Users } from 'lucide-react'
 import { parseISO } from 'date-fns'
 import { useEffect, useRef, useState } from 'react'
 
