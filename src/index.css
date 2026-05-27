@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+@theme {
+  /* ── Bento brand color scale (replaces Tailwind blue) ───────────────── */
+  --color-blue-50:  #fff0f0;
+  --color-blue-100: #ffe0e0;
+  --color-blue-200: #ffbdbd;
+  --color-blue-300: #ff9090;
+  --color-blue-400: #ff6b6b;
+  --color-blue-500: #ff5959;
+  --color-blue-600: #FF4C4C;
+  --color-blue-700: #e03b3b;
+  --color-blue-800: #be2a2a;
+  --color-blue-900: #962020;
+  --color-blue-950: #511212;
+
+  /* Legacy design tokens */
+  --color-primary:       #FF4C4C;
+  --color-primary-hover: #e03b3b;
+  --color-surface:       #f8fafc;
+  --color-border:        #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
