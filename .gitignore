@@ -24,3 +24,7 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .vercel
+
+# Local test fixtures (private driver/dispatcher data)
+public/__snap.json
+public/__snap*.json
