@@ -1,7 +1,6 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
-  DAILY_DEMAND_BY_DOW,
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   MAX_HOURS_PER_DAY,
@@ -240,13 +239,10 @@ export function generateDriverSchedule({
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
     const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
 
-    // Today's share of the remaining work-week's total demand. A driver
-    // with `remaining` hours left in the week should spend roughly
-    // `remaining * todayShare` of them today; the rest is reserved for
-    // the days after. Keeps Tue/Wed from being starved by Thu-Sat greed.
+    // Remaining work-week days from today (Thu→Wed order). Used below to
+    // detect the last work-week day (Wed) so we can relax `minHoursPerDay`
+    // and let drivers spend their leftover weekly cap on a short fill-in.
     const remainingDows = workWeekRemaining(dow)
-    const remainingWeekDemand = remainingDows.reduce((s, d) => s + DAILY_DEMAND_BY_DOW[d], 0)
-    const todayDemandShare = DAILY_DEMAND_BY_DOW[dow] / Math.max(1, remainingWeekDemand)
 
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
