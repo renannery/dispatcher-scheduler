@@ -8,12 +8,32 @@ import type { DispatcherLevel, DispatcherSchedule, GeneratedSchedule } from '@/t
 // Helpers
 // ---------------------------------------------------------------------------
 
-const FIRST_HOUR = 8
+/**
+ * Precompute the real clock time (decimal hours from midnight) at the START
+ * of every slot, plus one extra entry for the END of the last slot.
+ *
+ * SLOTS has a mix of 1 h and 0.5 h entries (break boundaries), so we cannot
+ * use the naive "8 + slot_index" formula — that drifts by up to 2 hours by
+ * the time we reach the evening slots.
+ */
+const SLOT_CLOCK: number[] = (() => {
+  const times: number[] = []
+  let t = 8  // 8 AM
+  for (const slot of SLOTS) {
+    times.push(t)
+    t += slot.hours
+  }
+  times.push(t)  // end of last slot → 23 = 11 PM
+  return times
+})()
 
-function fmtHour(h: number): string {
-  if (h < 12) return `${h}AM`
-  if (h === 12) return '12PM'
-  return `${h - 12}PM`
+function fmtTime(h: number): string {
+  const wh    = Math.floor(h)
+  const mins  = Math.round((h - wh) * 60)
+  const pm    = wh >= 12
+  const h12   = wh === 0 ? 12 : wh > 12 ? wh - 12 : wh
+  const suffix = pm ? 'PM' : 'AM'
+  return mins === 0 ? `${h12}${suffix}` : `${h12}:${String(mins).padStart(2, '0')}${suffix}`
 }
 
 function shiftStr(slots: boolean[]): string {
@@ -23,7 +43,7 @@ function shiftStr(slots: boolean[]): string {
     const on = i < slots.length && slots[i]
     if (on && start < 0) start = i
     else if (!on && start >= 0) {
-      ranges.push(`${fmtHour(FIRST_HOUR + start)}–${fmtHour(FIRST_HOUR + i)}`)
+      ranges.push(`${fmtTime(SLOT_CLOCK[start])}–${fmtTime(SLOT_CLOCK[i])}`)
       start = -1
     }
   }
