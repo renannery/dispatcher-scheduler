@@ -60,6 +60,17 @@ export function RecurringBlocksEditor({ blocks, slots, accentColor, onToggle, on
       build: () => buildGrid(N, (dow, slot) => dow >= 1 && dow <= 5 && slot < 10),
     },
     {
+      label: 'Long weekend evenings only',
+      tooltip: 'Available Fri/Sat/Sun after 5 PM only. Mon–Thu blocked entirely (common PT pattern for people with weekday jobs).',
+      build: () => buildGrid(N, (dow, slot) => {
+        // Block Mon (1), Tue (2), Wed (3), Thu (4) entirely
+        if (dow >= 1 && dow <= 4) return true
+        // On Fri (5), Sat (6), Sun (0): block before 6 PM (slots 0-9)
+        if ((dow === 5 || dow === 6 || dow === 0) && slot < 10) return true
+        return false
+      }),
+    },
+    {
       label: 'Mornings only',
       tooltip: 'Available before 2 PM (slot 0-5) every day. Afternoon/evening blocked.',
       build: () => buildGrid(N, (_, slot) => slot >= 6),
