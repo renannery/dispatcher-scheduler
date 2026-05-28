@@ -33,10 +33,17 @@ export function DriverInput() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [openConstraints, setOpenConstraints] = useState<Set<string>>(new Set())
 
+  interface ParsedEntry {
+    name: string
+    type: EmploymentType
+    driverId?: string
+    isShopper?: boolean
+  }
+
   // Parse one line of input. If the line is "Name, <term>" (with a recognizable
   // FT/PT token), use that term; otherwise treat all comma-separated parts as
   // bare names that take the currently-selected `type`.
-  const parseLine = (line: string): Array<{ name: string; type: EmploymentType }> => {
+  const parseLine = (line: string): ParsedEntry[] => {
     const parts = line.split(',').map((p) => p.trim()).filter(Boolean)
     if (parts.length === 0) return []
     if (parts.length >= 2) {
@@ -51,12 +58,49 @@ export function DriverInput() {
     return parts.map((name) => ({ name, type }))
   }
 
+  // Header-driven parser: when the first row maps named columns (any subset of
+  // driverId, name, term, isShopper, in any order), use that mapping for the
+  // rest of the file. Falls back to parseLine when no header is detected.
+  const parseHeader = (line: string): Record<string, number> | null => {
+    if (!line) return null
+    const cells = line.split(',').map((c) => c.trim().toLowerCase())
+    if (!cells.includes('name') && !cells.includes('driverid')) return null
+    const idx: Record<string, number> = {}
+    cells.forEach((c, i) => { idx[c] = i })
+    return idx
+  }
+
+  const parseTermToken = (raw: string | undefined): EmploymentType => {
+    const v = (raw ?? '').toLowerCase().replace(/[\s-]/g, '')
+    if (['part', 'parttime', 'pt'].includes(v)) return 'part'
+    return 'full'  // default to full when missing or unrecognized
+  }
+
+  const parseBoolToken = (raw: string | undefined): boolean => {
+    const v = (raw ?? '').toLowerCase().trim()
+    return v === 'true' || v === '1' || v === 'yes' || v === 'y'
+  }
+
+  const parseStructuredLine = (line: string, header: Record<string, number>): ParsedEntry | null => {
+    const cells = line.split(',').map((c) => c.trim())
+    const name = header['name'] != null ? cells[header['name']] : ''
+    if (!name) return null
+    const driverId = header['driverid'] != null ? cells[header['driverid']] || undefined : undefined
+    const employmentType = parseTermToken(header['term'] != null ? cells[header['term']] : undefined)
+    const isShopper = header['isshopper'] != null ? parseBoolToken(cells[header['isshopper']]) : false
+    return { name, type: employmentType, driverId, isShopper }
+  }
+
   const addAllFromText = (text: string) => {
-    const lines = text.split(/\r?\n/)
-    // Skip a "name,term" CSV header if present
-    const startIdx = /^\s*name\s*,\s*term\s*$/i.test(lines[0] ?? '') ? 1 : 0
-    const entries = lines.slice(startIdx).flatMap(parseLine)
-    entries.forEach(({ name, type: t }) => addDriver(name, t))
+    const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0)
+    const header = parseHeader(lines[0] ?? '')
+    let entries: ParsedEntry[]
+    if (header) {
+      entries = lines.slice(1).map((l) => parseStructuredLine(l, header)).filter((e): e is ParsedEntry => e !== null)
+    } else {
+      entries = lines.flatMap(parseLine)
+    }
+    entries.forEach(({ name, type: t, driverId, isShopper }) => addDriver(name, t, { driverId, isShopper }))
     return entries.length
   }
 
@@ -188,7 +232,7 @@ export function DriverInput() {
             ) : (
               <>
                 <span className="font-medium text-slate-700">Drop a CSV</span> or click to browse.
-                Header <code className="rounded bg-slate-200 px-1 text-[10px]">name,term</code> is optional.
+                Headers supported: <code className="rounded bg-slate-200 px-1 text-[10px]">driverId,name,term,isShopper</code> (any subset, in any order).
               </>
             )}
           </span>
