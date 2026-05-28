@@ -5,6 +5,7 @@ import {
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   MAX_HOURS_PER_DAY,
+  effectiveCoverage,
 } from './coverageTemplate'
 import type {
   Driver,
@@ -81,6 +82,12 @@ interface ScheduleParams {
    * baseline so the scheduler pulls in proportionally more bodies per slot.
    */
   coverageScale?: number
+  /**
+   * Per day-of-week override of the 15-slot required-coverage array.
+   * When present for a given day, replaces the template baseline before
+   * `coverageScale` is applied.
+   */
+  coverageOverrides?: Record<number, number[]>
 }
 
 /**
@@ -124,6 +131,7 @@ export function generateDriverSchedule({
   partTimeCap,
   seed = 0,
   coverageScale = 1,
+  coverageOverrides = {},
 }: ScheduleParams): GeneratedDriverSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -153,7 +161,7 @@ export function generateDriverSchedule({
     const wLabel = weekLabel(date)
     const dayLabel = format(date, 'EEE, MMMM do')
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
-    const required = template.requiredCoverage.map((v) => Math.round(v * coverageScale))
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
 
     // Today's share of the remaining work-week's total demand. A driver
     // with `remaining` hours left in the week should spend roughly
@@ -320,6 +328,56 @@ export function generateDriverSchedule({
     startDate, endDate, fullTimeCap, partTimeCap, seed,
     dates, driverSchedules, coverageActual,
   }
+}
+
+// ─── Hiring recommendation ───────────────────────────────────────────────────
+
+export interface CoverageHealth {
+  /** Total weekly under-coverage in driver-hours. 0 = fully met. */
+  weeklyShortfallHours: number
+  /** Total weekly over-coverage in driver-hours. */
+  weeklyOverstaffHours: number
+  /** Suggested number of additional full-time drivers to close the gap. */
+  recommendedAdditionalDrivers: number
+  /** Per-date breakdown of shortfall, sorted descending. */
+  worstDays: { date: string; dayLabel: string; shortfall: number }[]
+}
+
+/**
+ * Analyzes a generated schedule's coverage vs effective per-day targets and
+ * returns a hiring recommendation. Averages over all weeks the schedule spans
+ * so multi-week imports don't artificially inflate the gap.
+ */
+export function analyzeCoverageHealth(
+  schedule: GeneratedDriverSchedule,
+  coverageScale: number,
+  coverageOverrides: Record<number, number[]>,
+): CoverageHealth {
+  const perDate = schedule.dates.map((di) => {
+    const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
+    const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
+    let shortfall = 0
+    let overstaff = 0
+    for (let s = 0; s < target.length; s++) {
+      const diff = target[s] - (actual[s] ?? 0)
+      if (diff > 0) shortfall += diff
+      else overstaff += -diff
+    }
+    return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
+  })
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size || 1
+  const weeklyShortfallHours = perDate.reduce((s, d) => s + d.shortfall, 0) / weekCount
+  const weeklyOverstaffHours = perDate.reduce((s, d) => s + d.overstaff, 0) / weekCount
+  // Assume a new FT driver realistically contributes ~35h/week (cap minus some
+  // slack for night-rest constraints, weekend rotation, and time-off).
+  const FT_USABLE_HOURS = 35
+  const recommendedAdditionalDrivers = Math.ceil(weeklyShortfallHours / FT_USABLE_HOURS)
+  const worstDays = [...perDate]
+    .filter((d) => d.shortfall > 0)
+    .sort((a, b) => b.shortfall - a.shortfall)
+    .slice(0, 3)
+    .map(({ date, dayLabel, shortfall }) => ({ date, dayLabel, shortfall }))
+  return { weeklyShortfallHours, weeklyOverstaffHours, recommendedAdditionalDrivers, worstDays }
 }
 
 // ─── Coverage + hour color helpers (UI) ─────────────────────────────────────

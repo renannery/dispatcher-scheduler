@@ -138,3 +138,18 @@ export const DAILY_DEMAND_BY_DOW: Record<number, number> = {
   5: COV_FRI.reduce((s, v) => s + v, 0),
   6: COV_SAT.reduce((s, v) => s + v, 0),
 }
+
+/**
+ * Resolve the effective per-slot required-coverage array for a given day,
+ * applying any user-supplied override first and then the scale multiplier.
+ * Single source of truth — used by both the scheduler and the UI so the
+ * grid the user edits is exactly what gets enforced.
+ */
+export function effectiveCoverage(
+  dayOfWeek: number,
+  coverageScale = 1,
+  coverageOverrides: Record<number, number[]> = {},
+): number[] {
+  const base = coverageOverrides[dayOfWeek] ?? DRIVER_DAY_TEMPLATES[dayOfWeek].requiredCoverage
+  return base.map((v) => Math.max(0, Math.round(v * coverageScale)))
+}

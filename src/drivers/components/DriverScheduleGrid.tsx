@@ -1,12 +1,12 @@
 import clsx from 'clsx'
-import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
 import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
 import { DRIVER_DAY_TEMPLATES } from '../coverageTemplate'
-import { generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { analyzeCoverageHealth, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -113,6 +113,7 @@ export function DriverScheduleGrid() {
     fullTimeCap,
     partTimeCap,
     coverageScale,
+    coverageOverrides,
     weekendRotationOffset,
     setSchedule,
     setStep,
@@ -155,7 +156,7 @@ export function DriverScheduleGrid() {
   const handleRegenerate = () => {
     regenSeed.current++
     const fresh = generateDriverSchedule({
-      drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap, coverageScale,
+      drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
       seed: weekendRotationOffset + regenSeed.current,
     })
     setSchedule(fresh)
@@ -168,8 +169,8 @@ export function DriverScheduleGrid() {
       team: 'drivers',
       exportedAt: new Date().toISOString(),
       data: {
-        drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, timeOff, absenceReasons,
-        weekendRotationOffset, schedule,
+        drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+        timeOff, absenceReasons, weekendRotationOffset, schedule,
       },
     })
   }
@@ -186,8 +187,40 @@ export function DriverScheduleGrid() {
     }
   }
 
+  const health = analyzeCoverageHealth(schedule, coverageScale, coverageOverrides)
+
   return (
     <div className="flex flex-col gap-6">
+      {health.weeklyShortfallHours >= 20 && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="flex-1 text-sm text-amber-900">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-semibold">
+                Roster is {Math.round(health.weeklyShortfallHours)} driver-hours short per week.
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold">
+                <UserPlus className="h-3 w-3" />
+                Hire {health.recommendedAdditionalDrivers} more full-time driver
+                {health.recommendedAdditionalDrivers === 1 ? '' : 's'}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-amber-800/80">
+              Assumes each new full-timer realistically contributes ~35h/week after night-rest, weekend rotation, and time-off.
+              {health.worstDays.length > 0 && ' Worst gaps: '}
+              {health.worstDays.map((d, i) => (
+                <span key={d.date}>
+                  {i > 0 && ', '}
+                  <span className="font-semibold">{d.dayLabel}</span> ({Math.round(d.shortfall)}h short)
+                </span>
+              ))}
+              .
+              {' '}Or drop the coverage scale on the Period step to relax targets.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div className="text-sm text-slate-500">
           <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
