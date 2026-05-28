@@ -5,8 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
-import { DRIVER_DAY_TEMPLATES } from '../coverageTemplate'
-import { analyzeCoverageHealth, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { effectiveCoverage } from '../coverageTemplate'
+import { analyzeCoverageHealth, COVERAGE_GAP_TOLERANCE, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -389,8 +389,15 @@ export function DriverScheduleGrid() {
               ).length
               const off = schedule.driverSchedules.length - working
               const actual = schedule.coverageActual[dateInfo.date] ?? []
-              const required = DRIVER_DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage ?? []
-              const hasGap = required.some((r, i) => (actual[i] ?? 0) < r)
+              // Use the EFFECTIVE coverage (scale + overrides) and respect
+              // the ops tolerance. A slot only counts as a "gap" when it's
+              // more than COVERAGE_GAP_TOLERANCE short — that's the
+              // threshold ops actually feels.
+              const required = effectiveCoverage(dateInfo.dayOfWeek, coverageScale, coverageOverrides)
+              const gapSlots = required.reduce(
+                (count, r, i) => count + (r - (actual[i] ?? 0) > COVERAGE_GAP_TOLERANCE ? 1 : 0),
+                0,
+              )
 
               return (
                 <div key={dateInfo.date} className="border-t border-slate-100 first:border-0">
@@ -403,9 +410,12 @@ export function DriverScheduleGrid() {
                     </span>
                     <span className="min-w-[140px] text-sm font-semibold text-slate-800">{dateInfo.dayLabel}</span>
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
-                    {hasGap && (
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">
-                        ⚠ coverage gap
+                    {gapSlots > 0 && (
+                      <span
+                        className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600"
+                        title={`${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} are more than ${COVERAGE_GAP_TOLERANCE} drivers short of target`}
+                      >
+                        ⚠ {gapSlots} coverage gap{gapSlots === 1 ? '' : 's'}
                       </span>
                     )}
                   </button>

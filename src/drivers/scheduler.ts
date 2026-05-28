@@ -470,6 +470,9 @@ export interface CoverageHealth {
  * returns a hiring recommendation. Averages over all weeks the schedule spans
  * so multi-week imports don't artificially inflate the gap.
  */
+/** Slots under-staffed by more than this count as a real operational gap. */
+export const COVERAGE_GAP_TOLERANCE = 3
+
 export function analyzeCoverageHealth(
   schedule: GeneratedDriverSchedule,
   coverageScale: number,
@@ -478,12 +481,12 @@ export function analyzeCoverageHealth(
   const perDate = schedule.dates.map((di) => {
     const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
     const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
-    let shortfall = 0
+    let shortfall = 0  // hours short BEYOND the ±3 tolerance — what ops actually feels
     let overstaff = 0
     for (let s = 0; s < target.length; s++) {
       const diff = target[s] - (actual[s] ?? 0)
-      if (diff > 0) shortfall += diff
-      else overstaff += -diff
+      if (diff > COVERAGE_GAP_TOLERANCE) shortfall += diff - COVERAGE_GAP_TOLERANCE
+      else if (diff < 0) overstaff += -diff
     }
     return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
   })
