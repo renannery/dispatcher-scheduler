@@ -66,6 +66,13 @@ interface SchedulerStore {
   setSchedule: (s: GeneratedSchedule) => void
   toggleDispatcherSlot: (dispatcherId: string, date: string, slotIndex: number) => void
   hydrateFromSnapshot: (data: DispatcherSnapshotData) => void
+  /**
+   * Partial hydrate for the period step: pulls the roster + rotation cursor
+   * from a previous schedule snapshot so the new period continues the
+   * weekend-off rotation. Advances the date range to the week after the
+   * snapshot's end. Leaves time-off / absence reasons / schedule alone.
+   */
+  importRotationContext: (data: DispatcherSnapshotData) => void
   reset: () => void
 }
 
@@ -241,6 +248,18 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
     })),
+
+  importRotationContext: (data) =>
+    set((s) => {
+      const nextStart = addDays(data.endDate, 1)
+      const nextEnd = addDays(nextStart, 6)
+      return {
+        dispatchers: data.dispatchers ?? s.dispatchers,
+        weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+        startDate: nextStart,
+        endDate: nextEnd,
+      }
+    }),
 
   reset: () =>
     set({

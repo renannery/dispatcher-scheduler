@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { CalendarClock, Upload, UserPlus, X } from 'lucide-react'
+import { CalendarClock, ShoppingBasket, Upload, UserPlus, X } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
@@ -27,7 +27,7 @@ const TYPE_STYLES: Record<EmploymentType, { pill: string; active: string }> = {
 }
 
 export function DriverInput() {
-  const { drivers, addDriver, removeDriver, setEmploymentType, toggleRecurringBlock, setStep, partTimeCap } = useDriverStore()
+  const { drivers, addDriver, removeDriver, setEmploymentType, setShopperStatus, toggleRecurringBlock, setStep, partTimeCap } = useDriverStore()
   const [input, setInput] = useState('')
   const [type, setType] = useState<EmploymentType>('full')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -250,6 +250,20 @@ export function DriverInput() {
                         )
                       })}
                     </div>
+
+                    <button
+                      onClick={() => setShopperStatus(d.id, !d.isShopper)}
+                      title={d.isShopper ? 'Shopper-driver (clears when toggled off)' : 'Mark as shopper-driver (works at the grocery store, fills in as driver)'}
+                      className={clsx(
+                        'flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition',
+                        d.isShopper
+                          ? 'border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100'
+                          : 'border-slate-200 bg-slate-50 text-slate-400 hover:bg-slate-100',
+                      )}
+                    >
+                      <ShoppingBasket className="h-3.5 w-3.5" />
+                      Shopper
+                    </button>
 
                     <button
                       onClick={() => setOpenConstraints((prev) => {

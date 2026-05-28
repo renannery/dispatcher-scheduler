@@ -59,6 +59,7 @@ interface DriverSchedulerStore {
   addDriver: (name: string, employmentType?: EmploymentType) => void
   removeDriver: (id: string) => void
   setEmploymentType: (id: string, type: EmploymentType) => void
+  setShopperStatus: (id: string, isShopper: boolean) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
@@ -85,6 +86,13 @@ interface DriverSchedulerStore {
   toggleDriverSlot: (driverId: string, date: string, slotIndex: number) => void
   /** Replace entire store contents from a parsed snapshot. Jumps to the schedule step. */
   hydrateFromSnapshot: (data: DriverSnapshotData) => void
+  /**
+   * Partial hydrate for the period step: pulls the roster + rotation cursor
+   * (and caps) from a previous schedule snapshot so the new period continues
+   * the weekend-off rotation. Advances the date range to the week after the
+   * snapshot's end. Leaves time-off / absence reasons / schedule alone.
+   */
+  importRotationContext: (data: DriverSnapshotData) => void
   reset: () => void
 }
 
@@ -126,6 +134,18 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   setEmploymentType: (id, employmentType) =>
     set((s) => ({
       drivers: s.drivers.map((d) => (d.id === id ? { ...d, employmentType } : d)),
+    })),
+
+  setShopperStatus: (id, isShopper) =>
+    set((s) => ({
+      drivers: s.drivers.map((d) => {
+        if (d.id !== id) return d
+        if (isShopper) return { ...d, isShopper: true }
+        // Strip the field when toggling off so serialized snapshots stay clean.
+        const next = { ...d }
+        delete next.isShopper
+        return next
+      }),
     })),
 
   toggleRecurringBlock: (id, dayOfWeek, slotIndex) =>
@@ -269,6 +289,20 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
     })),
+
+  importRotationContext: (data) =>
+    set((s) => {
+      const nextStart = addDays(data.endDate, 1)
+      const nextEnd = addDays(nextStart, 6)
+      return {
+        drivers: data.drivers ?? s.drivers,
+        fullTimeCap: data.fullTimeCap ?? s.fullTimeCap,
+        partTimeCap: data.partTimeCap ?? s.partTimeCap,
+        weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+        startDate: nextStart,
+        endDate: nextEnd,
+      }
+    }),
 
   reset: () =>
     // Keep weekendRotationOffset across resets — the cursor represents the

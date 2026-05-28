@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 
 import { DRIVER_SLOTS } from './coverageTemplate'
 import type { GeneratedDriverSchedule } from './types'
+import { xlsxName } from './utils'
 
 // ─── Layout constants (mirroring the reference workbook exactly) ────────────
 // The backend importer parses this file by content markers AND row positions,
@@ -21,11 +22,25 @@ const SLOT_COUNT = 15                   // C..Q (15 hourly slots, 8 AM–11 PM)
 const DAY_NAMES_TITLE = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const DAY_NAMES_UPPER = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY']
 
+interface DayBlockDriver {
+  name: string
+  slots: boolean[]
+  isShopper: boolean
+}
+
 interface DayBlockData {
   date: string         // YYYY-MM-DD
   dayOfWeek: number
-  drivers: { name: string; slots: boolean[] }[]
+  drivers: DayBlockDriver[]
 }
+
+// Reference workbook places shopper-drivers at rows 64-67 (with header at row
+// 5) — that's 4 empty gap rows (60-63), 4 shopper rows (64-67), and 1 trailing
+// blank row (68) before the footer at row 69. The backend may key off these
+// positions when reconciling roster membership.
+const SHOPPER_ROW_COUNT = 4
+const SHOPPER_GAP_ROWS = 4
+const SHOPPER_TRAILING_BLANK_ROWS = 1
 
 // ─── Cell helpers ──────────────────────────────────────────────────────────
 const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30)
@@ -119,14 +134,36 @@ function writeBlock(
   }
   setCell(ws, addr(18, headerRow), 'TOTAL')
 
-  // ── Data rows ────────────────────────────────────────────────────────────
+  // ── Driver row layout ───────────────────────────────────────────────────
+  // Match the reference exactly: regular drivers fill from the top of the
+  // data section; shopper-drivers always occupy the LAST 4 driver rows of
+  // the block (rows 64-67 when headerRow=5), with a 4-row gap above them.
+  const regulars = block.drivers.filter((d) => !d.isShopper)
+  const shoppers = block.drivers.filter((d) => d.isShopper)
+
+  const shopperStartIdx = DATA_ROWS - SHOPPER_ROW_COUNT - SHOPPER_TRAILING_BLANK_ROWS  // 58 → row 64
+  const regularLimit = shopperStartIdx - SHOPPER_GAP_ROWS                              // 54 → row 59 last
+  const limitedRegulars = regulars.slice(0, regularLimit)
+  const limitedShoppers = shoppers.slice(0, SHOPPER_ROW_COUNT)
+
+  const cellsForRow = (i: number): DayBlockDriver | null => {
+    if (i < limitedRegulars.length) return limitedRegulars[i]
+    if (i >= shopperStartIdx && i - shopperStartIdx < limitedShoppers.length) {
+      return limitedShoppers[i - shopperStartIdx]
+    }
+    return null
+  }
+
   for (let i = 0; i < DATA_ROWS; i++) {
     const r = headerRow + 1 + i
-    // A: =row(A{i+1}) — lowercase to match the reference exactly
-    setFormula(ws, addr(1, r), `row(A${i + 1})`)
+    // A: must be a plain numeric VALUE — the backend decoder routes rows by
+    // `typeof sheet['A<row>'].v === 'number'`, so a formula like `=row(A1)`
+    // without a cached value gets classified as 'unknown' and the entire shift
+    // row is silently dropped on upload.
+    setCell(ws, addr(1, r), i + 1)
 
-    if (i < block.drivers.length) {
-      const drv = block.drivers[i]
+    const drv = cellsForRow(i)
+    if (drv) {
       setCell(ws, addr(2, r), drv.name)
       for (let s = 0; s < SLOT_COUNT; s++) {
         if (drv.slots[s]) setCell(ws, addr(3 + s, r), drv.name)
@@ -231,17 +268,20 @@ export function normalizeCustomNumFmtIds(buf: Uint8Array): Uint8Array {
 
 function buildWb(schedule: GeneratedDriverSchedule): XLSX.WorkBook {
   // One block per day in schedule order. Every driver appears in every block
-  // (in roster order); off drivers get a name with no slot cells filled —
-  // matches the reference format so the backend can detect roster membership.
+  // (in roster order); off drivers get a name with no slot cells filled.
+  // Names use a short form that's guaranteed to be a substring of the DB
+  // driver's full name (see xlsxName + the backend's `findDriver` matcher).
   const emptySlots = new Array(DRIVER_SLOTS.length).fill(false)
+  const allFullNames = schedule.driverSchedules.map((ds) => ds.driver.name)
   const blocks: DayBlockData[] = schedule.dates.map((dateInfo) => ({
     date: dateInfo.date,
     dayOfWeek: dateInfo.dayOfWeek,
     drivers: schedule.driverSchedules.map((ds) => {
       const entry = ds.days.find((d) => d.date === dateInfo.date)
       return {
-        name: ds.driver.name,
+        name: xlsxName(ds.driver.name, allFullNames),
         slots: entry?.slots ?? emptySlots,
+        isShopper: !!ds.driver.isShopper,
       }
     }),
   }))

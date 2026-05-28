@@ -1,11 +1,13 @@
 import clsx from 'clsx'
 import { differenceInDays, format, parseISO } from 'date-fns'
-import { CalendarPlus, ChevronDown, ChevronRight, Search, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { CalendarPlus, ChevronDown, ChevronRight, History, Search, Upload, X } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { useDropzone } from 'react-dropzone'
 
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
+import { parseSnapshot, type DriverSnapshotData } from '@/utils/snapshot'
 
 import { DRIVER_SLOTS } from '../coverageTemplate'
 import { generateDriverSchedule } from '../scheduler'
@@ -31,7 +33,36 @@ export function DriverPeriodPicker() {
     toggleBlockedSlot,
     applyAbsenceRange,
     advanceWeekendRotation,
+    importRotationContext,
   } = useDriverStore()
+
+  const [importInfo, setImportInfo] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  const onDropRotation = useCallback(async (accepted: File[]) => {
+    setImportInfo(null)
+    const file = accepted[0]
+    if (!file) return
+    try {
+      const env = parseSnapshot(await file.text())
+      if (env.team !== 'drivers') {
+        throw new Error(`This is a ${env.team} snapshot — load it from the dispatcher page.`)
+      }
+      const data = env.data as DriverSnapshotData
+      importRotationContext(data)
+      setImportInfo({
+        kind: 'ok',
+        msg: `Loaded ${data.drivers.length} drivers · rotation cursor ${data.weekendRotationOffset ?? 0}. Pick the new period below.`,
+      })
+    } catch (e) {
+      setImportInfo({ kind: 'err', msg: e instanceof Error ? e.message : 'Failed to read file.' })
+    }
+  }, [importRotationContext])
+
+  const { getRootProps: getRotationRoot, getInputProps: getRotationInput, isDragActive: isRotationDragActive } = useDropzone({
+    onDrop: onDropRotation,
+    accept: { 'application/json': ['.json'] },
+    multiple: false,
+  })
 
   // Driver ids whose hour-grid is currently expanded
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -102,6 +133,36 @@ export function DriverPeriodPicker() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
+      {/* Continue from a previous schedule */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
+          <History className="h-4 w-4" />
+          Continue from a previous schedule
+        </div>
+        <div
+          {...getRotationRoot()}
+          className={clsx(
+            'flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed px-4 py-3 text-xs transition',
+            isRotationDragActive
+              ? 'border-blue-400 bg-blue-50 text-blue-700'
+              : 'border-slate-300 bg-white text-slate-500 hover:border-blue-300 hover:bg-blue-50/40',
+          )}
+        >
+          <input {...getRotationInput()} />
+          <Upload className="h-4 w-4 shrink-0" />
+          <span className="flex-1">
+            {isRotationDragActive
+              ? 'Drop the JSON here…'
+              : 'Drop a previously exported JSON to load the roster and pick up the weekend-off rotation where it left off.'}
+          </span>
+        </div>
+        {importInfo && (
+          <p className={clsx('text-xs', importInfo.kind === 'ok' ? 'text-emerald-600' : 'text-red-600')}>
+            {importInfo.msg}
+          </p>
+        )}
+      </div>
+
       {/* Date range */}
       <div className="flex flex-col gap-5">
         <div className="flex flex-col gap-1.5">
