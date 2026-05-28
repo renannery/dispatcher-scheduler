@@ -69,6 +69,28 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],  // 6h:  3 PM – 9 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],  // 6h:  5 PM – 11 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1],  // 5h:  6 PM – 11 PM
+  // ─── Short shifts (4-6h, full day coverage) ─────────────────────────────
+  // Used when the demand-weighted dailyCap restricts longer shifts (early in
+  // the work-week) or when drivers have a small remaining weekly budget
+  // (late in the work-week — Tue/Wed). Spread across morning/midday/evening
+  // so all slots can still be covered with short shifts.
+  // Morning
+  [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 6h:  9 AM – 3 PM
+  [0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 6h:  10 AM – 4 PM
+  [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 5h:  9 AM – 2 PM
+  [0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 4h:  9 AM – 1 PM
+  [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 4h:  10 AM – 2 PM
+  // Midday
+  [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],  // 6h:  12 PM – 6 PM
+  [0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 5h:  11 AM – 4 PM
+  [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],  // 5h:  12 PM – 5 PM
+  [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 4h:  12 PM – 4 PM
+  // Afternoon-evening
+  [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],  // 5h:  2 PM – 7 PM
+  [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0],  // 5h:  4 PM – 9 PM
+  [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],  // 4h:  3 PM – 7 PM
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0],  // 4h:  5 PM – 9 PM (evening peak)
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],  // 4h:  7 PM – 11 PM (closing)
 ]
 
 // Weekend adds early-morning patterns (8 AM start).
@@ -102,3 +124,17 @@ export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
 export const MAX_HOURS_PER_DAY = 9
 export const DEFAULT_PART_TIME_CAP = 30
 export const DEFAULT_FULL_TIME_CAP = 40
+
+// Sum of required driver-hours per day-of-week (0=Sun…6=Sat). Used by the
+// scheduler to weight how much of a driver's weekly capacity should be spent
+// today vs. saved for the rest of the work-week (Thu→Wed). Without this
+// weighting the greedy pass spends 9h shifts Thu-Sat and starves Tue/Wed.
+export const DAILY_DEMAND_BY_DOW: Record<number, number> = {
+  0: COV_SUN.reduce((s, v) => s + v, 0),
+  1: COV_MON.reduce((s, v) => s + v, 0),
+  2: COV_TUE.reduce((s, v) => s + v, 0),
+  3: COV_WED.reduce((s, v) => s + v, 0),
+  4: COV_THU.reduce((s, v) => s + v, 0),
+  5: COV_FRI.reduce((s, v) => s + v, 0),
+  6: COV_SAT.reduce((s, v) => s + v, 0),
+}

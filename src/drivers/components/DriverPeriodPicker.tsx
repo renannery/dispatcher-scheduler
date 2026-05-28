@@ -21,12 +21,14 @@ export function DriverPeriodPicker() {
     endDate,
     fullTimeCap,
     partTimeCap,
+    coverageScale,
     timeOff,
     absenceReasons,
     weekendRotationOffset,
     setDateRange,
     setFullTimeCap,
     setPartTimeCap,
+    setCoverageScale,
     setSchedule,
     setStep,
     toggleFullDayOff,
@@ -83,6 +85,7 @@ export function DriverPeriodPicker() {
       timeOff,
       fullTimeCap,
       partTimeCap,
+      coverageScale,
       // Seed from the persisted cursor — picks up where the previous
       // schedule's rotation left off instead of always starting at index 0.
       seed: weekendRotationOffset,
@@ -221,6 +224,29 @@ export function DriverPeriodPicker() {
         <p className="-mt-3 text-xs text-slate-400">
           Defaults: 40h full-time, 30h part-time. Max 9h per day either way.
         </p>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="flex items-baseline justify-between text-sm font-medium text-slate-600">
+            <span>Coverage scale</span>
+            <span className="text-xs font-normal text-slate-400">
+              {coverageScale.toFixed(2)}× · baseline = 56-driver reference week
+            </span>
+          </label>
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={coverageScale}
+            onChange={(e) => setCoverageScale(Number(e.target.value))}
+            className="w-full accent-blue-600"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400">
+            <span>0.5× (smaller team)</span>
+            <span>1.0×</span>
+            <span>2.0× (bigger team)</span>
+          </div>
+        </div>
       </div>
 
       {isValid && (
