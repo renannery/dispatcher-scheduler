@@ -170,9 +170,13 @@ export function generateDriverSchedule({
 
   // Pre-assigned off day per driver per work-week. Without this, the greedy
   // pass burns drivers' caps on heavy days (Thu-Sat) and the 6-day rule
-  // forces Wed to be the off day for almost everyone → Wed near-empty. By
-  // rotating off days across the work-week's 7 days, each day loses ~1/7 of
-  // the roster instead of concentrating losses on Wed.
+  // forces Wed to be the off day for almost everyone → Wed near-empty.
+  //
+  // Off days are weighted by demand: slow days get MORE drivers taking that
+  // day off (so they're staffed lighter, matching demand), heavy days get
+  // FEWER (so they're staffed heavier). The weighting reads from the
+  // effective coverage targets — if you edit a day's targets in the grid,
+  // off-day distribution adjusts automatically.
   const WORK_WEEK_DOWS = [4, 5, 6, 0, 1, 2, 3]  // Thu, Fri, Sat, Sun, Mon, Tue, Wed
   const driverIndex = new Map(drivers.map((d, i) => [d.id, i]))
   const weekIndexByLabel = new Map<string, number>()
@@ -180,10 +184,22 @@ export function generateDriverSchedule({
     const lbl = weekLabel(date)
     if (!weekIndexByLabel.has(lbl)) weekIndexByLabel.set(lbl, weekIndexByLabel.size)
   })
+  // Build a weighted off-day pool. Each DOW appears `1 + max(0, avg - this_day)/10`
+  // times. Days with above-average demand get base weight 1; days below average
+  // get extra entries proportional to how slow they are.
+  const dailyDemands = WORK_WEEK_DOWS.map((dow) =>
+    effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0),
+  )
+  const avgDailyDemand = dailyDemands.reduce((a, b) => a + b, 0) / dailyDemands.length
+  const offDayPool: number[] = []
+  WORK_WEEK_DOWS.forEach((dow, i) => {
+    const extra = Math.max(0, Math.round((avgDailyDemand - dailyDemands[i]) / 10))
+    for (let j = 0; j < 1 + extra; j++) offDayPool.push(dow)
+  })
   const designatedOffDow = (driverId: string, wLabel: string): number => {
     const di = driverIndex.get(driverId) ?? 0
     const wi = weekIndexByLabel.get(wLabel) ?? 0
-    return WORK_WEEK_DOWS[(di + wi + seed) % WORK_WEEK_DOWS.length]
+    return offDayPool[(di + wi + seed) % offDayPool.length]
   }
   const isWeekendOffDriverThisWeek = (driverId: string, wLabel: string): boolean => {
     // Mirrors weekendOffDriverId() but operates on weekLabel for cross-day reuse.
