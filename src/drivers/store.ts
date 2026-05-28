@@ -86,6 +86,13 @@ interface DriverSchedulerStore {
   toggleDriverSlot: (driverId: string, date: string, slotIndex: number) => void
   /** Replace entire store contents from a parsed snapshot. Jumps to the schedule step. */
   hydrateFromSnapshot: (data: DriverSnapshotData) => void
+  /**
+   * Partial hydrate for the period step: pulls the roster + rotation cursor
+   * (and caps) from a previous schedule snapshot so the new period continues
+   * the weekend-off rotation. Advances the date range to the week after the
+   * snapshot's end. Leaves time-off / absence reasons / schedule alone.
+   */
+  importRotationContext: (data: DriverSnapshotData) => void
   reset: () => void
 }
 
@@ -282,6 +289,20 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
     })),
+
+  importRotationContext: (data) =>
+    set((s) => {
+      const nextStart = addDays(data.endDate, 1)
+      const nextEnd = addDays(nextStart, 6)
+      return {
+        drivers: data.drivers ?? s.drivers,
+        fullTimeCap: data.fullTimeCap ?? s.fullTimeCap,
+        partTimeCap: data.partTimeCap ?? s.partTimeCap,
+        weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+        startDate: nextStart,
+        endDate: nextEnd,
+      }
+    }),
 
   reset: () =>
     // Keep weekendRotationOffset across resets — the cursor represents the
