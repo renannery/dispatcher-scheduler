@@ -210,6 +210,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                     className={clsx(
                       'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
                       status === 'ok'    && 'bg-emerald-100 text-emerald-700',
+                      status === 'mild'  && 'bg-amber-100 text-amber-700',
                       status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
                       status === 'over'  && 'bg-slate-100 text-slate-400',
                     )}

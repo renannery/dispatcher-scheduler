@@ -538,9 +538,21 @@ export function analyzeCoverageHealth(
 
 // ─── Coverage + hour color helpers (UI) ─────────────────────────────────────
 
-export function coverageStatus(actual: number, required: number): 'ok' | 'over' | 'short' {
-  if (actual >= required) return required === 0 ? 'over' : 'ok'
-  return 'short'
+export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
+
+/**
+ * Color-codes how far a slot's actual coverage is from its target:
+ *   - 'ok'    exactly at target (also when required = 0 and actual = 0)
+ *   - 'mild'  within ±COVERAGE_GAP_TOLERANCE — operationally acceptable (yellow)
+ *   - 'short' more than COVERAGE_GAP_TOLERANCE under target (red)
+ *   - 'over'  required = 0 but staffed (unusual — slate)
+ */
+export function coverageStatus(actual: number, required: number): CoverageStatus {
+  if (required === 0) return actual > 0 ? 'over' : 'ok'
+  const diff = required - actual
+  if (diff === 0) return 'ok'
+  if (Math.abs(diff) <= COVERAGE_GAP_TOLERANCE) return 'mild'
+  return diff > 0 ? 'short' : 'over'
 }
 
 export function hoursStatusColor(hours: number, cap: number): string {

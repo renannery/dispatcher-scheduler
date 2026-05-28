@@ -283,9 +283,17 @@ export function generateSchedule(
 // Coverage & colour helpers
 // ---------------------------------------------------------------------------
 
-export function coverageStatus(actual: number, required: number): 'ok' | 'over' | 'short' {
-  if (actual >= required) return required === 0 ? 'over' : 'ok'
-  return 'short'
+/** Slots within this distance of target are 'mild' (yellow), beyond are 'short' (red). */
+export const COVERAGE_GAP_TOLERANCE = 3
+
+export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
+
+export function coverageStatus(actual: number, required: number): CoverageStatus {
+  if (required === 0) return actual > 0 ? 'over' : 'ok'
+  const diff = required - actual
+  if (diff === 0) return 'ok'
+  if (Math.abs(diff) <= COVERAGE_GAP_TOLERANCE) return 'mild'
+  return diff > 0 ? 'short' : 'over'
 }
 
 export function hoursStatusColor(hours: number): string {
