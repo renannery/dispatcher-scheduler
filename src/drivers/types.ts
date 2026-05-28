@@ -12,6 +12,13 @@ export interface Driver {
    * every week.
    */
   recurringBlocks?: boolean[][]
+  /**
+   * Hybrid role — primarily works the grocery store as a shopper and fills
+   * in as a driver when the store is slow. The scheduler treats them like
+   * any other driver, but the XLSX export groups them at the bottom of each
+   * day-block (matching the reference layout the backend expects).
+   */
+  isShopper?: boolean
 }
 
 export interface DriverDayEntry {

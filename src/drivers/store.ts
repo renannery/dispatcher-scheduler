@@ -59,6 +59,7 @@ interface DriverSchedulerStore {
   addDriver: (name: string, employmentType?: EmploymentType) => void
   removeDriver: (id: string) => void
   setEmploymentType: (id: string, type: EmploymentType) => void
+  setShopperStatus: (id: string, isShopper: boolean) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
@@ -126,6 +127,18 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   setEmploymentType: (id, employmentType) =>
     set((s) => ({
       drivers: s.drivers.map((d) => (d.id === id ? { ...d, employmentType } : d)),
+    })),
+
+  setShopperStatus: (id, isShopper) =>
+    set((s) => ({
+      drivers: s.drivers.map((d) => {
+        if (d.id !== id) return d
+        if (isShopper) return { ...d, isShopper: true }
+        // Strip the field when toggling off so serialized snapshots stay clean.
+        const next = { ...d }
+        delete next.isShopper
+        return next
+      }),
     })),
 
   toggleRecurringBlock: (id, dayOfWeek, slotIndex) =>
