@@ -367,15 +367,15 @@ export function generateDriverSchedule({
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
         if (remaining < effectiveMin) continue  // not enough room for shortest allowed pattern
 
-        // Per-day cap = roughly `cap / 6` so drivers spread across 6 days
-        // instead of clustering 9h shifts into 4-5 days (which leaves Wed
-        // empty). Floors at `effectiveMin` and ceils at `maxHoursPerDay`.
+        // Per-day cap = the user-set maxHoursPerDay (default 9). We used
+        // to clamp at `perDayTarget` (cap/6 ≈ 8 for cap=45) to spread
+        // hours across 6 days, but that made 8h the default for every
+        // driver-day. Now we allow up to `maxHoursPerDay` and rely on
+        // the soft length penalty below to keep most shifts shorter,
+        // letting longer ones happen only when they cover priority/
+        // shortfall slots that outweigh the penalty.
         const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
-        const dailyCap = Math.min(
-          remaining,
-          maxHoursPerDay,
-          Math.max(effectiveMin, perDayTarget),
-        )
+        const dailyCap = Math.min(remaining, maxHoursPerDay)
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
@@ -429,20 +429,19 @@ export function generateDriverSchedule({
           for (let s = 0; s < p.length; s++) {
             if (p[s] && slotPriority[s] > 0) score += slotPriority[s] * 20
           }
-          // Soft length preference: pay 1500 points per hour above
-          // `perDayTarget - 1` (7h for the default cap=45). A pattern
-          // only beats that penalty when the extra hour covers a slot
-          // that's significantly short or marked high-priority, so 8h
-          // shifts get reserved for the busiest combinations instead of
-          // becoming the default. Without this, ~50% of driver-days
-          // ended up at the dailyCap length — the user flagged that as
-          // "every full-timer working 9 hours" (one click from overtime).
-          // Bonus: forcing the algorithm to consider shorter patterns
-          // spreads work across more drivers, which also reduces total
-          // coverage gaps.
+          // Soft length preference: pay a *quadratic* penalty for each
+          // hour above `perDayTarget - 1` (7h for the default cap=45).
+          // Quadratic so 8h is mildly discouraged (-1500) but 9h is
+          // strongly discouraged (-6000) — 9h shifts then only happen
+          // when the extra hour covers a critically short slot. Goal:
+          // most drivers settle around 6-7h, a healthy minority at 8h,
+          // and only a few at the daily max. The user feedback was
+          // "we're fine with a few working the max hours, but we don't
+          // want every full-timer doing it."
           const preferredLength = Math.max(effectiveMin, perDayTarget - 1)
           if (h > preferredLength) {
-            score -= (h - preferredLength) * 1500
+            const over = h - preferredLength
+            score -= over * over * 1500
           }
           if (score > bestScore) {
             bestScore = score
