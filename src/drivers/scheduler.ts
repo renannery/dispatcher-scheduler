@@ -15,7 +15,9 @@ import type {
   GeneratedDriverSchedule,
 } from './types'
 
-export const HEAVY_DAYS = new Set([5, 6, 0])
+// Days the weekend-off rotation gives a driver off — narrowed from
+// Fri+Sat+Sun (3-day perk) to just Sat+Sun per ops policy.
+export const HEAVY_DAYS = new Set([6, 0])
 
 const NIGHT_SLOT_THRESHOLD = 13   // 9-10 PM or later = closing
 const MORNING_SLOT_THRESHOLD = 2  // starts ≤ 10 AM = morning
@@ -183,10 +185,30 @@ export function generateDriverSchedule({
     const wi = weekIndexByLabel.get(wLabel) ?? 0
     return WORK_WEEK_DOWS[(di + wi + seed) % WORK_WEEK_DOWS.length]
   }
+  const isWeekendOffDriverThisWeek = (driverId: string, wLabel: string): boolean => {
+    // Mirrors weekendOffDriverId() but operates on weekLabel for cross-day reuse.
+    const fullTimers = drivers.filter((d) => d.employmentType === 'full')
+    if (fullTimers.length === 0) return false
+    const wi = weekIndexByLabel.get(wLabel) ?? 0
+    return fullTimers[(wi + seed) % fullTimers.length].id === driverId
+  }
 
   // Hard tolerance: a slot is never staffed above target+3 (refuse the pattern
   // before assigning). Below-target is informational (handled by hiring banner).
   const OVER_COVERAGE_LIMIT = 3
+
+  // Weekend-off rotation gives one FT driver Fri+Sat+Sun off (4 work days
+  // instead of 6). That's a 2-day-off "perk" on top of the normal 1-day-off
+  // rule, and it only makes sense when the roster has spare capacity. If
+  // demand exceeds supply, skip the perk so every driver works their normal
+  // 6 days — otherwise we starve the heavy days even more.
+  const totalSupply = drivers.reduce((s, d) => s + capOf(d), 0)
+  const weeklyDemand = WORK_WEEK_DOWS.reduce(
+    (s, dow) => s + effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0),
+    0,
+  )
+  // Need at least one FT-cap of headroom to "afford" giving someone the weekend.
+  const canAffordWeekendOff = totalSupply >= weeklyDemand + fullTimeCap
 
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
@@ -212,7 +234,10 @@ export function generateDriverSchedule({
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
 
-    const weekendOffId = HEAVY_DAYS.has(dow)
+    // Only run weekend-off rotation when the roster has spare capacity.
+    // On tight rosters, giving one driver Fri+Sat+Sun off would starve the
+    // heavy days even more — so let everyone work their normal 6 days.
+    const weekendOffId = (canAffordWeekendOff && HEAVY_DAYS.has(dow))
       ? weekendOffDriverId(date, start, drivers, seed)
       : null
 
@@ -266,14 +291,19 @@ export function generateDriverSchedule({
       // alphabetically-first driver from systematically losing hours.
       const offset = drivers.length > 0 ? dayIndex % drivers.length : 0
       const rotated = [...drivers.slice(offset), ...drivers.slice(0, offset)]
-      const candidates = rotated.filter((d) =>
-        available.includes(d)
-        && !assigned.has(d.id)
-        && (daysWorked[d.id][wLabel] ?? 0) < MAX_DAYS_PER_WEEK
+      const candidates = rotated.filter((d) => {
+        if (!available.includes(d) || assigned.has(d.id)) return false
+        if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
         // Skip drivers whose designated off day is today — rotates off days
-        // across the week so Wed isn't everyone's default off day.
-        && designatedOffDow(d.id, wLabel) !== dow,
-      )
+        // across the week so Wed isn't everyone's default off day. EXCEPT
+        // when the driver is also this week's weekend-off driver (they're
+        // already getting Fri+Sat+Sun off; an additional designated off day
+        // would leave them with only 3 work days).
+        if (!canAffordWeekendOff || !isWeekendOffDriverThisWeek(d.id, wLabel)) {
+          if (designatedOffDow(d.id, wLabel) === dow) return false
+        }
+        return true
+      })
       if (candidates.length === 0) break
 
       // Sort by ascending weekly hours (load-balance), full-timers first when tied.
