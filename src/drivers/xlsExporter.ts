@@ -1,3 +1,4 @@
+import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate'
 import * as XLSX from 'xlsx'
 import { format, parseISO } from 'date-fns'
 
@@ -167,7 +168,65 @@ export function exportDriverScheduleToXLS(
   const fname =
     filename ??
     `${format(weekStart, "MMMM do yyyy")} to ${format(parseISO(schedule.endDate), "MMMM do yyyy")} Drivers Schedule.xlsx`
-  XLSX.writeFile(wb, fname)
+  const rawBuf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer
+  const fixedBuf = normalizeCustomNumFmtIds(new Uint8Array(rawBuf))
+  // Trigger browser download
+  const blob = new Blob([fixedBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fname
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * SheetJS emits custom numFmtIds starting at 60, but the OOXML spec reserves
+ * 0-163 for built-ins and only allows custom IDs at 164+. Strict xlsx
+ * parsers (e.g. the user's backend) reject the reserved-range IDs.
+ *
+ * We post-process the zip: any <numFmt> with id in [50, 163] gets renumbered
+ * to a fresh ID at 164+, and every reference in styles.xml is updated to
+ * match. Cell `s="..."` references don't change (they index cellXfs, not
+ * numFmtId directly).
+ */
+export function normalizeCustomNumFmtIds(buf: Uint8Array): Uint8Array {
+  const files = unzipSync(buf)
+  const stylesPath = 'xl/styles.xml'
+  if (!files[stylesPath]) return buf
+
+  let xml = strFromU8(files[stylesPath])
+
+  // Collect all custom numFmt entries — `<numFmt numFmtId="X" formatCode="..."/>`
+  const numFmtRe = /<numFmt\s+numFmtId="(\d+)"\s+formatCode="[^"]*"\s*\/>/g
+  const seenIds: number[] = []
+  for (const m of xml.matchAll(numFmtRe)) {
+    seenIds.push(Number(m[1]))
+  }
+
+  // Build a remap for any id in the reserved range
+  const remap = new Map<number, number>()
+  let nextId = 164
+  for (const id of seenIds) {
+    if (id < 164) {
+      while (seenIds.includes(nextId) || [...remap.values()].includes(nextId)) nextId++
+      remap.set(id, nextId)
+      nextId++
+    }
+  }
+  if (remap.size === 0) return buf
+
+  // Rewrite every occurrence of `numFmtId="<oldId>"` in styles.xml.
+  // (Both the <numFmt> defs themselves and the <xf> references.)
+  for (const [oldId, newId] of remap) {
+    const re = new RegExp(`numFmtId="${oldId}"`, 'g')
+    xml = xml.replace(re, `numFmtId="${newId}"`)
+  }
+
+  files[stylesPath] = strToU8(xml)
+  return zipSync(files)
 }
 
 function buildWb(schedule: GeneratedDriverSchedule): XLSX.WorkBook {

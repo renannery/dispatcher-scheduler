@@ -13,6 +13,7 @@
     "@react-pdf/renderer": "^4.5.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "fflate": "^0.8.3",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
