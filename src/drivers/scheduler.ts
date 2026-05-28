@@ -308,17 +308,20 @@ export function generateDriverSchedule({
       // Per-slot priority boost captures BOTH kinds of starvation:
       //   absolute (× 5):  high-demand slot that's short by many bodies
       //   relative (× 50): low-demand slot that's mostly empty
-      // Plus a 3× multiplier when a slot is more than half-empty — without
-      // it, evening peaks (target 56, short 7 = 12%) totally outweigh
-      // morning openers (target 10, short 8 = 80%) because evening peaks
-      // are clustered (multiple high-need slots adjacent), so patterns
-      // covering them rack up bigger boosts.
+      // The "starved" multiplier kicks in at ratio >= 0.5 (was > 0.5) so
+      // a 9 AM slot at exactly 5/10 short still triggers it — without
+      // that, single half-empty slots lose to clustered PM peaks (e.g.
+      // 6 PM + 7 PM each at 3/42 short) because two adjacent medium-
+      // priority slots beat one high-priority slot. Multipliers:
+      //   ratio ≥ 0.8 → ×5 (severely empty)
+      //   ratio ≥ 0.5 → ×3 (half empty)
       const slotPriority: number[] = []
       for (let s = 0; s < required.length; s++) {
         if (shortfall[s] > 0 && required[s] > 0) {
           const ratio = shortfall[s] / required[s]
           let priority = Math.max(shortfall[s] * 5, ratio * 50)
-          if (ratio > 0.5) priority *= 3  // "starved" multiplier for mostly-empty slots
+          if (ratio >= 0.8) priority *= 5
+          else if (ratio >= 0.5) priority *= 3
           slotPriority[s] = priority
         } else {
           slotPriority[s] = 0
