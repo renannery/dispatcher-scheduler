@@ -151,10 +151,18 @@ export function generateDriverSchedule({
   const weekHours: Record<string, Record<string, number>> = {}
   const lastSlotWorked: Record<string, Record<string, number>> = {}
   const scheduleMap: Record<string, DriverDayEntry[]> = {}
+  // Tracks per (driver, week) whether the driver has already worked a
+  // shift at the user-set `maxHoursPerDay` length. The overflow shift
+  // (`maxHoursPerDay + 1`, e.g. 9h when max=8) is only allowed for
+  // drivers who already have a max-length shift this week — so the
+  // 9h shift is an "extension" of an already-full day, never the
+  // first long shift of someone's week.
+  const hasMaxShiftThisWeek: Record<string, Record<string, boolean>> = {}
   drivers.forEach((d) => {
     weekHours[d.id] = {}
     lastSlotWorked[d.id] = {}
     scheduleMap[d.id] = []
+    hasMaxShiftThisWeek[d.id] = {}
   })
   const coverageActual: Record<string, number[]> = {}
 
@@ -386,6 +394,12 @@ export function generateDriverSchedule({
         for (const p of allPatterns) {
           const h = slotHours(p)
           if (h < effectiveMin || h > softMax) continue
+          // Overflow gate: a shift longer than the user-set max is only
+          // allowed for drivers who've already worked a max-length shift
+          // this week. So a "9h driver" must have already done their
+          // 8h elsewhere — the overflow is a bonus hour for the team's
+          // hardest workers, not a default.
+          if (h > maxHoursPerDay && !hasMaxShiftThisWeek[d.id][wLabel]) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
@@ -455,6 +469,9 @@ export function generateDriverSchedule({
           weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
           daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
           lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
+          // Flag the driver as "earned the overflow" once they've done a
+          // shift at the user-set max. Used by the overflow gate above.
+          if (h >= maxHoursPerDay) hasMaxShiftThisWeek[d.id][wLabel] = true
           scheduleMap[d.id].push({
             date: dateStr, dayLabel, dayOfWeek: dow,
             slots: [...bestPattern], totalHours: h, isOff: false,
