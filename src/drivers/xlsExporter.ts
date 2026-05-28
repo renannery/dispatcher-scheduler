@@ -34,10 +34,10 @@ function dateToExcelSerial(d: Date): number {
 
 function setCell(ws: XLSX.WorkSheet, addr: string, value: string | number | Date) {
   if (value instanceof Date) {
-    // `m/d/yy` is Excel built-in numFmtId 14 — strict xlsx parsers (e.g.
-    // the user's backend) reject SheetJS-generated custom numFmts (id 60+),
-    // so we stick to a built-in format.
-    ws[addr] = { t: 'n', v: dateToExcelSerial(value), z: 'm/d/yy' }
+    // Match the reference's format exactly (`d/m/yyyy`, what the backend
+    // parser expects). SheetJS registers this as a custom numFmt and the
+    // cell references it — equivalent shape to the reference's xf 7.
+    ws[addr] = { t: 'n', v: dateToExcelSerial(value), z: 'd/m/yyyy' }
   } else if (typeof value === 'number') {
     ws[addr] = { t: 'n', v: value }
   } else {
