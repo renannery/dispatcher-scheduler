@@ -304,6 +304,22 @@ export function generateDriverSchedule({
       // fill SPARE capacity slots within the +3 tolerance band, so a roster
       // with scaled-down demand still uses up its weekly cap.)
 
+      // Identify the most-starved slot — highest shortfall/target ratio.
+      // Patterns covering it will get a +1000 priority boost so low-demand
+      // slots like Mon 9 AM (10 demand) aren't starved by mid-day slots
+      // (31 demand) that dominate pure-absolute scoring.
+      let mostStarvedSlot = -1
+      let mostStarvedRatio = 0
+      for (let s = 0; s < required.length; s++) {
+        if (required[s] > 0 && shortfall[s] > 0) {
+          const ratio = shortfall[s] / required[s]
+          if (ratio > mostStarvedRatio) {
+            mostStarvedRatio = ratio
+            mostStarvedSlot = s
+          }
+        }
+      }
+
       // Eligible drivers: not yet assigned today, under cap, night-rest OK for morning shifts.
       // Rotate the base order by `dayIndex` so different drivers get "first pick"
       // on different days when their weekly hours are tied — prevents the
@@ -382,16 +398,31 @@ export function generateDriverSchedule({
           }
           if (exceedsLimit) continue
 
-          // Score: shortfall slots count heavily (×10) so they always beat
-          // spare-capacity fill; legal-but-over slots count +1 so drivers
-          // keep working past the target until they hit cap or the +3 limit.
-          // Without the +1, drivers would stop the moment shortfall reaches
-          // 0 (leaving FT drivers at 35h with a 45h cap).
+          // Score = base contribution + most-starved-slot priority boost.
+          //
+          // Base: shortfall × 10 (absolute demand) + 50 × shortfall/target
+          // (relative urgency). Pure absolute scoring picks "10 AM-4 PM"
+          // over "9 AM-3 PM" because mid-day demand outweighs morning, so
+          // a 1000× priority is added to any pattern covering the slot
+          // with the highest %-shortfall — this guarantees starved low-
+          // demand slots like Mon 9 AM (was 3/10) get patterns assigned.
+          // Spare-capacity slots (shortfall=0) still get +1 so drivers
+          // keep filling their cap after target is met.
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
-            if (shortfall[s] > 0) score += shortfall[s] * 10
-            else score += 1  // small bonus for filling spare capacity within +3
+            if (shortfall[s] > 0) {
+              const t = required[s] || shortfall[s]
+              score += shortfall[s] * 10 + (shortfall[s] / t) * 50
+            } else {
+              score += 1
+            }
+          }
+          // Priority boost: if this pattern covers the most-starved slot
+          // (highest shortfall/target ratio), give it a massive bonus so
+          // it always beats patterns that ignore that slot.
+          if (mostStarvedSlot >= 0 && p[mostStarvedSlot]) {
+            score += 1000
           }
           if (score > bestScore) {
             bestScore = score
