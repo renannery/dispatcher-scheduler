@@ -425,11 +425,14 @@ export function generateDriverSchedule({
           // Base: shortfall × 10 (absolute demand) + 50 × shortfall/target
           // (relative urgency). Pure absolute scoring picks "10 AM-4 PM"
           // over "9 AM-3 PM" because mid-day demand outweighs morning, so
-          // a 1000× priority is added to any pattern covering the slot
-          // with the highest %-shortfall — this guarantees starved low-
-          // demand slots like Mon 9 AM (was 3/10) get patterns assigned.
-          // Spare-capacity slots (shortfall=0) still get +1 so drivers
-          // keep filling their cap after target is met.
+          // a per-slot priority boost is added separately below.
+          //
+          // Over-covered slots are PENALIZED (not just zero-rewarded).
+          // For each unit a slot is already over target, the pattern
+          // loses 30 points. This actively pushes the algorithm to
+          // pick patterns that DON'T pile onto already-covered slots —
+          // user's policy is "we'd accept gaps during not-busy times,
+          // like 2-4 PM" since those slots are already over-staffed.
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
@@ -437,7 +440,9 @@ export function generateDriverSchedule({
               const t = required[s] || shortfall[s]
               score += shortfall[s] * 10 + (shortfall[s] / t) * 50
             } else {
-              score += 1
+              // overage = how many bodies past target this slot already has
+              const overage = actualCov[s] - required[s]
+              if (overage >= 0) score -= (overage + 1) * 700
             }
           }
           // Priority boost = sum of (slot priority × 20) for slots the
