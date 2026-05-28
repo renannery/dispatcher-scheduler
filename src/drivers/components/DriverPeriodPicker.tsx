@@ -268,6 +268,8 @@ export function DriverPeriodPicker() {
         </div>
         <p className="-mt-3 text-xs text-slate-400">
           Defaults: 4h min, 9h max. Patterns outside this range are filtered out before scheduling.
+          The min is auto-relaxed to 4h on the last day of the work-week (Wed) so leftover weekly cap
+          can still cover that day.
         </p>
 
         <div className="flex flex-col gap-1.5">

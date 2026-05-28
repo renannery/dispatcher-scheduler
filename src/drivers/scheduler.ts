@@ -187,6 +187,13 @@ export function generateDriverSchedule({
       ? weekendOffDriverId(date, start, drivers, seed)
       : null
 
+    // Relax `minHoursPerDay` on the LAST day of the work-week (Wed) so
+    // drivers with leftover weekly cap (typically 4h) can still take a
+    // fill-in shift. Without this, setting min=5 silently starves Wed.
+    // The strict min still applies Thu-Tue.
+    const isLastWorkWeekDay = remainingDows.length === 1
+    const effectiveMin = isLastWorkWeekDay ? Math.min(minHoursPerDay, 4) : minHoursPerDay
+
     // Split into off / available
     const available: Driver[] = []
     const dayOff: Driver[] = []
@@ -252,16 +259,16 @@ export function generateDriverSchedule({
       let placed = false
       for (const d of candidates) {
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
-        if (remaining < minHoursPerDay) continue  // not enough room for shortest allowed pattern
+        if (remaining < effectiveMin) continue  // not enough room for shortest allowed pattern
 
         // Per-day soft cap = today's demand-share of this driver's remaining
-        // weekly capacity, with a `minHoursPerDay` floor. Strict share with
+        // weekly capacity, with an `effectiveMin` floor. Strict share with
         // no slack keeps enough budget reserved for the back end of the
         // work-week (Tue/Wed), which otherwise get starved.
         const dailyCap = Math.min(
           remaining,
           maxHoursPerDay,
-          Math.max(minHoursPerDay, Math.ceil(remaining * todayDemandShare)),
+          Math.max(effectiveMin, Math.ceil(remaining * todayDemandShare)),
         )
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
@@ -271,7 +278,7 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
-          if (h < minHoursPerDay || h > maxHoursPerDay) continue
+          if (h < effectiveMin || h > maxHoursPerDay) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
