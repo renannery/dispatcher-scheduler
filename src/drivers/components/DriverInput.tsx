@@ -27,7 +27,7 @@ const TYPE_STYLES: Record<EmploymentType, { pill: string; active: string }> = {
 }
 
 export function DriverInput() {
-  const { drivers, addDriver, removeDriver, setEmploymentType, setShopperStatus, toggleRecurringBlock, setStep, partTimeCap } = useDriverStore()
+  const { drivers, addDriver, removeDriver, setEmploymentType, setShopperStatus, toggleRecurringBlock, setRecurringBlocks, setStep, partTimeCap } = useDriverStore()
   const [input, setInput] = useState('')
   const [type, setType] = useState<EmploymentType>('full')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -381,6 +381,7 @@ export function DriverInput() {
                       slots={DRIVER_SLOTS}
                       accentColor={d.color}
                       onToggle={(dow, si) => toggleRecurringBlock(d.id, dow, si)}
+                      onSetAll={(blocks) => setRecurringBlocks(d.id, blocks)}
                     />
                   )}
                 </li>

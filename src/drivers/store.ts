@@ -79,6 +79,7 @@ interface DriverSchedulerStore {
   setEmploymentType: (id: string, type: EmploymentType) => void
   setShopperStatus: (id: string, isShopper: boolean) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
+  setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
   setPartTimeCap: (cap: number) => void
@@ -200,6 +201,15 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
         // If completely empty, drop the field
         const empty = grid.every((row) => row.every((v) => !v))
         return { ...d, recurringBlocks: empty ? undefined : grid }
+      }),
+    })),
+
+  setRecurringBlocks: (id, blocks) =>
+    set((s) => ({
+      drivers: s.drivers.map((d) => {
+        if (d.id !== id) return d
+        const empty = blocks.every((row) => row.every((v) => !v))
+        return { ...d, recurringBlocks: empty ? undefined : blocks.map((row) => [...row]) }
       }),
     })),
 
