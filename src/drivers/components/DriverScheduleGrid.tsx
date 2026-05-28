@@ -112,6 +112,7 @@ export function DriverScheduleGrid() {
     absenceReasons,
     fullTimeCap,
     partTimeCap,
+    coverageScale,
     weekendRotationOffset,
     setSchedule,
     setStep,
@@ -154,7 +155,7 @@ export function DriverScheduleGrid() {
   const handleRegenerate = () => {
     regenSeed.current++
     const fresh = generateDriverSchedule({
-      drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap,
+      drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap, coverageScale,
       seed: weekendRotationOffset + regenSeed.current,
     })
     setSchedule(fresh)
@@ -167,7 +168,7 @@ export function DriverScheduleGrid() {
       team: 'drivers',
       exportedAt: new Date().toISOString(),
       data: {
-        drivers, startDate, endDate, fullTimeCap, partTimeCap, timeOff, absenceReasons,
+        drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, timeOff, absenceReasons,
         weekendRotationOffset, schedule,
       },
     })

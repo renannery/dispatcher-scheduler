@@ -44,6 +44,12 @@ interface DriverSchedulerStore {
   endDate: string
   fullTimeCap: number
   partTimeCap: number
+  /**
+   * Multiplier on the per-slot required-coverage targets. 1.0 = use the
+   * reference 56-driver baseline as-is; >1.0 to scale up when the roster
+   * has grown; <1.0 to scale down for smaller teams.
+   */
+  coverageScale: number
   timeOff: DriverTimeOff
   /** Per driver, per date, the user-assigned reason for the absence. Display-only. */
   absenceReasons: AbsenceReasonMap
@@ -64,6 +70,7 @@ interface DriverSchedulerStore {
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
   setPartTimeCap: (cap: number) => void
+  setCoverageScale: (scale: number) => void
   /** Bump the persisted rotation cursor by N weeks (called after Generate). */
   advanceWeekendRotation: (weeks: number) => void
   /** Toggle full-day off for this driver on this date. */
@@ -113,6 +120,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   endDate: addDays(defaultStart, 6),
   fullTimeCap: DEFAULT_FULL_TIME_CAP,
   partTimeCap: DEFAULT_PART_TIME_CAP,
+  coverageScale: 1,
   timeOff: {},
   absenceReasons: {},
   weekendRotationOffset: 0,
@@ -186,6 +194,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   setDateRange: (startDate, endDate) => set({ startDate, endDate }),
   setFullTimeCap: (fullTimeCap) => set({ fullTimeCap }),
   setPartTimeCap: (partTimeCap) => set({ partTimeCap }),
+  setCoverageScale: (coverageScale) => set({ coverageScale: Math.max(0.5, Math.min(2, coverageScale)) }),
 
   advanceWeekendRotation: (weeks) =>
     set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
@@ -298,6 +307,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       endDate: data.endDate,
       fullTimeCap: data.fullTimeCap ?? DEFAULT_FULL_TIME_CAP,
       partTimeCap: data.partTimeCap ?? DEFAULT_PART_TIME_CAP,
+      coverageScale: data.coverageScale ?? 1,
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
@@ -312,6 +322,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
         drivers: data.drivers ?? s.drivers,
         fullTimeCap: data.fullTimeCap ?? s.fullTimeCap,
         partTimeCap: data.partTimeCap ?? s.partTimeCap,
+        coverageScale: data.coverageScale ?? s.coverageScale,
         weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
         startDate: nextStart,
         endDate: nextEnd,
@@ -328,6 +339,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       endDate: addDays(defaultStart, 6),
       fullTimeCap: DEFAULT_FULL_TIME_CAP,
       partTimeCap: DEFAULT_PART_TIME_CAP,
+      coverageScale: 1,
       timeOff: {},
       absenceReasons: {},
       schedule: null,

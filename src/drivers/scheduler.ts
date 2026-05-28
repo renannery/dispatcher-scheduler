@@ -1,6 +1,7 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
+  DAILY_DEMAND_BY_DOW,
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   MAX_HOURS_PER_DAY,
@@ -73,6 +74,26 @@ interface ScheduleParams {
    * different (still valid) distributions instead of an identical schedule.
    */
   seed?: number
+  /**
+   * Multiplier on the per-slot required-coverage targets in
+   * DRIVER_DAY_TEMPLATES. Defaults to 1.0 (use the reference numbers as-is).
+   * Bump this when the roster has grown beyond the reference 56-driver
+   * baseline so the scheduler pulls in proportionally more bodies per slot.
+   */
+  coverageScale?: number
+}
+
+/**
+ * Returns the work-week (Thu→Wed) day-of-week sequence starting from `dow`.
+ * Used to compute today's share of remaining-week demand so a driver's
+ * weekly capacity is spread across all 7 days instead of front-loaded into
+ * Thu-Sat (which leaves Tue/Wed starved when full-timers hit their cap).
+ */
+function workWeekRemaining(dow: number): number[] {
+  // Work week order: Thu(4), Fri(5), Sat(6), Sun(0), Mon(1), Tue(2), Wed(3)
+  const order = [4, 5, 6, 0, 1, 2, 3]
+  const idx = order.indexOf(dow)
+  return order.slice(idx)
 }
 
 /** Union of per-date time-off bitmap and the driver's recurring-weekly
@@ -102,6 +123,7 @@ export function generateDriverSchedule({
   fullTimeCap,
   partTimeCap,
   seed = 0,
+  coverageScale = 1,
 }: ScheduleParams): GeneratedDriverSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -131,7 +153,15 @@ export function generateDriverSchedule({
     const wLabel = weekLabel(date)
     const dayLabel = format(date, 'EEE, MMMM do')
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
-    const required = template.requiredCoverage
+    const required = template.requiredCoverage.map((v) => Math.round(v * coverageScale))
+
+    // Today's share of the remaining work-week's total demand. A driver
+    // with `remaining` hours left in the week should spend roughly
+    // `remaining * todayShare` of them today; the rest is reserved for
+    // the days after. Keeps Tue/Wed from being starved by Thu-Sat greed.
+    const remainingDows = workWeekRemaining(dow)
+    const remainingWeekDemand = remainingDows.reduce((s, d) => s + DAILY_DEMAND_BY_DOW[d], 0)
+    const todayDemandShare = DAILY_DEMAND_BY_DOW[dow] / Math.max(1, remainingWeekDemand)
 
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
@@ -200,11 +230,22 @@ export function generateDriverSchedule({
 
       // For each candidate (in priority order), find the pattern that
       // (a) fits their remaining cap, (b) respects night-rest, (c) doesn't
-      // overlap a blocked slot, (d) covers the most current shortfalls.
+      // overlap a blocked slot, (d) covers the most current shortfalls,
+      // (e) stays within today's per-driver demand-weighted share.
       let placed = false
       for (const d of candidates) {
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
-        if (remaining < 5) continue  // not enough room for the shortest 5h pattern
+        if (remaining < 4) continue  // not enough room for the shortest 4h pattern
+
+        // Per-day soft cap = today's demand-share of this driver's remaining
+        // weekly capacity, with a 4h floor (the shortest pattern). Strict
+        // share with no slack keeps enough budget reserved for the back end
+        // of the work-week (Tue/Wed), which otherwise get starved.
+        const dailyCap = Math.min(
+          remaining,
+          MAX_HOURS_PER_DAY,
+          Math.max(4, Math.ceil(remaining * todayDemandShare)),
+        )
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
@@ -213,6 +254,7 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
+          if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
