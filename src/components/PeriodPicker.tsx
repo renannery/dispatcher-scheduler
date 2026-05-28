@@ -18,12 +18,14 @@ export function PeriodPicker() {
     endDate,
     timeOff,
     absenceReasons,
+    weekendRotationOffset,
     setDateRange,
     setSchedule,
     setStep,
     toggleFullDayOff,
     toggleBlockedSlot,
     applyAbsenceRange,
+    advanceWeekendRotation,
   } = useSchedulerStore()
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -35,8 +37,10 @@ export function PeriodPicker() {
 
   const handleGenerate = () => {
     if (!isValid) return
-    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff)
+    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset)
     setSchedule(schedule)
+    const weeksInSchedule = new Set(schedule.dates.map((d) => d.weekLabel)).size
+    advanceWeekendRotation(weeksInSchedule)
     setStep('schedule')
   }
 

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
 
 import type { AbsenceReason } from '@/utils/absence'
 import { datesInRange } from '@/utils/absence'
@@ -46,6 +47,12 @@ interface DriverSchedulerStore {
   timeOff: DriverTimeOff
   /** Per driver, per date, the user-assigned reason for the absence. Display-only. */
   absenceReasons: AbsenceReasonMap
+  /**
+   * Persists the weekend-off rotation cursor across sessions so each fresh
+   * Generate picks up where the previous schedule left off — instead of
+   * always starting at the alphabetically-first driver.
+   */
+  weekendRotationOffset: number
   schedule: GeneratedDriverSchedule | null
 
   setStep: (step: DriverStep) => void
@@ -56,6 +63,8 @@ interface DriverSchedulerStore {
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
   setPartTimeCap: (cap: number) => void
+  /** Bump the persisted rotation cursor by N weeks (called after Generate). */
+  advanceWeekendRotation: (weeks: number) => void
   /** Toggle full-day off for this driver on this date. */
   toggleFullDayOff: (driverId: string, date: string) => void
   /** Toggle a single slot on this driver's date-specific block bitmap. */
@@ -89,7 +98,7 @@ function isAllTrue(arr: boolean[] | undefined): boolean {
   return !!arr && arr.length === DRIVER_SLOTS.length && arr.every(Boolean)
 }
 
-export const useDriverStore = create<DriverSchedulerStore>((set) => ({
+export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   step: 'names',
   drivers: [],
   startDate: defaultStart,
@@ -98,6 +107,7 @@ export const useDriverStore = create<DriverSchedulerStore>((set) => ({
   partTimeCap: DEFAULT_PART_TIME_CAP,
   timeOff: {},
   absenceReasons: {},
+  weekendRotationOffset: 0,
   schedule: null,
 
   setStep: (step) => set({ step }),
@@ -142,6 +152,9 @@ export const useDriverStore = create<DriverSchedulerStore>((set) => ({
   setDateRange: (startDate, endDate) => set({ startDate, endDate }),
   setFullTimeCap: (fullTimeCap) => set({ fullTimeCap }),
   setPartTimeCap: (partTimeCap) => set({ partTimeCap }),
+
+  advanceWeekendRotation: (weeks) =>
+    set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
 
   toggleFullDayOff: (driverId, date) =>
     set((s) => {
@@ -244,7 +257,7 @@ export const useDriverStore = create<DriverSchedulerStore>((set) => ({
     }),
 
   hydrateFromSnapshot: (data) =>
-    set({
+    set((s) => ({
       step: data.schedule ? 'schedule' : 'names',
       drivers: data.drivers ?? [],
       startDate: data.startDate,
@@ -253,10 +266,13 @@ export const useDriverStore = create<DriverSchedulerStore>((set) => ({
       partTimeCap: data.partTimeCap ?? DEFAULT_PART_TIME_CAP,
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
+      weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
-    }),
+    })),
 
   reset: () =>
+    // Keep weekendRotationOffset across resets — the cursor represents the
+    // team's long-running rotation position, not per-schedule data.
     set({
       step: 'names',
       drivers: [],
@@ -268,4 +284,10 @@ export const useDriverStore = create<DriverSchedulerStore>((set) => ({
       absenceReasons: {},
       schedule: null,
     }),
+}), {
+  name: 'driver-scheduler',
+  storage: createJSONStorage(() => localStorage),
+  // Only persist the long-running rotation cursor; everything else is
+  // schedule-specific and can be re-derived or imported via JSON.
+  partialize: (state) => ({ weekendRotationOffset: state.weekendRotationOffset }),
 }))

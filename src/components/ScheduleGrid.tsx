@@ -113,7 +113,7 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, setSchedule, setStep } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, setStep } =
     useSchedulerStore()
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -146,12 +146,12 @@ export function ScheduleGrid() {
   const expandAll  = () => setExpandedDates(new Set(schedule.dates.map((d) => d.date)))
   const collapseAll = () => setExpandedDates(new Set())
 
-  // Bumped on each Regenerate click so the deterministic scheduler returns
-  // a different rotation each click.
+  // Local bump for variety on each Regenerate click. Added on top of the
+  // persisted rotation cursor; doesn't advance the persisted cursor itself.
   const regenSeed = useRef(0)
   const handleRegenerate = () => {
     regenSeed.current++
-    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, regenSeed.current)
+    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current)
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -161,7 +161,7 @@ export function ScheduleGrid() {
       version: SCHEMA_VERSION,
       team: 'dispatchers',
       exportedAt: new Date().toISOString(),
-      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, schedule },
+      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, schedule },
     })
   }
 

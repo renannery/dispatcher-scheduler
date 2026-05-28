@@ -21,6 +21,7 @@ export function DriverPeriodPicker() {
     partTimeCap,
     timeOff,
     absenceReasons,
+    weekendRotationOffset,
     setDateRange,
     setFullTimeCap,
     setPartTimeCap,
@@ -29,6 +30,7 @@ export function DriverPeriodPicker() {
     toggleFullDayOff,
     toggleBlockedSlot,
     applyAbsenceRange,
+    advanceWeekendRotation,
   } = useDriverStore()
 
   // Driver ids whose hour-grid is currently expanded
@@ -50,8 +52,15 @@ export function DriverPeriodPicker() {
       timeOff,
       fullTimeCap,
       partTimeCap,
+      // Seed from the persisted cursor — picks up where the previous
+      // schedule's rotation left off instead of always starting at index 0.
+      seed: weekendRotationOffset,
     })
     setSchedule(schedule)
+    // Advance the cursor by the number of weeks this schedule covers so
+    // next time the user generates, the rotation continues onward.
+    const weeksInSchedule = new Set(schedule.dates.map((d) => d.weekLabel)).size
+    advanceWeekendRotation(weeksInSchedule)
     setStep('schedule')
   }
 

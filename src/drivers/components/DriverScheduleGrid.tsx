@@ -112,6 +112,7 @@ export function DriverScheduleGrid() {
     absenceReasons,
     fullTimeCap,
     partTimeCap,
+    weekendRotationOffset,
     setSchedule,
     setStep,
   } = useDriverStore()
@@ -146,16 +147,15 @@ export function DriverScheduleGrid() {
   const expandAll = () => setExpandedDates(new Set(schedule.dates.map((d) => d.date)))
   const collapseAll = () => setExpandedDates(new Set())
 
-  // Bumped on each Regenerate click so the deterministic algorithm produces
-  // a different (but still valid) rotation each time. Survives only as long
-  // as the component is mounted — exports of the underlying schedule are
-  // unaffected.
+  // Local bump for variety on each Regenerate click — added on top of the
+  // persisted rotation cursor. Doesn't advance the persisted cursor (that
+  // only moves when the user generates from the period step).
   const regenSeed = useRef(0)
   const handleRegenerate = () => {
     regenSeed.current++
     const fresh = generateDriverSchedule({
       drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap,
-      seed: regenSeed.current,
+      seed: weekendRotationOffset + regenSeed.current,
     })
     setSchedule(fresh)
     setExpandedDates(new Set())
@@ -167,7 +167,8 @@ export function DriverScheduleGrid() {
       team: 'drivers',
       exportedAt: new Date().toISOString(),
       data: {
-        drivers, startDate, endDate, fullTimeCap, partTimeCap, timeOff, absenceReasons, schedule,
+        drivers, startDate, endDate, fullTimeCap, partTimeCap, timeOff, absenceReasons,
+        weekendRotationOffset, schedule,
       },
     })
   }

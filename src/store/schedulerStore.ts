@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
 
 import { SLOTS } from '@/data/coverageTemplate'
 import type { Dispatcher, DispatcherLevel, DispatcherTimeOff, GeneratedSchedule, Step } from '@/types/schedule'
@@ -42,6 +43,8 @@ interface SchedulerStore {
   endDate: string
   timeOff: DispatcherTimeOff
   absenceReasons: AbsenceReasonMap
+  /** Persisted weekend-off rotation cursor — see driver store comment. */
+  weekendRotationOffset: number
   schedule: GeneratedSchedule | null
 
   setStep: (step: Step) => void
@@ -50,6 +53,7 @@ interface SchedulerStore {
   setDispatcherLevel: (id: string, level: DispatcherLevel) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setDateRange: (start: string, end: string) => void
+  advanceWeekendRotation: (weeks: number) => void
   toggleFullDayOff: (dispatcherId: string, date: string) => void
   toggleBlockedSlot: (dispatcherId: string, date: string, slotIndex: number) => void
   applyAbsenceRange: (
@@ -74,13 +78,14 @@ function isAllTrue(arr: boolean[] | undefined): boolean {
   return !!arr && arr.length === SLOTS.length && arr.every(Boolean)
 }
 
-export const useSchedulerStore = create<SchedulerStore>((set) => ({
+export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
   step: 'names',
   dispatchers: [],
   startDate: defaultStart,
   endDate: addDays(defaultStart, 6),
   timeOff: {},
   absenceReasons: {},
+  weekendRotationOffset: 0,
   schedule: null,
 
   setStep: (step) => set({ step }),
@@ -122,6 +127,9 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
     })),
 
   setDateRange: (startDate, endDate) => set({ startDate, endDate }),
+
+  advanceWeekendRotation: (weeks) =>
+    set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
 
   toggleFullDayOff: (dispatcherId, date) =>
     set((s) => {
@@ -182,15 +190,16 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
   setSchedule: (schedule) => set({ schedule }),
 
   hydrateFromSnapshot: (data) =>
-    set({
+    set((s) => ({
       step: data.schedule ? 'schedule' : 'names',
       dispatchers: data.dispatchers ?? [],
       startDate: data.startDate,
       endDate: data.endDate,
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
+      weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
-    }),
+    })),
 
   reset: () =>
     set({
@@ -202,4 +211,8 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
       absenceReasons: {},
       schedule: null,
     }),
+}), {
+  name: 'dispatcher-scheduler',
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({ weekendRotationOffset: state.weekendRotationOffset }),
 }))

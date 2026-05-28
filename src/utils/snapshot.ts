@@ -20,6 +20,8 @@ export interface DriverSnapshotData {
   partTimeCap: number
   timeOff: DriverTimeOff
   absenceReasons: Record<string, Record<string, AbsenceReason>>
+  /** Persisted weekend-off rotation cursor. Optional for backwards compat. */
+  weekendRotationOffset?: number
   schedule: GeneratedDriverSchedule | null
 }
 
@@ -29,6 +31,7 @@ export interface DispatcherSnapshotData {
   endDate: string
   timeOff: DispatcherTimeOff
   absenceReasons: Record<string, Record<string, AbsenceReason>>
+  weekendRotationOffset?: number
   schedule: GeneratedSchedule | null
 }
 
