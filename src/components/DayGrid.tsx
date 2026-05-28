@@ -21,6 +21,7 @@ interface Props {
 export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilter }: Props) {
   const timeOff = useSchedulerStore((s) => s.timeOff)
   const absenceReasons = useSchedulerStore((s) => s.absenceReasons)
+  const toggleDispatcherSlot = useSchedulerStore((s) => s.toggleDispatcherSlot)
   const template = DAY_TEMPLATES[dayOfWeek]
   const required = template?.requiredCoverage ?? SLOTS.map(() => 0)
   const actual = schedule.coverageActual[date] ?? SLOTS.map(() => 0)
@@ -143,24 +144,34 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                   return (
                     <td
                       key={si}
-                      className="px-0.5 py-1"
-                      title={blocked ? `Blocked off — ${SLOTS[si].label}` : undefined}
+                      className="group cursor-pointer px-0.5 py-1"
+                      onClick={() => toggleDispatcherSlot(ds.dispatcher.id, date, si)}
+                      title={
+                        blocked
+                          ? `Blocked off — ${SLOTS[si].label} (click to override)`
+                          : working
+                            ? `Remove ${SLOTS[si].label}`
+                            : `Add ${SLOTS[si].label}`
+                      }
                     >
                       {working ? (
                         <div
                           className={clsx(
-                            'mx-auto h-5 w-full max-w-[52px] rounded text-center text-[9px] font-bold leading-5 text-white',
+                            'mx-auto h-5 w-full max-w-[52px] rounded text-center text-[9px] font-bold leading-5 text-white transition group-hover:ring-2 group-hover:ring-red-400 group-hover:ring-offset-1',
                             blocked && 'ring-2 ring-red-500 ring-offset-1',
                           )}
                           style={{ backgroundColor: ds.dispatcher.color }}
                         />
                       ) : blocked ? (
                         <div
-                          className="mx-auto h-5 w-full max-w-[52px] rounded border border-red-300 bg-[repeating-linear-gradient(45deg,_#fee2e2_0,_#fee2e2_3px,_transparent_3px,_transparent_6px)]"
+                          className="mx-auto h-5 w-full max-w-[52px] rounded border border-red-300 bg-[repeating-linear-gradient(45deg,_#fee2e2_0,_#fee2e2_3px,_transparent_3px,_transparent_6px)] transition group-hover:opacity-80"
                           aria-label="blocked"
                         />
                       ) : (
-                        <div className="mx-auto h-5 w-full max-w-[52px]" />
+                        <div
+                          className="mx-auto h-5 w-full max-w-[52px] rounded border border-dashed border-transparent opacity-0 transition group-hover:opacity-60"
+                          style={{ borderColor: ds.dispatcher.color }}
+                        />
                       )}
                     </td>
                   )

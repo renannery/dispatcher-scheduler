@@ -64,6 +64,7 @@ interface SchedulerStore {
     slotMask?: boolean[],
   ) => void
   setSchedule: (s: GeneratedSchedule) => void
+  toggleDispatcherSlot: (dispatcherId: string, date: string, slotIndex: number) => void
   hydrateFromSnapshot: (data: DispatcherSnapshotData) => void
   reset: () => void
 }
@@ -188,6 +189,46 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
     }),
 
   setSchedule: (schedule) => set({ schedule }),
+
+  toggleDispatcherSlot: (dispatcherId, date, slotIndex) =>
+    set((state) => {
+      if (!state.schedule) return state
+      const sch = state.schedule
+      const slotCount = SLOTS.length
+
+      const dispatcherSchedules = sch.dispatcherSchedules.map((ds) => {
+        if (ds.dispatcher.id !== dispatcherId) return ds
+        const days = ds.days.map((d) => {
+          if (d.date !== date) return d
+          const slots = [...d.slots]
+          slots[slotIndex] = !slots[slotIndex]
+          // Dispatcher slots have variable durations (0.5h or 1h); weight accordingly.
+          const totalHours = slots.reduce((s, on, i) => s + (on ? SLOTS[i].hours : 0), 0)
+          return { ...d, slots, totalHours, isOff: totalHours === 0 }
+        })
+        const weeklyHours: Record<string, number> = {}
+        for (const di of sch.dates) {
+          const e = days.find((d) => d.date === di.date)
+          if (e) weeklyHours[di.weekLabel] = (weeklyHours[di.weekLabel] ?? 0) + e.totalHours
+        }
+        const totalHours = Object.values(weeklyHours).reduce((s, h) => s + h, 0)
+        return { ...ds, days, weeklyHours, totalHours }
+      })
+
+      const newCov = new Array(slotCount).fill(0)
+      for (const ds of dispatcherSchedules) {
+        const e = ds.days.find((d) => d.date === date)
+        if (!e) continue
+        e.slots.forEach((on, i) => { if (on) newCov[i]++ })
+      }
+      return {
+        schedule: {
+          ...sch,
+          dispatcherSchedules,
+          coverageActual: { ...sch.coverageActual, [date]: newCov },
+        },
+      }
+    }),
 
   hydrateFromSnapshot: (data) =>
     set((s) => ({
