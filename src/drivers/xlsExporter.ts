@@ -230,18 +230,20 @@ export function normalizeCustomNumFmtIds(buf: Uint8Array): Uint8Array {
 }
 
 function buildWb(schedule: GeneratedDriverSchedule): XLSX.WorkBook {
-  // One block per day in schedule order; each driver who works that day
-  // appears as a row, slots populated with their name.
+  // One block per day in schedule order. Every driver appears in every block
+  // (in roster order); off drivers get a name with no slot cells filled —
+  // matches the reference format so the backend can detect roster membership.
+  const emptySlots = new Array(DRIVER_SLOTS.length).fill(false)
   const blocks: DayBlockData[] = schedule.dates.map((dateInfo) => ({
     date: dateInfo.date,
     dayOfWeek: dateInfo.dayOfWeek,
-    drivers: schedule.driverSchedules
-      .map((ds) => {
-        const entry = ds.days.find((d) => d.date === dateInfo.date)
-        if (!entry || entry.isOff) return null
-        return { name: ds.driver.name, slots: entry.slots }
-      })
-      .filter((d): d is { name: string; slots: boolean[] } => d !== null),
+    drivers: schedule.driverSchedules.map((ds) => {
+      const entry = ds.days.find((d) => d.date === dateInfo.date)
+      return {
+        name: ds.driver.name,
+        slots: entry?.slots ?? emptySlots,
+      }
+    }),
   }))
 
   const wb = XLSX.utils.book_new()
