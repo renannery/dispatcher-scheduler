@@ -209,9 +209,10 @@ export function generateDriverSchedule({
     return fullTimers[(wi + seed) % fullTimers.length].id === driverId
   }
 
-  // Hard tolerance: a slot is never staffed above target+3 (refuse the pattern
-  // before assigning). Below-target is informational (handled by hiring banner).
-  const OVER_COVERAGE_LIMIT = 3
+  // Hard over-cap: a slot is never staffed beyond its tolerance band
+  // (target + coverageTolerance(target)). The band is 15% per slot, so
+  // small targets get tight ceilings (target 10 → max 12) and large
+  // targets get looser ones (target 56 → max 64).
 
   // Weekend-off rotation gives one FT driver Fri+Sat+Sun off (4 work days
   // instead of 6). That's a 2-day-off "perk" on top of the normal 1-day-off
@@ -389,13 +390,12 @@ export function generateDriverSchedule({
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
-          // Hard over-coverage cap: refuse any pattern that would push a slot
-          // beyond target+OVER_COVERAGE_LIMIT. The +3 tolerance matches ops:
-          // operations can handle slight overstaffing but anything more
-          // disrupts the floor.
+          // Hard over-coverage cap: refuse any pattern that would push a
+          // slot beyond target + coverageTolerance(target). Matches ops
+          // policy "we can be flex ±15% per slot".
           let exceedsLimit = false
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && actualCov[s] + 1 > required[s] + OVER_COVERAGE_LIMIT) {
+            if (p[s] && actualCov[s] + 1 > required[s] + coverageTolerance(required[s])) {
               exceedsLimit = true
               break
             }
@@ -506,8 +506,19 @@ export interface CoverageHealth {
  * returns a hiring recommendation. Averages over all weeks the schedule spans
  * so multi-week imports don't artificially inflate the gap.
  */
-/** Slots under-staffed by more than this count as a real operational gap. */
-export const COVERAGE_GAP_TOLERANCE = 3
+/**
+ * Per-slot coverage tolerance band (15% of the target, min 1). A slot is
+ * inside its tolerance when |actual − required| ≤ coverageTolerance(target).
+ * Small slots get tight bands (target 10 → ±2), heavy slots get loose ones
+ * (target 56 → ±8) — matches ops policy "we can be flex ±15%".
+ */
+export const COVERAGE_GAP_TOLERANCE_PCT = 0.15
+
+/** Integer tolerance for a given slot target. */
+export function coverageTolerance(required: number): number {
+  if (required <= 0) return 0
+  return Math.max(1, Math.round(required * COVERAGE_GAP_TOLERANCE_PCT))
+}
 
 export function analyzeCoverageHealth(
   schedule: GeneratedDriverSchedule,
@@ -517,11 +528,12 @@ export function analyzeCoverageHealth(
   const perDate = schedule.dates.map((di) => {
     const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
     const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
-    let shortfall = 0  // hours short BEYOND the ±3 tolerance — what ops actually feels
+    let shortfall = 0  // hours short BEYOND the ±15% per-slot tolerance — what ops actually feels
     let overstaff = 0
     for (let s = 0; s < target.length; s++) {
       const diff = target[s] - (actual[s] ?? 0)
-      if (diff > COVERAGE_GAP_TOLERANCE) shortfall += diff - COVERAGE_GAP_TOLERANCE
+      const tol = coverageTolerance(target[s])
+      if (diff > tol) shortfall += diff - tol
       else if (diff < 0) overstaff += -diff
     }
     return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
@@ -548,15 +560,16 @@ export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
 /**
  * Color-codes how far a slot's actual coverage is from its target:
  *   - 'ok'    exactly at target (also when required = 0 and actual = 0)
- *   - 'mild'  within ±COVERAGE_GAP_TOLERANCE — operationally acceptable (yellow)
- *   - 'short' more than COVERAGE_GAP_TOLERANCE under target (red)
+ *   - 'mild'  within ±15% (per slot) — operationally acceptable (yellow)
+ *   - 'short' more than 15% under target (red)
  *   - 'over'  required = 0 but staffed (unusual — slate)
  */
 export function coverageStatus(actual: number, required: number): CoverageStatus {
   if (required === 0) return actual > 0 ? 'over' : 'ok'
   const diff = required - actual
   if (diff === 0) return 'ok'
-  if (Math.abs(diff) <= COVERAGE_GAP_TOLERANCE) return 'mild'
+  const tol = coverageTolerance(required)
+  if (Math.abs(diff) <= tol) return 'mild'
   return diff > 0 ? 'short' : 'over'
 }
 

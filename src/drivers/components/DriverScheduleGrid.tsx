@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
 import { effectiveCoverage } from '../coverageTemplate'
-import { analyzeCoverageHealth, COVERAGE_GAP_TOLERANCE, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { analyzeCoverageHealth, coverageTolerance, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -392,7 +392,7 @@ export function DriverScheduleGrid() {
               // Use the EFFECTIVE coverage (scale + overrides). The count
               // matches the per-slot red badges in the day grid: any slot
               // short by at least 1 counts as a gap. Severe gaps (more than
-              // COVERAGE_GAP_TOLERANCE short) get an extra emphasis tag so
+              // the per-slot 15% tolerance) get an extra emphasis tag so
               // the user can tell "barely off" from "operationally short".
               const required = effectiveCoverage(dateInfo.dayOfWeek, coverageScale, coverageOverrides)
               let gapSlots = 0
@@ -400,7 +400,7 @@ export function DriverScheduleGrid() {
               for (let i = 0; i < required.length; i++) {
                 const diff = required[i] - (actual[i] ?? 0)
                 if (diff > 0) gapSlots++
-                if (diff > COVERAGE_GAP_TOLERANCE) severeGaps++
+                if (diff > coverageTolerance(required[i])) severeGaps++
               }
 
               return (
@@ -424,8 +424,8 @@ export function DriverScheduleGrid() {
                         )}
                         title={
                           severeGaps > 0
-                            ? `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — ${severeGaps} severely (more than ${COVERAGE_GAP_TOLERANCE} drivers under)`
-                            : `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — all within ±${COVERAGE_GAP_TOLERANCE} ops tolerance`
+                            ? `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — ${severeGaps} severely (more than 15% under)`
+                            : `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — all within ±15% ops tolerance`
                         }
                       >
                         ⚠ {gapSlots} coverage gap{gapSlots === 1 ? '' : 's'}
