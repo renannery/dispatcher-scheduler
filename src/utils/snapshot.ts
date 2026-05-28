@@ -20,6 +20,12 @@ export interface DriverSnapshotData {
   partTimeCap: number
   /** Per-slot coverage multiplier (1.0 = reference). Optional for back-compat. */
   coverageScale?: number
+  /** Per day-of-week override of the 15-slot required-coverage array. */
+  coverageOverrides?: Record<number, number[]>
+  /** Per-shift minimum hours. Optional for back-compat. */
+  minHoursPerDay?: number
+  /** Per-shift maximum hours. Optional for back-compat. */
+  maxHoursPerDay?: number
   timeOff: DriverTimeOff
   absenceReasons: Record<string, Record<string, AbsenceReason>>
   /** Persisted weekend-off rotation cursor. Optional for backwards compat. */

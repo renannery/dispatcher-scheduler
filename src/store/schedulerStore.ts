@@ -52,6 +52,7 @@ interface SchedulerStore {
   removeDispatcher: (id: string) => void
   setDispatcherLevel: (id: string, level: DispatcherLevel) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
+  setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
   advanceWeekendRotation: (weeks: number) => void
   toggleFullDayOff: (dispatcherId: string, date: string) => void
@@ -124,6 +125,15 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
         grid[dayOfWeek][slotIndex] = !grid[dayOfWeek][slotIndex]
         const empty = grid.every((row) => row.every((v) => !v))
         return { ...d, recurringBlocks: empty ? undefined : grid }
+      }),
+    })),
+
+  setRecurringBlocks: (id, blocks) =>
+    set((s) => ({
+      dispatchers: s.dispatchers.map((d) => {
+        if (d.id !== id) return d
+        const empty = blocks.every((row) => row.every((v) => !v))
+        return { ...d, recurringBlocks: empty ? undefined : blocks.map((row) => [...row]) }
       }),
     })),
 

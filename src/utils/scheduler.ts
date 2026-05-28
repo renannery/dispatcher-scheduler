@@ -283,9 +283,23 @@ export function generateSchedule(
 // Coverage & colour helpers
 // ---------------------------------------------------------------------------
 
-export function coverageStatus(actual: number, required: number): 'ok' | 'over' | 'short' {
-  if (actual >= required) return required === 0 ? 'over' : 'ok'
-  return 'short'
+/** Per-slot coverage tolerance band as a fraction of the target (15%). */
+export const COVERAGE_GAP_TOLERANCE_PCT = 0.15
+
+export function coverageTolerance(required: number): number {
+  if (required <= 0) return 0
+  return Math.max(1, Math.round(required * COVERAGE_GAP_TOLERANCE_PCT))
+}
+
+export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
+
+export function coverageStatus(actual: number, required: number): CoverageStatus {
+  if (required === 0) return actual > 0 ? 'over' : 'ok'
+  const diff = required - actual
+  if (diff === 0) return 'ok'
+  const tol = coverageTolerance(required)
+  if (Math.abs(diff) <= tol) return 'mild'
+  return diff > 0 ? 'short' : 'over'
 }
 
 export function hoursStatusColor(hours: number): string {

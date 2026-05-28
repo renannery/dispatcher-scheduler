@@ -38,7 +38,7 @@ const LEVEL_STYLES: Record<DispatcherLevel, { pill: string; active: string }> = 
 // ---------------------------------------------------------------------------
 
 export function DispatcherInput() {
-  const { dispatchers, addDispatcher, removeDispatcher, setDispatcherLevel, toggleRecurringBlock, setStep } =
+  const { dispatchers, addDispatcher, removeDispatcher, setDispatcherLevel, toggleRecurringBlock, setRecurringBlocks, setStep } =
     useSchedulerStore()
 
   const [input, setInput]   = useState('')
@@ -217,6 +217,7 @@ export function DispatcherInput() {
                       slots={SLOTS}
                       accentColor={d.color}
                       onToggle={(dow, si) => toggleRecurringBlock(d.id, dow, si)}
+                      onSetAll={(blocks) => setRecurringBlocks(d.id, blocks)}
                     />
                   )}
                 </li>

@@ -72,7 +72,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                 <div className="text-[9px] text-slate-500">{SLOTS[si].hours}h</div>
               </th>
             ))}
-            <th className="bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">
+            <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">
               Hrs
             </th>
           </tr>
@@ -178,7 +178,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                 })}
 
                 {/* Daily hours */}
-                <td className="px-3 py-1.5 text-right">
+                <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
                   {isOff ? (
                     <span className="text-slate-400">—</span>
                   ) : (
@@ -208,6 +208,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     className={clsx(
                       'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
                       status === 'ok'    && 'bg-emerald-100 text-emerald-700',
+                      status === 'mild'  && 'bg-amber-100 text-amber-700',
                       status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
                       status === 'over'  && 'bg-slate-100 text-slate-400',
                     )}
@@ -219,7 +220,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                 </td>
               )
             })}
-            <td className="px-3 py-1.5 text-right text-[10px] text-slate-500">
+            <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
               {actual.reduce((s, a, i) => s + a * SLOTS[i].hours, 0).toFixed(1)}h
             </td>
           </tr>

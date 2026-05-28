@@ -5,6 +5,7 @@ import {
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   MAX_HOURS_PER_DAY,
+  effectiveCoverage,
 } from './coverageTemplate'
 import type {
   Driver,
@@ -14,7 +15,9 @@ import type {
   GeneratedDriverSchedule,
 } from './types'
 
-export const HEAVY_DAYS = new Set([5, 6, 0])
+// Days the weekend-off rotation gives a driver off — narrowed from
+// Fri+Sat+Sun (3-day perk) to just Sat+Sun per ops policy.
+export const HEAVY_DAYS = new Set([6, 0])
 
 const NIGHT_SLOT_THRESHOLD = 13   // 9-10 PM or later = closing
 const MORNING_SLOT_THRESHOLD = 2  // starts ≤ 10 AM = morning
@@ -81,6 +84,19 @@ interface ScheduleParams {
    * baseline so the scheduler pulls in proportionally more bodies per slot.
    */
   coverageScale?: number
+  /**
+   * Per day-of-week override of the 15-slot required-coverage array.
+   * When present for a given day, replaces the template baseline before
+   * `coverageScale` is applied.
+   */
+  coverageOverrides?: Record<number, number[]>
+  /**
+   * Minimum / maximum hours per shift, applied as a hard filter on the
+   * pattern pool. Defaults: 4h min, 9h max. Editable on the Period step
+   * so ops can enforce policies like "no 4h shifts" or "allow 10h overtime".
+   */
+  minHoursPerDay?: number
+  maxHoursPerDay?: number
 }
 
 /**
@@ -124,6 +140,9 @@ export function generateDriverSchedule({
   partTimeCap,
   seed = 0,
   coverageScale = 1,
+  coverageOverrides = {},
+  minHoursPerDay = 4,
+  maxHoursPerDay = MAX_HOURS_PER_DAY,
 }: ScheduleParams): GeneratedDriverSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -142,6 +161,72 @@ export function generateDriverSchedule({
 
   const capOf = (d: Driver) => (d.employmentType === 'full' ? fullTimeCap : partTimeCap)
 
+  // Per-driver per-week day count. Used to enforce the "1 day off" rule —
+  // a driver who's already worked 6 days this work-week is skipped as a
+  // candidate so they take the 7th day off. Cap is per work-week (Thu→Wed).
+  const daysWorked: Record<string, Record<string, number>> = {}
+  drivers.forEach((d) => { daysWorked[d.id] = {} })
+  const MAX_DAYS_PER_WEEK = 6
+
+  // Pre-assigned off day per driver per work-week. Without this, the greedy
+  // pass burns drivers' caps on heavy days (Thu-Sat) and the 6-day rule
+  // forces Wed to be the off day for almost everyone → Wed near-empty.
+  //
+  // Off days are weighted by demand: slow days get MORE drivers taking that
+  // day off (so they're staffed lighter, matching demand), heavy days get
+  // FEWER (so they're staffed heavier). The weighting reads from the
+  // effective coverage targets — if you edit a day's targets in the grid,
+  // off-day distribution adjusts automatically.
+  const WORK_WEEK_DOWS = [4, 5, 6, 0, 1, 2, 3]  // Thu, Fri, Sat, Sun, Mon, Tue, Wed
+  const driverIndex = new Map(drivers.map((d, i) => [d.id, i]))
+  const weekIndexByLabel = new Map<string, number>()
+  allDates.forEach((date) => {
+    const lbl = weekLabel(date)
+    if (!weekIndexByLabel.has(lbl)) weekIndexByLabel.set(lbl, weekIndexByLabel.size)
+  })
+  // Build a weighted off-day pool. Each DOW appears `1 + max(0, avg - this_day)/10`
+  // times. Days with above-average demand get base weight 1; days below average
+  // get extra entries proportional to how slow they are.
+  const dailyDemands = WORK_WEEK_DOWS.map((dow) =>
+    effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0),
+  )
+  const avgDailyDemand = dailyDemands.reduce((a, b) => a + b, 0) / dailyDemands.length
+  const offDayPool: number[] = []
+  WORK_WEEK_DOWS.forEach((dow, i) => {
+    const extra = Math.max(0, Math.round((avgDailyDemand - dailyDemands[i]) / 10))
+    for (let j = 0; j < 1 + extra; j++) offDayPool.push(dow)
+  })
+  const designatedOffDow = (driverId: string, wLabel: string): number => {
+    const di = driverIndex.get(driverId) ?? 0
+    const wi = weekIndexByLabel.get(wLabel) ?? 0
+    return offDayPool[(di + wi + seed) % offDayPool.length]
+  }
+  const isWeekendOffDriverThisWeek = (driverId: string, wLabel: string): boolean => {
+    // Mirrors weekendOffDriverId() but operates on weekLabel for cross-day reuse.
+    const fullTimers = drivers.filter((d) => d.employmentType === 'full')
+    if (fullTimers.length === 0) return false
+    const wi = weekIndexByLabel.get(wLabel) ?? 0
+    return fullTimers[(wi + seed) % fullTimers.length].id === driverId
+  }
+
+  // Hard over-cap: a slot is never staffed beyond its tolerance band
+  // (target + coverageTolerance(target)). The band is 15% per slot, so
+  // small targets get tight ceilings (target 10 → max 12) and large
+  // targets get looser ones (target 56 → max 64).
+
+  // Weekend-off rotation gives one FT driver Fri+Sat+Sun off (4 work days
+  // instead of 6). That's a 2-day-off "perk" on top of the normal 1-day-off
+  // rule, and it only makes sense when the roster has spare capacity. If
+  // demand exceeds supply, skip the perk so every driver works their normal
+  // 6 days — otherwise we starve the heavy days even more.
+  const totalSupply = drivers.reduce((s, d) => s + capOf(d), 0)
+  const weeklyDemand = WORK_WEEK_DOWS.reduce(
+    (s, dow) => s + effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0),
+    0,
+  )
+  // Need at least one FT-cap of headroom to "afford" giving someone the weekend.
+  const canAffordWeekendOff = totalSupply >= weeklyDemand + fullTimeCap
+
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
   // Regenerate appears to do nothing.
@@ -153,7 +238,7 @@ export function generateDriverSchedule({
     const wLabel = weekLabel(date)
     const dayLabel = format(date, 'EEE, MMMM do')
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
-    const required = template.requiredCoverage.map((v) => Math.round(v * coverageScale))
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
 
     // Today's share of the remaining work-week's total demand. A driver
     // with `remaining` hours left in the week should spend roughly
@@ -166,9 +251,19 @@ export function generateDriverSchedule({
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
 
-    const weekendOffId = HEAVY_DAYS.has(dow)
+    // Only run weekend-off rotation when the roster has spare capacity.
+    // On tight rosters, giving one driver Fri+Sat+Sun off would starve the
+    // heavy days even more — so let everyone work their normal 6 days.
+    const weekendOffId = (canAffordWeekendOff && HEAVY_DAYS.has(dow))
       ? weekendOffDriverId(date, start, drivers, seed)
       : null
+
+    // Relax `minHoursPerDay` on the LAST day of the work-week (Wed) so
+    // drivers with leftover weekly cap (typically 4h) can still take a
+    // fill-in shift. Without this, setting min=5 silently starves Wed.
+    // The strict min still applies Thu-Tue.
+    const isLastWorkWeekDay = remainingDows.length === 1
+    const effectiveMin = isLastWorkWeekDay ? Math.min(minHoursPerDay, 4) : minHoursPerDay
 
     // Split into off / available
     const available: Driver[] = []
@@ -205,7 +300,33 @@ export function generateDriverSchedule({
         shortfall.push(need)
         totalShort += need
       }
-      if (totalShort === 0) break
+      // (Loop also exits below when no candidate can be placed with score > 0.
+      // We no longer break on totalShort === 0 — instead, drivers continue to
+      // fill SPARE capacity slots within the +3 tolerance band, so a roster
+      // with scaled-down demand still uses up its weekly cap.)
+
+      // Per-slot priority boost captures BOTH kinds of starvation:
+      //   absolute (× 5):  high-demand slot that's short by many bodies
+      //   relative (× 50): low-demand slot that's mostly empty
+      // The "starved" multiplier kicks in at ratio >= 0.5 (was > 0.5) so
+      // a 9 AM slot at exactly 5/10 short still triggers it — without
+      // that, single half-empty slots lose to clustered PM peaks (e.g.
+      // 6 PM + 7 PM each at 3/42 short) because two adjacent medium-
+      // priority slots beat one high-priority slot. Multipliers:
+      //   ratio ≥ 0.8 → ×5 (severely empty)
+      //   ratio ≥ 0.5 → ×3 (half empty)
+      const slotPriority: number[] = []
+      for (let s = 0; s < required.length; s++) {
+        if (shortfall[s] > 0 && required[s] > 0) {
+          const ratio = shortfall[s] / required[s]
+          let priority = Math.max(shortfall[s] * 5, ratio * 50)
+          if (ratio >= 0.8) priority *= 5
+          else if (ratio >= 0.5) priority *= 3
+          slotPriority[s] = priority
+        } else {
+          slotPriority[s] = 0
+        }
+      }
 
       // Eligible drivers: not yet assigned today, under cap, night-rest OK for morning shifts.
       // Rotate the base order by `dayIndex` so different drivers get "first pick"
@@ -213,7 +334,19 @@ export function generateDriverSchedule({
       // alphabetically-first driver from systematically losing hours.
       const offset = drivers.length > 0 ? dayIndex % drivers.length : 0
       const rotated = [...drivers.slice(offset), ...drivers.slice(0, offset)]
-      const candidates = rotated.filter((d) => available.includes(d) && !assigned.has(d.id))
+      const candidates = rotated.filter((d) => {
+        if (!available.includes(d) || assigned.has(d.id)) return false
+        if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
+        // Skip drivers whose designated off day is today — rotates off days
+        // across the week so Wed isn't everyone's default off day. EXCEPT
+        // when the driver is also this week's weekend-off driver (they're
+        // already getting Fri+Sat+Sun off; an additional designated off day
+        // would leave them with only 3 work days).
+        if (!canAffordWeekendOff || !isWeekendOffDriverThisWeek(d.id, wLabel)) {
+          if (designatedOffDow(d.id, wLabel) === dow) return false
+        }
+        return true
+      })
       if (candidates.length === 0) break
 
       // Sort by ascending weekly hours (load-balance), full-timers first when tied.
@@ -231,21 +364,21 @@ export function generateDriverSchedule({
       // For each candidate (in priority order), find the pattern that
       // (a) fits their remaining cap, (b) respects night-rest, (c) doesn't
       // overlap a blocked slot, (d) covers the most current shortfalls,
-      // (e) stays within today's per-driver demand-weighted share.
+      // (e) doesn't push any slot above target+3 (hard ops tolerance).
       let placed = false
       for (const d of candidates) {
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
-        if (remaining < 4) continue  // not enough room for the shortest 4h pattern
+        if (remaining < effectiveMin) continue  // not enough room for shortest allowed pattern
 
-        // Per-day soft cap = today's demand-share of this driver's remaining
-        // weekly capacity, with a 4h floor (the shortest pattern). Strict
-        // share with no slack keeps enough budget reserved for the back end
-        // of the work-week (Tue/Wed), which otherwise get starved.
-        const dailyCap = Math.min(
-          remaining,
-          MAX_HOURS_PER_DAY,
-          Math.max(4, Math.ceil(remaining * todayDemandShare)),
-        )
+        // Per-day cap = the user-set maxHoursPerDay (default 9). We used
+        // to clamp at `perDayTarget` (cap/6 ≈ 8 for cap=45) to spread
+        // hours across 6 days, but that made 8h the default for every
+        // driver-day. Now we allow up to `maxHoursPerDay` and rely on
+        // the soft length penalty below to keep most shifts shorter,
+        // letting longer ones happen only when they cover priority/
+        // shortfall slots that outweigh the penalty.
+        const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
+        const dailyCap = Math.min(remaining, maxHoursPerDay)
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
@@ -254,15 +387,64 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
+          if (h < effectiveMin || h > maxHoursPerDay) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
-          // Score: sum of shortfall slots this pattern fills
+          // Hard over-coverage cap: refuse any pattern that would push a
+          // slot beyond target + coverageTolerance(target). Matches ops
+          // policy "we can be flex ±15% per slot".
+          let exceedsLimit = false
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] && actualCov[s] + 1 > required[s] + coverageTolerance(required[s])) {
+              exceedsLimit = true
+              break
+            }
+          }
+          if (exceedsLimit) continue
+
+          // Score = base contribution + most-starved-slot priority boost.
+          //
+          // Base: shortfall × 10 (absolute demand) + 50 × shortfall/target
+          // (relative urgency). Pure absolute scoring picks "10 AM-4 PM"
+          // over "9 AM-3 PM" because mid-day demand outweighs morning, so
+          // a 1000× priority is added to any pattern covering the slot
+          // with the highest %-shortfall — this guarantees starved low-
+          // demand slots like Mon 9 AM (was 3/10) get patterns assigned.
+          // Spare-capacity slots (shortfall=0) still get +1 so drivers
+          // keep filling their cap after target is met.
           let score = 0
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && shortfall[s] > 0) score += shortfall[s]
+            if (!p[s]) continue
+            if (shortfall[s] > 0) {
+              const t = required[s] || shortfall[s]
+              score += shortfall[s] * 10 + (shortfall[s] / t) * 50
+            } else {
+              score += 1
+            }
+          }
+          // Priority boost = sum of (slot priority × 20) for slots the
+          // pattern covers. Multiple critical slots stack, so a pattern
+          // hitting Sat 6 PM AND 7 PM scores much higher than one hitting
+          // only one of them.
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] && slotPriority[s] > 0) score += slotPriority[s] * 20
+          }
+          // Soft length preference: pay a *quadratic* penalty for each
+          // hour above `perDayTarget - 1` (7h for the default cap=45).
+          // Quadratic so 8h is mildly discouraged (-1500) but 9h is
+          // strongly discouraged (-6000) — 9h shifts then only happen
+          // when the extra hour covers a critically short slot. Goal:
+          // most drivers settle around 6-7h, a healthy minority at 8h,
+          // and only a few at the daily max. The user feedback was
+          // "we're fine with a few working the max hours, but we don't
+          // want every full-timer doing it."
+          const preferredLength = Math.max(effectiveMin, perDayTarget - 1)
+          if (h > preferredLength) {
+            const over = h - preferredLength
+            score -= over * over * 1500
           }
           if (score > bestScore) {
             bestScore = score
@@ -273,6 +455,7 @@ export function generateDriverSchedule({
         if (bestPattern && bestScore > 0) {
           const h = slotHours(bestPattern)
           weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+          daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
           lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
           scheduleMap[d.id].push({
             date: dateStr, dayLabel, dayOfWeek: dow,
@@ -322,11 +505,89 @@ export function generateDriverSchedule({
   }
 }
 
+// ─── Hiring recommendation ───────────────────────────────────────────────────
+
+export interface CoverageHealth {
+  /** Total weekly under-coverage in driver-hours. 0 = fully met. */
+  weeklyShortfallHours: number
+  /** Total weekly over-coverage in driver-hours. */
+  weeklyOverstaffHours: number
+  /** Suggested number of additional full-time drivers to close the gap. */
+  recommendedAdditionalDrivers: number
+  /** Per-date breakdown of shortfall, sorted descending. */
+  worstDays: { date: string; dayLabel: string; shortfall: number }[]
+}
+
+/**
+ * Analyzes a generated schedule's coverage vs effective per-day targets and
+ * returns a hiring recommendation. Averages over all weeks the schedule spans
+ * so multi-week imports don't artificially inflate the gap.
+ */
+/**
+ * Per-slot coverage tolerance band (15% of the target, min 1). A slot is
+ * inside its tolerance when |actual − required| ≤ coverageTolerance(target).
+ * Small slots get tight bands (target 10 → ±2), heavy slots get loose ones
+ * (target 56 → ±8) — matches ops policy "we can be flex ±15%".
+ */
+export const COVERAGE_GAP_TOLERANCE_PCT = 0.15
+
+/** Integer tolerance for a given slot target. */
+export function coverageTolerance(required: number): number {
+  if (required <= 0) return 0
+  return Math.max(1, Math.round(required * COVERAGE_GAP_TOLERANCE_PCT))
+}
+
+export function analyzeCoverageHealth(
+  schedule: GeneratedDriverSchedule,
+  coverageScale: number,
+  coverageOverrides: Record<number, number[]>,
+): CoverageHealth {
+  const perDate = schedule.dates.map((di) => {
+    const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
+    const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
+    let shortfall = 0  // hours short BEYOND the ±15% per-slot tolerance — what ops actually feels
+    let overstaff = 0
+    for (let s = 0; s < target.length; s++) {
+      const diff = target[s] - (actual[s] ?? 0)
+      const tol = coverageTolerance(target[s])
+      if (diff > tol) shortfall += diff - tol
+      else if (diff < 0) overstaff += -diff
+    }
+    return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
+  })
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size || 1
+  const weeklyShortfallHours = perDate.reduce((s, d) => s + d.shortfall, 0) / weekCount
+  const weeklyOverstaffHours = perDate.reduce((s, d) => s + d.overstaff, 0) / weekCount
+  // Assume a new FT driver realistically contributes ~35h/week (cap minus some
+  // slack for night-rest constraints, weekend rotation, and time-off).
+  const FT_USABLE_HOURS = 35
+  const recommendedAdditionalDrivers = Math.ceil(weeklyShortfallHours / FT_USABLE_HOURS)
+  const worstDays = [...perDate]
+    .filter((d) => d.shortfall > 0)
+    .sort((a, b) => b.shortfall - a.shortfall)
+    .slice(0, 3)
+    .map(({ date, dayLabel, shortfall }) => ({ date, dayLabel, shortfall }))
+  return { weeklyShortfallHours, weeklyOverstaffHours, recommendedAdditionalDrivers, worstDays }
+}
+
 // ─── Coverage + hour color helpers (UI) ─────────────────────────────────────
 
-export function coverageStatus(actual: number, required: number): 'ok' | 'over' | 'short' {
-  if (actual >= required) return required === 0 ? 'over' : 'ok'
-  return 'short'
+export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
+
+/**
+ * Color-codes how far a slot's actual coverage is from its target:
+ *   - 'ok'    exactly at target (also when required = 0 and actual = 0)
+ *   - 'mild'  within ±15% (per slot) — operationally acceptable (yellow)
+ *   - 'short' more than 15% under target (red)
+ *   - 'over'  required = 0 but staffed (unusual — slate)
+ */
+export function coverageStatus(actual: number, required: number): CoverageStatus {
+  if (required === 0) return actual > 0 ? 'over' : 'ok'
+  const diff = required - actual
+  if (diff === 0) return 'ok'
+  const tol = coverageTolerance(required)
+  if (Math.abs(diff) <= tol) return 'mild'
+  return diff > 0 ? 'short' : 'over'
 }
 
 export function hoursStatusColor(hours: number, cap: number): string {

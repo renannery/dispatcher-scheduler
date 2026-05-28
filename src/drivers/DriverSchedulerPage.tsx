@@ -127,7 +127,14 @@ export function DriverSchedulerPage({ onChangeTeam }: Props) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-6 py-10">
+      <main
+        className={clsx(
+          'mx-auto px-6 py-10',
+          // On the schedule step give the day-grid the full viewport on
+          // large monitors. Names + Period stay narrow for readable forms.
+          step === 'schedule' ? 'max-w-[1600px]' : 'max-w-3xl',
+        )}
+      >
         <div className="mb-10">
           <StepBar current={step} />
         </div>
@@ -137,7 +144,7 @@ export function DriverSchedulerPage({ onChangeTeam }: Props) {
           <p className="mt-1.5 text-slate-500">{STEP_SUBTITLES[step]}</p>
         </div>
 
-        <div className={step === 'schedule' ? 'max-w-none' : ''}>
+        <div>
           {step === 'names' && <DriverInput />}
           {step === 'period' && <DriverPeriodPicker />}
           {step === 'schedule' && schedule && <DriverScheduleGrid />}

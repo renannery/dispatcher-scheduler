@@ -5,7 +5,7 @@ import type { AbsenceReason } from '@/utils/absence'
 import { datesInRange } from '@/utils/absence'
 import type { DriverSnapshotData } from '@/utils/snapshot'
 
-import { DEFAULT_FULL_TIME_CAP, DEFAULT_PART_TIME_CAP, DRIVER_SLOTS } from './coverageTemplate'
+import { DEFAULT_FULL_TIME_CAP, DEFAULT_PART_TIME_CAP, DRIVER_DAY_TEMPLATES, DRIVER_SLOTS } from './coverageTemplate'
 import type { Driver, DriverStep, DriverTimeOff, EmploymentType, GeneratedDriverSchedule } from './types'
 
 const DRIVER_COLORS = [
@@ -50,6 +50,18 @@ interface DriverSchedulerStore {
    * has grown; <1.0 to scale down for smaller teams.
    */
   coverageScale: number
+  /**
+   * Per day-of-week (0=Sun…6=Sat) override of the required-coverage array
+   * (15 slots each). When present, the entry replaces the day-template
+   * baseline before `coverageScale` is applied. Absent days fall through
+   * to the template defaults. Lets ops fine-tune individual slots without
+   * a code change.
+   */
+  coverageOverrides: Record<number, number[]>
+  /** Minimum hours per shift. Defaults to 4. Patterns shorter than this are filtered out. */
+  minHoursPerDay: number
+  /** Maximum hours per shift. Defaults to 9. Patterns longer than this are filtered out. */
+  maxHoursPerDay: number
   timeOff: DriverTimeOff
   /** Per driver, per date, the user-assigned reason for the absence. Display-only. */
   absenceReasons: AbsenceReasonMap
@@ -67,10 +79,15 @@ interface DriverSchedulerStore {
   setEmploymentType: (id: string, type: EmploymentType) => void
   setShopperStatus: (id: string, isShopper: boolean) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
+  setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
   setFullTimeCap: (cap: number) => void
   setPartTimeCap: (cap: number) => void
   setCoverageScale: (scale: number) => void
+  setCoverageOverride: (dayOfWeek: number, slotIndex: number, value: number) => void
+  resetCoverageOverrides: () => void
+  setMinHoursPerDay: (hours: number) => void
+  setMaxHoursPerDay: (hours: number) => void
   /** Bump the persisted rotation cursor by N weeks (called after Generate). */
   advanceWeekendRotation: (weeks: number) => void
   /** Toggle full-day off for this driver on this date. */
@@ -121,6 +138,9 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   fullTimeCap: DEFAULT_FULL_TIME_CAP,
   partTimeCap: DEFAULT_PART_TIME_CAP,
   coverageScale: 1,
+  coverageOverrides: {},
+  minHoursPerDay: 4,
+  maxHoursPerDay: 9,
   timeOff: {},
   absenceReasons: {},
   weekendRotationOffset: 0,
@@ -184,6 +204,15 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       }),
     })),
 
+  setRecurringBlocks: (id, blocks) =>
+    set((s) => ({
+      drivers: s.drivers.map((d) => {
+        if (d.id !== id) return d
+        const empty = blocks.every((row) => row.every((v) => !v))
+        return { ...d, recurringBlocks: empty ? undefined : blocks.map((row) => [...row]) }
+      }),
+    })),
+
   removeDriver: (id) =>
     set((s) => ({
       drivers: s.drivers.filter((d) => d.id !== id),
@@ -195,6 +224,19 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   setFullTimeCap: (fullTimeCap) => set({ fullTimeCap }),
   setPartTimeCap: (partTimeCap) => set({ partTimeCap }),
   setCoverageScale: (coverageScale) => set({ coverageScale: Math.max(0.5, Math.min(2, coverageScale)) }),
+
+  setCoverageOverride: (dayOfWeek, slotIndex, value) =>
+    set((s) => {
+      const current = s.coverageOverrides[dayOfWeek] ?? [...DRIVER_DAY_TEMPLATES[dayOfWeek].requiredCoverage]
+      const next = [...current]
+      next[slotIndex] = Math.max(0, Math.round(value))
+      return { coverageOverrides: { ...s.coverageOverrides, [dayOfWeek]: next } }
+    }),
+
+  resetCoverageOverrides: () => set({ coverageOverrides: {} }),
+
+  setMinHoursPerDay: (hours) => set({ minHoursPerDay: Math.max(1, Math.min(12, Math.round(hours))) }),
+  setMaxHoursPerDay: (hours) => set({ maxHoursPerDay: Math.max(1, Math.min(12, Math.round(hours))) }),
 
   advanceWeekendRotation: (weeks) =>
     set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
@@ -308,6 +350,9 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       fullTimeCap: data.fullTimeCap ?? DEFAULT_FULL_TIME_CAP,
       partTimeCap: data.partTimeCap ?? DEFAULT_PART_TIME_CAP,
       coverageScale: data.coverageScale ?? 1,
+      coverageOverrides: data.coverageOverrides ?? {},
+      minHoursPerDay: data.minHoursPerDay ?? 4,
+      maxHoursPerDay: data.maxHoursPerDay ?? 9,
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
@@ -323,6 +368,9 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
         fullTimeCap: data.fullTimeCap ?? s.fullTimeCap,
         partTimeCap: data.partTimeCap ?? s.partTimeCap,
         coverageScale: data.coverageScale ?? s.coverageScale,
+        coverageOverrides: data.coverageOverrides ?? s.coverageOverrides,
+        minHoursPerDay: data.minHoursPerDay ?? s.minHoursPerDay,
+        maxHoursPerDay: data.maxHoursPerDay ?? s.maxHoursPerDay,
         weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
         startDate: nextStart,
         endDate: nextEnd,
@@ -340,6 +388,9 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       fullTimeCap: DEFAULT_FULL_TIME_CAP,
       partTimeCap: DEFAULT_PART_TIME_CAP,
       coverageScale: 1,
+      coverageOverrides: {},
+      minHoursPerDay: 4,
+      maxHoursPerDay: 9,
       timeOff: {},
       absenceReasons: {},
       schedule: null,
