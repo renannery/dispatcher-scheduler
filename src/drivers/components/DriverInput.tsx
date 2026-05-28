@@ -1,6 +1,6 @@
 import clsx from 'clsx'
-import { CalendarClock, ShoppingBasket, Upload, UserPlus, X } from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
+import { CalendarClock, Search, ShoppingBasket, Upload, UserPlus, X } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
 import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
@@ -158,6 +158,13 @@ export function DriverInput() {
   const partCount = drivers.filter((d) => d.employmentType === 'part').length
   const canContinue = drivers.length >= 1
 
+  const [search, setSearch] = useState('')
+  const visibleDrivers = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return drivers
+    return drivers.filter((d) => d.name.toLowerCase().includes(q))
+  }, [drivers, search])
+
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
       <div className="flex flex-col gap-3">
@@ -245,7 +252,9 @@ export function DriverInput() {
         <div>
           <div className="mb-3 flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-700">
-              {drivers.length} driver{drivers.length !== 1 ? 's' : ''}
+              {search.trim()
+                ? `${visibleDrivers.length} of ${drivers.length} driver${drivers.length !== 1 ? 's' : ''}`
+                : `${drivers.length} driver${drivers.length !== 1 ? 's' : ''}`}
             </span>
             {partCount > 0 && (
               <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
@@ -254,8 +263,38 @@ export function DriverInput() {
             )}
           </div>
 
+          {/* Search — appears once the list grows large enough to scroll */}
+          {drivers.length >= 5 && (
+            <div className="relative mb-3">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={`Search ${drivers.length} driver${drivers.length === 1 ? '' : 's'}…`}
+                className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-9 text-sm text-slate-800 placeholder-slate-400 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Clear search"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {search.trim() && visibleDrivers.length === 0 && (
+            <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs text-slate-400">
+              No drivers match &quot;{search}&quot;.
+            </p>
+          )}
+
           <ul className="flex flex-col gap-2">
-            {drivers.map((d) => {
+            {visibleDrivers.map((d) => {
               const isOpen = openConstraints.has(d.id)
               const totalBlocks = (d.recurringBlocks ?? []).reduce(
                 (s, row) => s + row.filter(Boolean).length,
