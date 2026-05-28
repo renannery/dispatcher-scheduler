@@ -1,43 +1,28 @@
 import clsx from 'clsx'
-import { Calendar, CheckCircle2, Users } from 'lucide-react'
+import { Calendar, CheckCircle2, Truck, Users } from 'lucide-react'
 
-import { DispatcherInput } from '@/components/DispatcherInput'
-import { PeriodPicker } from '@/components/PeriodPicker'
-import { ScheduleGrid } from '@/components/ScheduleGrid'
-import { useSchedulerStore } from '@/store/schedulerStore'
-import type { Step } from '@/types/schedule'
+import type { DriverStep } from './types'
+import { useDriverStore } from './store'
+import { DriverInput } from './components/DriverInput'
+import { DriverPeriodPicker } from './components/DriverPeriodPicker'
+import { DriverScheduleGrid } from './components/DriverScheduleGrid'
 
 interface StepMeta {
-  id: Step
+  id: DriverStep
   label: string
   description: string
   icon: React.ReactNode
 }
 
 const STEPS: StepMeta[] = [
-  {
-    id: 'names',
-    label: 'Dispatchers',
-    description: 'Who is on the team?',
-    icon: <Users className="h-5 w-5" />,
-  },
-  {
-    id: 'period',
-    label: 'Period',
-    description: 'When does the schedule run?',
-    icon: <Calendar className="h-5 w-5" />,
-  },
-  {
-    id: 'schedule',
-    label: 'Schedule',
-    description: 'Review & download',
-    icon: <CheckCircle2 className="h-5 w-5" />,
-  },
+  { id: 'names',    label: 'Drivers',  description: 'Who is on the fleet?',  icon: <Users className="h-5 w-5" /> },
+  { id: 'period',   label: 'Period',   description: 'When + caps',           icon: <Calendar className="h-5 w-5" /> },
+  { id: 'schedule', label: 'Schedule', description: 'Review & download',     icon: <CheckCircle2 className="h-5 w-5" /> },
 ]
 
-const STEP_ORDER: Step[] = ['names', 'period', 'schedule']
+const STEP_ORDER: DriverStep[] = ['names', 'period', 'schedule']
 
-function StepBar({ current }: { current: Step }) {
+function StepBar({ current }: { current: DriverStep }) {
   const currentIdx = STEP_ORDER.indexOf(current)
   return (
     <nav className="flex items-start gap-0">
@@ -49,14 +34,12 @@ function StepBar({ current }: { current: Step }) {
           <div key={step.id} className="flex flex-1 items-start">
             <div className="flex flex-col items-center gap-1.5 flex-1">
               <div className="flex items-center w-full">
-                {/* Left connector */}
                 <div
                   className={clsx(
                     'h-0.5 flex-1 transition-colors',
                     idx === 0 ? 'invisible' : done || active ? 'bg-blue-500' : 'bg-slate-200',
                   )}
                 />
-                {/* Circle */}
                 <div
                   className={clsx(
                     'flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 transition-all',
@@ -67,7 +50,6 @@ function StepBar({ current }: { current: Step }) {
                 >
                   {step.icon}
                 </div>
-                {/* Right connector */}
                 <div
                   className={clsx(
                     'h-0.5 flex-1 transition-colors',
@@ -94,37 +76,36 @@ function StepBar({ current }: { current: Step }) {
   )
 }
 
-const STEP_TITLES: Record<Step, string> = {
-  names: 'Who are your dispatchers?',
-  period: 'When is this schedule for?',
-  schedule: 'Your generated schedule',
+const STEP_TITLES: Record<DriverStep, string> = {
+  names:    'Who are your drivers?',
+  period:   'When is this schedule for?',
+  schedule: 'Your generated driver schedule',
 }
 
-const STEP_SUBTITLES: Record<Step, string> = {
-  names: 'Add each dispatcher\'s name. You can paste a comma-separated list to add multiple at once.',
-  period: 'Choose the date range and shift configuration. The system will respect a 40-hour weekly maximum.',
-  schedule: 'Review the proposed schedule. Expand any day to see the slot-level grid, then download your XLS.',
+const STEP_SUBTITLES: Record<DriverStep, string> = {
+  names:    'Add each driver. Mark part-timers — they\'re capped at 30h/week. Paste a comma-separated list to bulk-add.',
+  period:   'Pick the date range and the full-time weekly hour cap. The system enforces a 9h/day max for everyone.',
+  schedule: 'Review the proposed schedule. Expand any day to see the slot-level grid — click cells to add or remove hours. Then download your XLS.',
 }
 
 interface Props {
   onChangeTeam: () => void
 }
 
-export function SchedulerPage({ onChangeTeam }: Props) {
-  const { step, reset, dispatchers, schedule } = useSchedulerStore()
+export function DriverSchedulerPage({ onChangeTeam }: Props) {
+  const { step, reset, drivers, schedule } = useDriverStore()
 
   return (
     <div className="min-h-screen bg-slate-100">
-      {/* Header */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 shadow-sm">
-              <Calendar className="h-5 w-5 text-white" />
+              <Truck className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">Dispatcher Scheduler</h1>
-              <p className="text-xs text-slate-500">Weekly schedule generator</p>
+              <h1 className="text-base font-bold text-slate-900 leading-tight">Driver Scheduler</h1>
+              <p className="text-xs text-slate-500">Weekly fleet schedule generator</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -134,7 +115,7 @@ export function SchedulerPage({ onChangeTeam }: Props) {
             >
               Switch team
             </button>
-            {(step !== 'names' || dispatchers.length > 0) && (
+            {(step !== 'names' || drivers.length > 0) && (
               <button
                 onClick={reset}
                 className="text-xs text-slate-400 underline transition hover:text-red-500"
@@ -147,22 +128,19 @@ export function SchedulerPage({ onChangeTeam }: Props) {
       </header>
 
       <main className="mx-auto max-w-3xl px-6 py-10">
-        {/* Step bar */}
         <div className="mb-10">
           <StepBar current={step} />
         </div>
 
-        {/* Step heading */}
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-slate-900">{STEP_TITLES[step]}</h2>
           <p className="mt-1.5 text-slate-500">{STEP_SUBTITLES[step]}</p>
         </div>
 
-        {/* Step content — expanded width for schedule view */}
         <div className={step === 'schedule' ? 'max-w-none' : ''}>
-          {step === 'names' && <DispatcherInput />}
-          {step === 'period' && <PeriodPicker />}
-          {step === 'schedule' && schedule && <ScheduleGrid />}
+          {step === 'names' && <DriverInput />}
+          {step === 'period' && <DriverPeriodPicker />}
+          {step === 'schedule' && schedule && <DriverScheduleGrid />}
         </div>
       </main>
     </div>

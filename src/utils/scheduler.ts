@@ -5,6 +5,7 @@ import type {
   Dispatcher,
   DispatcherDayEntry,
   DispatcherSchedule,
+  DispatcherTimeOff,
   GeneratedSchedule,
 } from '@/types/schedule'
 
@@ -27,9 +28,9 @@ export function weekendOffDispatcherId(
   date: Date,
   scheduleStart: Date,
   dispatchers: Dispatcher[],
+  seed = 0,
 ): string | null {
   if (dispatchers.length < 2) return null
-  // Find the Thursday that owns each date's work week
   const toThursday = (d: Date) => {
     const dow = d.getDay()
     return addDays(d, -((dow + 3) % 7))
@@ -37,9 +38,9 @@ export function weekendOffDispatcherId(
   const startThu = toThursday(scheduleStart)
   const dateThu  = toThursday(date)
   const weeksSinceStart = Math.round(differenceInDays(dateThu, startThu) / 7)
-  const twoWeekBlock = Math.floor(weeksSinceStart / 2)
-  const idx = twoWeekBlock % dispatchers.length
-  return dispatchers[idx].id
+  // 1-week rotation so a different dispatcher cycles in each week.
+  // Seed lets Regenerate produce different starting points.
+  return dispatchers[(weeksSinceStart + seed) % dispatchers.length].id
 }
 
 function slotHours(slots: boolean[]): number {
@@ -80,11 +81,29 @@ const MORNING_SLOT_THRESHOLD = 2 // starts ≤ 10 AM
 // Main generator
 // ---------------------------------------------------------------------------
 
+function blockedBitmap(
+  timeOff: DispatcherTimeOff,
+  dispatcher: Dispatcher,
+  date: string,
+  dayOfWeek: number,
+): boolean[] | null {
+  const dateBm = timeOff[dispatcher.id]?.[date]
+  const recurBm = dispatcher.recurringBlocks?.[dayOfWeek]
+  const hasDate = !!dateBm && dateBm.length > 0
+  const hasRecur = !!recurBm && recurBm.some(Boolean)
+  if (!hasDate && !hasRecur) return null
+  const n = Math.max(dateBm?.length ?? 0, recurBm?.length ?? 0)
+  const out = new Array(n).fill(false)
+  for (let i = 0; i < n; i++) out[i] = !!(dateBm?.[i] || recurBm?.[i])
+  return out
+}
+
 export function generateSchedule(
   dispatchers: Dispatcher[],
   startDate: string,
   endDate: string,
-  timeOffDates: Record<string, string[]>,
+  timeOff: DispatcherTimeOff,
+  seed = 0,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -105,14 +124,14 @@ export function generateSchedule(
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
 
-  let dayIndex = 0
+  let dayIndex = seed
 
   for (const date of allDates) {
     const dateStr = format(date, 'yyyy-MM-dd')
     const dow = date.getDay()
     const template = DAY_TEMPLATES[dow]
     const wLabel = weekLabel(date)
-    const dayLabel = format(date, 'EEE, MMM d')
+    const dayLabel = format(date, 'EEE, MMMM do')
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
 
     // Pre-compute pattern metadata (once per day)
@@ -144,7 +163,7 @@ export function generateSchedule(
 
     // Which dispatcher (if any) gets Fri/Sat/Sun off this 2-week block?
     const weekendOffId = HEAVY_DAYS.has(dow)
-      ? weekendOffDispatcherId(date, start, dispatchers)
+      ? weekendOffDispatcherId(date, start, dispatchers, seed)
       : null
 
     // Split into off-today, 40h-capped, and available pools
@@ -153,9 +172,10 @@ export function generateSchedule(
     const workingPool: typeof dispatchers = []
 
     for (const d of rotated) {
-      const hasTimeOff    = new Set(timeOffDates[d.id] ?? []).has(dateStr)
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
       const onWeekendBreak = d.id === weekendOffId
-      if (hasTimeOff || onWeekendBreak) {
+      if (fullyBlocked || onWeekendBreak) {
         offToday.push(d)
       } else if ((weekHours[d.id][wLabel] ?? 0) >= 40) {
         cappedDispatchers.push(d)
@@ -181,10 +201,15 @@ export function generateSchedule(
     let seniorAssigned = false
 
     for (const p of sortedPatterns) {
-      // Morning patterns exclude dispatchers who worked night yesterday
-      const eligible = sortedWorking.filter(
-        (d) => !usedIds.has(d.id) && (!p.isMorning || !workedNightYesterday(d.id)),
-      )
+      // Morning patterns exclude dispatchers who worked night yesterday.
+      // Also exclude any dispatcher whose blocks overlap this pattern.
+      const eligible = sortedWorking.filter((d) => {
+        if (usedIds.has(d.id)) return false
+        if (p.isMorning && workedNightYesterday(d.id)) return false
+        const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+        if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
+        return true
+      })
       if (eligible.length === 0) break
 
       // If no Senior has been assigned yet and Seniors are available, promote
@@ -246,12 +271,12 @@ export function generateSchedule(
 
   const dates = allDates.map((d) => ({
     date: format(d, 'yyyy-MM-dd'),
-    dayLabel: format(d, 'EEE, MMM d'),
+    dayLabel: format(d, 'EEE, MMMM do'),
     weekLabel: weekLabel(d),
     dayOfWeek: d.getDay(),
   }))
 
-  return { startDate, endDate, dates, dispatcherSchedules, coverageActual }
+  return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual }
 }
 
 // ---------------------------------------------------------------------------

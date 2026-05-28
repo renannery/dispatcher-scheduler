@@ -34,6 +34,11 @@ export interface Dispatcher {
   name: string
   color: string
   level: DispatcherLevel
+  /**
+   * Per day-of-week (0=Sun…6=Sat), bitmap of recurring blocked slots.
+   * Travels with the dispatcher across schedules.
+   */
+  recurringBlocks?: boolean[][]
 }
 
 export interface DispatcherDayEntry {
@@ -56,6 +61,9 @@ export interface DispatcherSchedule {
 export interface GeneratedSchedule {
   startDate: string
   endDate: string
+  /** Rotation seed used when generating; lets consumers reproduce the same
+   *  weekend-off cycle the scheduler used. */
+  seed: number
   /** Ordered date info for column headers */
   dates: { date: string; dayLabel: string; weekLabel: string; dayOfWeek: number }[]
   dispatcherSchedules: DispatcherSchedule[]
@@ -64,3 +72,9 @@ export interface GeneratedSchedule {
 }
 
 export type Step = 'names' | 'period' | 'schedule'
+
+/**
+ * Per-dispatcher, per-date slot bitmap. `true` at index i means UNAVAILABLE
+ * during slot i. All-true = full day off, empty/missing = fully available.
+ */
+export type DispatcherTimeOff = Record<string, Record<string, boolean[]>>

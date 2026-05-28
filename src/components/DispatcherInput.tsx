@@ -1,9 +1,12 @@
 import clsx from 'clsx'
-import { UserPlus, X } from 'lucide-react'
+import { CalendarClock, UserPlus, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 
+import { SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { DispatcherLevel } from '@/types/schedule'
+
+import { RecurringBlocksEditor } from './RecurringBlocksEditor'
 
 // ---------------------------------------------------------------------------
 // Level meta
@@ -35,12 +38,13 @@ const LEVEL_STYLES: Record<DispatcherLevel, { pill: string; active: string }> = 
 // ---------------------------------------------------------------------------
 
 export function DispatcherInput() {
-  const { dispatchers, addDispatcher, removeDispatcher, setDispatcherLevel, setStep } =
+  const { dispatchers, addDispatcher, removeDispatcher, setDispatcherLevel, toggleRecurringBlock, setStep } =
     useSchedulerStore()
 
   const [input, setInput]   = useState('')
   const [level, setLevel]   = useState<DispatcherLevel>('Regular')
   const inputRef = useRef<HTMLInputElement>(null)
+  const [openConstraints, setOpenConstraints] = useState<Set<string>>(new Set())
 
   const handleAdd = () => {
     const names = input.split(',').map((n) => n.trim()).filter(Boolean)
@@ -140,51 +144,84 @@ export function DispatcherInput() {
           </div>
 
           <ul className="flex flex-col gap-2">
-            {dispatchers.map((d) => (
-              <li
-                key={d.id}
-                className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
-              >
-                {/* Avatar */}
-                <div
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                  style={{ backgroundColor: d.color }}
+            {dispatchers.map((d) => {
+              const isOpen = openConstraints.has(d.id)
+              const totalBlocks = (d.recurringBlocks ?? []).reduce(
+                (s, row) => s + row.reduce((acc, on, i) => acc + (on ? SLOTS[i].hours : 0), 0),
+                0,
+              )
+              return (
+                <li
+                  key={d.id}
+                  className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
                 >
-                  {d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
-                </div>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                      style={{ backgroundColor: d.color }}
+                    >
+                      {d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                    </div>
 
-                {/* Name */}
-                <span className="flex-1 font-medium text-slate-800">{d.name}</span>
+                    <span className="flex-1 font-medium text-slate-800">{d.name}</span>
 
-                {/* Level pills */}
-                <div className="flex gap-1">
-                  {LEVELS.map(({ value, short }) => {
-                    const styles = LEVEL_STYLES[value]
-                    return (
-                      <button
-                        key={value}
-                        onClick={() => setDispatcherLevel(d.id, value)}
-                        title={value}
-                        className={clsx(
-                          'rounded-md border px-2 py-0.5 text-[11px] font-bold transition',
-                          d.level === value ? styles.active : styles.pill,
-                        )}
-                      >
-                        {short}
-                      </button>
-                    )
-                  })}
-                </div>
+                    <div className="flex gap-1">
+                      {LEVELS.map(({ value, short }) => {
+                        const styles = LEVEL_STYLES[value]
+                        return (
+                          <button
+                            key={value}
+                            onClick={() => setDispatcherLevel(d.id, value)}
+                            title={value}
+                            className={clsx(
+                              'rounded-md border px-2 py-0.5 text-[11px] font-bold transition',
+                              d.level === value ? styles.active : styles.pill,
+                            )}
+                          >
+                            {short}
+                          </button>
+                        )
+                      })}
+                    </div>
 
-                {/* Remove */}
-                <button
-                  onClick={() => removeDispatcher(d.id)}
-                  className="rounded-lg p-1 text-slate-300 transition hover:bg-red-50 hover:text-red-500"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </li>
-            ))}
+                    <button
+                      onClick={() => setOpenConstraints((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(d.id)) next.delete(d.id)
+                        else next.add(d.id)
+                        return next
+                      })}
+                      title="Recurring weekly breaks"
+                      className={clsx(
+                        'flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition',
+                        totalBlocks > 0
+                          ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100'
+                          : 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100',
+                      )}
+                    >
+                      <CalendarClock className="h-3.5 w-3.5" />
+                      {totalBlocks > 0 ? `${totalBlocks}h/wk` : 'breaks'}
+                    </button>
+
+                    <button
+                      onClick={() => removeDispatcher(d.id)}
+                      className="rounded-lg p-1 text-slate-300 transition hover:bg-red-50 hover:text-red-500"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {isOpen && (
+                    <RecurringBlocksEditor
+                      blocks={d.recurringBlocks}
+                      slots={SLOTS}
+                      accentColor={d.color}
+                      onToggle={(dow, si) => toggleRecurringBlock(d.id, dow, si)}
+                    />
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

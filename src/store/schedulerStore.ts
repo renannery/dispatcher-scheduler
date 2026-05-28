@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 
-import type { Dispatcher, DispatcherLevel, GeneratedSchedule, Step } from '@/types/schedule'
+import { SLOTS } from '@/data/coverageTemplate'
+import type { Dispatcher, DispatcherLevel, DispatcherTimeOff, GeneratedSchedule, Step } from '@/types/schedule'
+import type { AbsenceReason } from '@/utils/absence'
+import { datesInRange } from '@/utils/absence'
+import type { DispatcherSnapshotData } from '@/utils/snapshot'
 
 const DISPATCHER_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
@@ -29,26 +33,45 @@ function addDays(dateStr: string, days: number): string {
 
 const defaultStart = nextThursday()
 
-interface TimeOffState {
-  [dispatcherId: string]: string[] // "YYYY-MM-DD"[]
-}
+export type AbsenceReasonMap = Record<string, Record<string, AbsenceReason>>
 
 interface SchedulerStore {
   step: Step
   dispatchers: Dispatcher[]
   startDate: string
   endDate: string
-  timeOff: TimeOffState
+  timeOff: DispatcherTimeOff
+  absenceReasons: AbsenceReasonMap
   schedule: GeneratedSchedule | null
 
   setStep: (step: Step) => void
   addDispatcher: (name: string, level?: DispatcherLevel) => void
   removeDispatcher: (id: string) => void
   setDispatcherLevel: (id: string, level: DispatcherLevel) => void
+  toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setDateRange: (start: string, end: string) => void
-  setTimeOff: (dispatcherId: string, dates: string[]) => void
+  toggleFullDayOff: (dispatcherId: string, date: string) => void
+  toggleBlockedSlot: (dispatcherId: string, date: string, slotIndex: number) => void
+  applyAbsenceRange: (
+    dispatcherId: string,
+    start: string,
+    end: string,
+    reason: AbsenceReason,
+    slotMask?: boolean[],
+  ) => void
   setSchedule: (s: GeneratedSchedule) => void
+  hydrateFromSnapshot: (data: DispatcherSnapshotData) => void
   reset: () => void
+}
+
+function makeFullBitmap(): boolean[] {
+  return new Array(SLOTS.length).fill(true)
+}
+function isAllFalse(arr: boolean[] | undefined): boolean {
+  return !arr || arr.every((v) => !v)
+}
+function isAllTrue(arr: boolean[] | undefined): boolean {
+  return !!arr && arr.length === SLOTS.length && arr.every(Boolean)
 }
 
 export const useSchedulerStore = create<SchedulerStore>((set) => ({
@@ -57,6 +80,7 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
   startDate: defaultStart,
   endDate: addDays(defaultStart, 6),
   timeOff: {},
+  absenceReasons: {},
   schedule: null,
 
   setStep: (step) => set({ step }),
@@ -77,18 +101,96 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
       dispatchers: s.dispatchers.map((d) => (d.id === id ? { ...d, level } : d)),
     })),
 
+  toggleRecurringBlock: (id, dayOfWeek, slotIndex) =>
+    set((s) => ({
+      dispatchers: s.dispatchers.map((d) => {
+        if (d.id !== id) return d
+        const grid = d.recurringBlocks
+          ? d.recurringBlocks.map((row) => [...row])
+          : Array.from({ length: 7 }, () => new Array(SLOTS.length).fill(false))
+        grid[dayOfWeek][slotIndex] = !grid[dayOfWeek][slotIndex]
+        const empty = grid.every((row) => row.every((v) => !v))
+        return { ...d, recurringBlocks: empty ? undefined : grid }
+      }),
+    })),
+
   removeDispatcher: (id) =>
     set((s) => ({
       dispatchers: s.dispatchers.filter((d) => d.id !== id),
       timeOff: Object.fromEntries(Object.entries(s.timeOff).filter(([k]) => k !== id)),
+      absenceReasons: Object.fromEntries(Object.entries(s.absenceReasons).filter(([k]) => k !== id)),
     })),
 
   setDateRange: (startDate, endDate) => set({ startDate, endDate }),
 
-  setTimeOff: (dispatcherId, dates) =>
-    set((s) => ({ timeOff: { ...s.timeOff, [dispatcherId]: dates } })),
+  toggleFullDayOff: (dispatcherId, date) =>
+    set((s) => {
+      const map = { ...(s.timeOff[dispatcherId] ?? {}) }
+      const reasonMap = { ...(s.absenceReasons[dispatcherId] ?? {}) }
+      const existing = map[date]
+      if (isAllTrue(existing)) {
+        delete map[date]
+        delete reasonMap[date]
+      } else {
+        map[date] = makeFullBitmap()
+      }
+      return {
+        timeOff: { ...s.timeOff, [dispatcherId]: map },
+        absenceReasons: { ...s.absenceReasons, [dispatcherId]: reasonMap },
+      }
+    }),
+
+  toggleBlockedSlot: (dispatcherId, date, slotIndex) =>
+    set((s) => {
+      const map = { ...(s.timeOff[dispatcherId] ?? {}) }
+      const reasonMap = { ...(s.absenceReasons[dispatcherId] ?? {}) }
+      const existing = map[date] ?? new Array(SLOTS.length).fill(false)
+      const next = [...existing]
+      next[slotIndex] = !next[slotIndex]
+      if (isAllFalse(next)) {
+        delete map[date]
+        delete reasonMap[date]
+      } else {
+        map[date] = next
+        // Reason persists for partial blocks too (Phase 2: hour-range absences).
+      }
+      return {
+        timeOff: { ...s.timeOff, [dispatcherId]: map },
+        absenceReasons: { ...s.absenceReasons, [dispatcherId]: reasonMap },
+      }
+    }),
+
+  applyAbsenceRange: (dispatcherId, start, end, reason, slotMask) =>
+    set((s) => {
+      const map = { ...(s.timeOff[dispatcherId] ?? {}) }
+      const reasonMap = { ...(s.absenceReasons[dispatcherId] ?? {}) }
+      for (const date of datesInRange(start, end)) {
+        if (slotMask) {
+          const existing = map[date] ?? new Array(SLOTS.length).fill(false)
+          map[date] = existing.map((on, i) => on || !!slotMask[i])
+        } else {
+          map[date] = makeFullBitmap()
+        }
+        reasonMap[date] = reason
+      }
+      return {
+        timeOff: { ...s.timeOff, [dispatcherId]: map },
+        absenceReasons: { ...s.absenceReasons, [dispatcherId]: reasonMap },
+      }
+    }),
 
   setSchedule: (schedule) => set({ schedule }),
+
+  hydrateFromSnapshot: (data) =>
+    set({
+      step: data.schedule ? 'schedule' : 'names',
+      dispatchers: data.dispatchers ?? [],
+      startDate: data.startDate,
+      endDate: data.endDate,
+      timeOff: data.timeOff ?? {},
+      absenceReasons: data.absenceReasons ?? {},
+      schedule: data.schedule,
+    }),
 
   reset: () =>
     set({
@@ -97,6 +199,7 @@ export const useSchedulerStore = create<SchedulerStore>((set) => ({
       startDate: defaultStart,
       endDate: addDays(defaultStart, 6),
       timeOff: {},
+      absenceReasons: {},
       schedule: null,
     }),
 }))

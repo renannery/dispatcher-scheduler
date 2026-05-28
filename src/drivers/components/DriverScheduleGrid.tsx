@@ -3,33 +3,30 @@ import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Refre
 import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { DAY_TEMPLATES } from '@/data/coverageTemplate'
-import { useSchedulerStore } from '@/store/schedulerStore'
-import { generateSchedule, HEAVY_DAYS, hoursStatusBg, hoursStatusColor, weekendOffDispatcherId } from '@/utils/scheduler'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
-import { exportScheduleToXLS } from '@/utils/xlsExporter'
-import { DayGrid } from './DayGrid'
 
-// ---------------------------------------------------------------------------
-// PDF dropdown
-// ---------------------------------------------------------------------------
+import { DRIVER_DAY_TEMPLATES } from '../coverageTemplate'
+import { generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { useDriverStore } from '../store'
+import { displayName } from '../utils'
+import { exportDriverScheduleToXLS } from '../xlsExporter'
+import { DriverDayGrid } from './DriverDayGrid'
 
 type PdfAction =
   | { type: 'admin' }
   | { type: 'team' }
-  | { type: 'individual'; dispatcherId: string; name: string }
+  | { type: 'individual'; driverId: string; name: string }
 
 interface PdfMenuProps {
-  dispatchers: { id: string; name: string; color: string }[]
+  drivers: { id: string; name: string; color: string }[]
   loading: boolean
   onSelect: (action: PdfAction) => void
 }
 
-function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
+function PdfMenu({ drivers, loading, onSelect }: PdfMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
@@ -56,41 +53,38 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1.5 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-          {/* Admin */}
+        <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[60vh] w-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
           <button
             onClick={() => pick({ type: 'admin' })}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
           >
-            <Shield className="h-4 w-4 text-blue-600 shrink-0" />
+            <Shield className="h-4 w-4 shrink-0 text-blue-600" />
             <div>
               <div className="font-semibold text-slate-800">Admin</div>
-              <div className="text-xs text-slate-400">All dispatchers + hours</div>
+              <div className="text-xs text-slate-400">All drivers + hours</div>
             </div>
           </button>
 
-          {/* Team */}
           <button
             onClick={() => pick({ type: 'team' })}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
           >
-            <Users className="h-4 w-4 text-emerald-600 shrink-0" />
+            <Users className="h-4 w-4 shrink-0 text-emerald-600" />
             <div>
               <div className="font-semibold text-slate-800">Team</div>
-              <div className="text-xs text-slate-400">All dispatchers, no hours</div>
+              <div className="text-xs text-slate-400">All drivers, no hours</div>
             </div>
           </button>
 
-          {/* Individual divider */}
-          <div className="mx-4 border-t border-slate-100 my-1" />
+          <div className="mx-4 my-1 border-t border-slate-100" />
           <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
             Individual
           </div>
 
-          {dispatchers.map((d) => (
+          {drivers.map((d) => (
             <button
               key={d.id}
-              onClick={() => pick({ type: 'individual', dispatcherId: d.id, name: d.name })}
+              onClick={() => pick({ type: 'individual', driverId: d.id, name: d.name })}
               className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition hover:bg-slate-50"
             >
               <div
@@ -108,27 +102,33 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
-export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, setSchedule, setStep } =
-    useSchedulerStore()
+export function DriverScheduleGrid() {
+  const {
+    schedule,
+    drivers,
+    startDate,
+    endDate,
+    timeOff,
+    absenceReasons,
+    fullTimeCap,
+    partTimeCap,
+    setSchedule,
+    setStep,
+  } = useDriverStore()
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
 
   const trimmedSearch = search.trim().toLowerCase()
-  const matchedDispatcherIds = useMemo(() => {
+  const matchedDriverIds = useMemo(() => {
     if (!trimmedSearch) return null
     const ids = new Set<string>()
-    for (const d of dispatchers) {
+    for (const d of drivers) {
       if (d.name.toLowerCase().includes(trimmedSearch)) ids.add(d.id)
     }
     return ids
-  }, [dispatchers, trimmedSearch])
+  }, [drivers, trimmedSearch])
 
   if (!schedule) return null
 
@@ -143,15 +143,20 @@ export function ScheduleGrid() {
     })
   }
 
-  const expandAll  = () => setExpandedDates(new Set(schedule.dates.map((d) => d.date)))
+  const expandAll = () => setExpandedDates(new Set(schedule.dates.map((d) => d.date)))
   const collapseAll = () => setExpandedDates(new Set())
 
-  // Bumped on each Regenerate click so the deterministic scheduler returns
-  // a different rotation each click.
+  // Bumped on each Regenerate click so the deterministic algorithm produces
+  // a different (but still valid) rotation each time. Survives only as long
+  // as the component is mounted — exports of the underlying schedule are
+  // unaffected.
   const regenSeed = useRef(0)
   const handleRegenerate = () => {
     regenSeed.current++
-    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, regenSeed.current)
+    const fresh = generateDriverSchedule({
+      drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap,
+      seed: regenSeed.current,
+    })
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -159,53 +164,34 @@ export function ScheduleGrid() {
   const handleExportJson = () => {
     downloadSnapshot({
       version: SCHEMA_VERSION,
-      team: 'dispatchers',
+      team: 'drivers',
       exportedAt: new Date().toISOString(),
-      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, schedule },
+      data: {
+        drivers, startDate, endDate, fullTimeCap, partTimeCap, timeOff, absenceReasons, schedule,
+      },
     })
   }
 
   const handlePdfSelect = async (action: PdfAction) => {
     setPdfLoading(true)
     try {
-      const mod = await import('@/utils/pdfExporter')
-      if (action.type === 'admin')      await mod.exportAdminPDF(schedule)
-      if (action.type === 'team')       await mod.exportTeamPDF(schedule)
-      if (action.type === 'individual') await mod.exportIndividualPDF(schedule, action.dispatcherId)
+      const mod = await import('../pdfExporter')
+      if (action.type === 'admin')      await mod.exportDriverAdminPDF(schedule)
+      if (action.type === 'team')       await mod.exportDriverTeamPDF(schedule)
+      if (action.type === 'individual') await mod.exportDriverIndividualPDF(schedule, action.driverId)
     } finally {
       setPdfLoading(false)
     }
   }
 
-  // Peak weekly hours per dispatcher for the action bar
-  const totalsByPerson = schedule.dispatcherSchedules.map((ds) => ({
-    name:  ds.dispatcher.name,
-    color: ds.dispatcher.color,
-    level: ds.dispatcher.level,
-    hours: Math.max(0, ...Object.values(ds.weeklyHours)),
-  }))
-
   return (
     <div className="flex flex-col gap-6">
-      {/* Action bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">peak wk</span>
-          {totalsByPerson.map(({ name, hours, color, level }) => (
-            <div key={name} className="flex items-center gap-1.5 text-sm" title={`${name}: ${hours.toFixed(1)}h peak week`}>
-              <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
-              <span className="font-medium text-slate-700">{name.split(' ')[0]}</span>
-              <span className={clsx(
-                'rounded px-1.5 py-0 text-[10px] font-bold',
-                level === 'Senior'  && 'bg-amber-100 text-amber-600',
-                level === 'Regular' && 'bg-blue-100 text-blue-600',
-                level === 'Trainee' && 'bg-slate-100 text-slate-500',
-              )}>
-                {level === 'Senior' ? 'SR' : level === 'Regular' ? 'RG' : 'TR'}
-              </span>
-              <span className={clsx('font-bold', hoursStatusColor(hours))}>{hours.toFixed(1)}h</span>
-            </div>
-          ))}
+        <div className="text-sm text-slate-500">
+          <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
+          <span className="ml-1 font-semibold text-slate-700">{schedule.dates.length}</span> days ·
+          full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
+          part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
         </div>
         <div className="flex gap-2">
           <button
@@ -223,13 +209,9 @@ export function ScheduleGrid() {
             <FileJson className="h-4 w-4" />
             JSON
           </button>
-          <PdfMenu
-            dispatchers={dispatchers}
-            loading={pdfLoading}
-            onSelect={handlePdfSelect}
-          />
+          <PdfMenu drivers={drivers} loading={pdfLoading} onSelect={handlePdfSelect} />
           <button
-            onClick={() => exportScheduleToXLS(schedule)}
+            onClick={() => exportDriverScheduleToXLS(schedule)}
             className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
           >
             <Download className="h-4 w-4" />
@@ -238,14 +220,14 @@ export function ScheduleGrid() {
         </div>
       </div>
 
-      {/* Dispatcher search — filters pill list and day-grid rows */}
+      {/* Driver search — filters pill list and day-grid rows */}
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Search ${dispatchers.length} dispatcher${dispatchers.length === 1 ? '' : 's'} — filters hour pills and grid rows…`}
+          placeholder={`Search ${drivers.length} driver${drivers.length === 1 ? '' : 's'} — filters hour pills and grid rows…`}
           className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-9 text-sm text-slate-800 placeholder-slate-400 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
         />
         {search && (
@@ -260,30 +242,37 @@ export function ScheduleGrid() {
         )}
       </div>
 
-      {/* Per-week sections */}
       {weekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
 
         const heavyDateInfo = weekDates.find((d) => HEAVY_DAYS.has(d.dayOfWeek))
         const weekendOffId = heavyDateInfo
-          ? weekendOffDispatcherId(parseISO(heavyDateInfo.date), parseISO(schedule.startDate), dispatchers, schedule.seed)
+          ? weekendOffDriverId(parseISO(heavyDateInfo.date), parseISO(schedule.startDate), drivers, schedule.seed)
           : null
-        const weekendOffDispatcher = weekendOffId
-          ? schedule.dispatcherSchedules.find((ds) => ds.dispatcher.id === weekendOffId)?.dispatcher
+        const weekendOffDriver = weekendOffId
+          ? schedule.driverSchedules.find((ds) => ds.driver.id === weekendOffId)?.driver
           : null
 
-        const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => ({
-          name:  ds.dispatcher.name,
+        const weekHoursSummary = schedule.driverSchedules.map((ds) => ({
+          name:  ds.driver.name,
+          type:  ds.driver.employmentType,
           hours: ds.weeklyHours[wl] ?? 0,
         }))
 
-        // Aggregate summary
-        const allHours = weekHoursSummary.map((s) => s.hours)
-        const atCap = allHours.filter((h) => h >= 40).length
-        const under = allHours.filter((h) => h > 0 && h < 36).length
-        const target = allHours.filter((h) => h >= 36 && h < 40).length
-        const offCount = allHours.filter((h) => h === 0).length
+        // Aggregate the per-driver hours into a quick summary
+        const ftSummary = schedule.driverSchedules
+          .filter((ds) => ds.driver.employmentType === 'full')
+          .map((ds) => ds.weeklyHours[wl] ?? 0)
+        const ptSummary = schedule.driverSchedules
+          .filter((ds) => ds.driver.employmentType === 'part')
+          .map((ds) => ds.weeklyHours[wl] ?? 0)
+        const ftAtCap = ftSummary.filter((h) => h >= fullTimeCap).length
+        const ftUnder = ftSummary.filter((h) => h > 0 && h < fullTimeCap).length
+        const ftOff = ftSummary.filter((h) => h === 0).length
+        const ptAtCap = ptSummary.filter((h) => h >= schedule.partTimeCap).length
+        const ptUnder = ptSummary.filter((h) => h > 0 && h < schedule.partTimeCap).length
 
+        // Filter pills by the active search query (if any)
         const filteredPills = trimmedSearch
           ? weekHoursSummary.filter(({ name }) => name.toLowerCase().includes(trimmedSearch))
           : weekHoursSummary
@@ -291,26 +280,25 @@ export function ScheduleGrid() {
 
         return (
           <div key={wl} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-            {/* Week header */}
             <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
                   <div className="text-xs text-slate-500">
-                    <span className="font-semibold text-emerald-600">{atCap}</span> at 40h ·
-                    <span className="ml-1 font-semibold text-emerald-600">{target}</span> 36–39h ·
-                    <span className="ml-1 font-semibold text-amber-600">{under}</span> under
-                    {offCount > 0 && (
-                      <><span className="ml-1">·</span> <span className="ml-1 font-semibold text-slate-500">{offCount}</span> off</>
+                    <span className="font-semibold text-emerald-600">{ftAtCap}</span> at cap ·
+                    <span className="ml-1 font-semibold text-amber-600">{ftUnder}</span> under ·
+                    {ftOff > 0 && (
+                      <><span className="ml-1 font-semibold text-slate-500">{ftOff}</span> off ·</>
                     )}
+                    <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span> PT
                   </div>
-                  {weekendOffDispatcher && (
+                  {weekendOffDriver && (
                     <span
                       className="flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700"
-                      title={`${weekendOffDispatcher.name} has Fri/Sat/Sun off this 2-week block`}
+                      title={`${weekendOffDriver.name} has Fri/Sat/Sun off this 2-week block`}
                     >
-                      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: weekendOffDispatcher.color }} />
-                      {weekendOffDispatcher.name.split(' ')[0]}: weekend off
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: weekendOffDriver.color }} />
+                      {displayName(weekendOffDriver.name)}: weekend off
                     </span>
                   )}
                 </div>
@@ -327,7 +315,7 @@ export function ScheduleGrid() {
                     {pillsExpanded ? 'hide hours' : 'show hours'}
                   </button>
                   <span>·</span>
-                  <button onClick={expandAll}  className="hover:text-blue-600">expand all</button>
+                  <button onClick={expandAll} className="hover:text-blue-600">expand all</button>
                   <span>·</span>
                   <button onClick={collapseAll} className="hover:text-blue-600">collapse</button>
                 </div>
@@ -335,30 +323,36 @@ export function ScheduleGrid() {
               {pillsExpanded && (
                 <div className="flex flex-wrap gap-1.5">
                   {filteredPills.length === 0 && (
-                    <span className="text-xs text-slate-400">No dispatchers match &quot;{trimmedSearch}&quot;.</span>
+                    <span className="text-xs text-slate-400">No drivers match &quot;{trimmedSearch}&quot;.</span>
                   )}
-                  {filteredPills.map(({ name, hours }) => (
-                    <span
-                      key={name}
-                      className={clsx('rounded-full border px-2 py-0.5 text-xs font-semibold', hoursStatusBg(hours))}
-                    >
-                      {name.split(' ')[0]} {hours.toFixed(1)}h
-                    </span>
-                  ))}
+                  {filteredPills.map(({ name, type, hours }) => {
+                    const cap = type === 'full' ? fullTimeCap : schedule.partTimeCap
+                    return (
+                      <span
+                        key={name}
+                        className={clsx(
+                          'rounded-full border px-2 py-0.5 text-xs font-semibold',
+                          hoursStatusBg(hours, cap),
+                        )}
+                        title={`${name}: ${hours}h / ${cap}h cap`}
+                      >
+                        {displayName(name)} {hours}h
+                      </span>
+                    )
+                  })}
                 </div>
               )}
             </div>
 
-            {/* Per-day rows */}
             {weekDates.map((dateInfo) => {
               const isExpanded = expandedDates.has(dateInfo.date)
-              const working = schedule.dispatcherSchedules.filter(
+              const working = schedule.driverSchedules.filter(
                 (ds) => !ds.days.find((d) => d.date === dateInfo.date)?.isOff,
               ).length
-              const off     = schedule.dispatcherSchedules.length - working
-              const actual   = schedule.coverageActual[dateInfo.date] ?? []
-              const required = DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage ?? []
-              const hasGap   = required.some((r, i) => (actual[i] ?? 0) < r)
+              const off = schedule.driverSchedules.length - working
+              const actual = schedule.coverageActual[dateInfo.date] ?? []
+              const required = DRIVER_DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage ?? []
+              const hasGap = required.some((r, i) => (actual[i] ?? 0) < r)
 
               return (
                 <div key={dateInfo.date} className="border-t border-slate-100 first:border-0">
@@ -380,12 +374,12 @@ export function ScheduleGrid() {
 
                   {isExpanded && (
                     <div className="border-t border-slate-100 bg-slate-50/30">
-                      <DayGrid
+                      <DriverDayGrid
                         schedule={schedule}
                         date={dateInfo.date}
                         dayLabel={dateInfo.dayLabel}
                         dayOfWeek={dateInfo.dayOfWeek}
-                        dispatcherIdFilter={matchedDispatcherIds}
+                        driverIdFilter={matchedDriverIds}
                       />
                     </div>
                   )}
@@ -396,7 +390,6 @@ export function ScheduleGrid() {
         )
       })}
 
-      {/* Bottom actions */}
       <div className="flex items-center justify-between pt-2">
         <button
           onClick={() => setStep('period')}
@@ -413,13 +406,9 @@ export function ScheduleGrid() {
             <FileJson className="h-4 w-4" />
             JSON
           </button>
-          <PdfMenu
-            dispatchers={dispatchers}
-            loading={pdfLoading}
-            onSelect={handlePdfSelect}
-          />
+          <PdfMenu drivers={drivers} loading={pdfLoading} onSelect={handlePdfSelect} />
           <button
-            onClick={() => exportScheduleToXLS(schedule)}
+            onClick={() => exportDriverScheduleToXLS(schedule)}
             className="flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
           >
             <Download className="h-4 w-4" />

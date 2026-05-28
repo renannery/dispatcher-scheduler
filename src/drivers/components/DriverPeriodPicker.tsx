@@ -5,28 +5,36 @@ import { useMemo, useState } from 'react'
 
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { HoverHint } from '@/components/HoverHint'
-import { SLOTS } from '@/data/coverageTemplate'
-import { useSchedulerStore } from '@/store/schedulerStore'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
-import { longDay, shortHour } from '@/utils/displayHelpers'
-import { generateSchedule } from '@/utils/scheduler'
 
-export function PeriodPicker() {
+import { DRIVER_SLOTS } from '../coverageTemplate'
+import { generateDriverSchedule } from '../scheduler'
+import { useDriverStore } from '../store'
+import { displayName, longDay, shortHour } from '../utils'
+
+export function DriverPeriodPicker() {
   const {
-    dispatchers,
+    drivers,
     startDate,
     endDate,
+    fullTimeCap,
+    partTimeCap,
     timeOff,
     absenceReasons,
     setDateRange,
+    setFullTimeCap,
+    setPartTimeCap,
     setSchedule,
     setStep,
     toggleFullDayOff,
     toggleBlockedSlot,
     applyAbsenceRange,
-  } = useSchedulerStore()
+  } = useDriverStore()
 
+  // Driver ids whose hour-grid is currently expanded
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  // Driver ids whose absence-range form is currently open
   const [absenceFormOpen, setAbsenceFormOpen] = useState<Set<string>>(new Set())
 
   const totalDays = differenceInDays(parseISO(endDate), parseISO(startDate)) + 1
@@ -35,12 +43,27 @@ export function PeriodPicker() {
 
   const handleGenerate = () => {
     if (!isValid) return
-    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff)
+    const schedule = generateDriverSchedule({
+      drivers,
+      startDate,
+      endDate,
+      timeOff,
+      fullTimeCap,
+      partTimeCap,
+    })
     setSchedule(schedule)
     setStep('schedule')
   }
 
-  // Build list of all dates in range for the time-off picker
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const allDates: { date: string; label: string }[] = []
   if (isValid) {
     const start = parseISO(startDate)
@@ -54,27 +77,19 @@ export function PeriodPicker() {
     }
   }
 
-  const [search, setSearch] = useState('')
-  const visibleDispatchers = useMemo(() => {
+  // Apply search filter on top of "drivers with existing time-off always visible"
+  const visibleDrivers = useMemo(() => {
     const q = search.trim().toLowerCase()
     const hasTimeOff = (id: string) => {
       const map = timeOff[id]
       return !!map && Object.values(map).some((bm) => bm?.some(Boolean))
     }
-    return dispatchers.filter((d) => {
+    return drivers.filter((d) => {
       const matches = q && d.name.toLowerCase().includes(q)
-      return matches || hasTimeOff(d.id)
+      const alwaysShow = hasTimeOff(d.id)
+      return matches || alwaysShow
     })
-  }, [dispatchers, timeOff, search])
-
-  const toggleExpand = (id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
+  }, [drivers, timeOff, search])
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
@@ -102,9 +117,42 @@ export function PeriodPicker() {
             className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
           />
         </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-slate-600">
+              Full-time cap (h/week)
+            </label>
+            <input
+              type="number"
+              min={20}
+              max={60}
+              step={1}
+              value={fullTimeCap}
+              onChange={(e) => setFullTimeCap(Math.max(20, Math.min(60, Number(e.target.value) || 40)))}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-slate-600">
+              Part-time cap (h/week)
+            </label>
+            <input
+              type="number"
+              min={5}
+              max={40}
+              step={1}
+              value={partTimeCap}
+              onChange={(e) => setPartTimeCap(Math.max(5, Math.min(40, Number(e.target.value) || 30)))}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
+        </div>
+        <p className="-mt-3 text-xs text-slate-400">
+          Defaults: 40h full-time, 30h part-time. Max 9h per day either way.
+        </p>
       </div>
 
-      {/* Period summary */}
       {isValid && (
         <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-4 text-center">
           <div className="grid grid-cols-3 gap-4">
@@ -117,8 +165,8 @@ export function PeriodPicker() {
               <div className="text-xs text-blue-500">week{totalWeeks !== 1 ? 's' : ''}</div>
             </div>
             <div>
-              <div className="text-2xl font-bold text-blue-700">≤40h</div>
-              <div className="text-xs text-blue-500">per week</div>
+              <div className="text-2xl font-bold text-blue-700">≤{fullTimeCap}h</div>
+              <div className="text-xs text-blue-500">full-time</div>
             </div>
           </div>
           <p className="mt-3 text-xs text-blue-600">
@@ -130,23 +178,24 @@ export function PeriodPicker() {
         </div>
       )}
 
-      {/* Time-off requests */}
       {isValid && (
         <div className="flex flex-col gap-3">
           <div>
             <h3 className="text-sm font-semibold text-slate-700">Time-off requests</h3>
             <p className="mt-0.5 text-xs text-slate-400">
-              Search a dispatcher to mark days off. Dispatchers with existing requests stay in the list.
+              Search a driver to add time off. Drivers with existing requests stay in the list.
+              Click a day to toggle full-day off; expand the chevron to block specific hours.
             </p>
           </div>
 
+          {/* Search */}
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Search ${dispatchers.length} dispatcher${dispatchers.length === 1 ? '' : 's'}…`}
+              placeholder={`Search ${drivers.length} driver${drivers.length === 1 ? '' : 's'}…`}
               className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-10 pr-9 text-sm text-slate-800 placeholder-slate-400 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
             />
             {search && (
@@ -161,21 +210,21 @@ export function PeriodPicker() {
             )}
           </div>
           <div className="text-xs text-slate-400">
-            {visibleDispatchers.length === 0
+            {visibleDrivers.length === 0
               ? search.trim()
-                ? `No dispatchers match "${search}".`
-                : 'No time-off requests yet. Use search to find a dispatcher.'
-              : `Showing ${visibleDispatchers.length} of ${dispatchers.length} dispatcher${dispatchers.length === 1 ? '' : 's'}.`}
+                ? `No drivers match "${search}".`
+                : 'No time-off requests yet. Use search to find a driver.'
+              : `Showing ${visibleDrivers.length} of ${drivers.length} driver${drivers.length === 1 ? '' : 's'}.`}
           </div>
 
-          {visibleDispatchers.map((d) => {
-            const dispatcherTimeOff = timeOff[d.id] ?? {}
+          {visibleDrivers.map((d) => {
+            const driverTimeOff = timeOff[d.id] ?? {}
             const fullDays = allDates.filter(({ date }) => {
-              const bm = dispatcherTimeOff[date]
-              return bm && bm.length === SLOTS.length && bm.every(Boolean)
+              const bm = driverTimeOff[date]
+              return bm && bm.length === DRIVER_SLOTS.length && bm.every(Boolean)
             }).length
             const partialDays = allDates.filter(({ date }) => {
-              const bm = dispatcherTimeOff[date]
+              const bm = driverTimeOff[date]
               return bm && bm.some(Boolean) && !bm.every(Boolean)
             }).length
             const isOpen = expanded.has(d.id)
@@ -188,7 +237,10 @@ export function PeriodPicker() {
                   >
                     {d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="text-sm font-medium text-slate-800">{d.name}</span>
+                  <span className="text-sm font-medium text-slate-800">{displayName(d.name)}</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                    {d.employmentType === 'full' ? 'FT' : 'PT'}
+                  </span>
                   <div className="ml-auto flex items-center gap-1.5">
                     {fullDays > 0 && (
                       <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">
@@ -220,7 +272,7 @@ export function PeriodPicker() {
                     <AbsenceRangeForm
                       minDate={startDate}
                       maxDate={endDate}
-                      slots={SLOTS}
+                      slots={DRIVER_SLOTS}
                       onApply={(start, end, reason, slotMask) => {
                         applyAbsenceRange(d.id, start, end, reason, slotMask)
                         setAbsenceFormOpen((prev) => {
@@ -239,10 +291,10 @@ export function PeriodPicker() {
                 )}
                 <div className="flex flex-col gap-1.5">
                   {allDates.map(({ date, label }) => {
-                    const bm = dispatcherTimeOff[date]
-                    const fullOff = !!bm && bm.length === SLOTS.length && bm.every(Boolean)
+                    const bm = driverTimeOff[date]
+                    const fullOff = !!bm && bm.length === DRIVER_SLOTS.length && bm.every(Boolean)
                     const partial = !!bm && bm.some(Boolean) && !fullOff
-                    const blockedCount = bm?.reduce((acc, on, i) => acc + (on ? SLOTS[i].hours : 0), 0) ?? 0
+                    const blockedCount = bm?.filter(Boolean).length ?? 0
                     const dateOpen = isOpen && expanded.has(`${d.id}:${date}`)
                     const reason = absenceReasons[d.id]?.[date]
                     const reasonCls = reason ? reasonColors(reason).tw : null
@@ -291,7 +343,7 @@ export function PeriodPicker() {
                         </div>
                         {dateOpen && (
                           <div className="flex flex-wrap gap-1 rounded-lg bg-slate-50 p-2">
-                            {SLOTS.map((slot, si) => {
+                            {DRIVER_SLOTS.map((slot, si) => {
                               const blocked = bm?.[si] ?? false
                               return (
                                 <button
@@ -329,7 +381,6 @@ export function PeriodPicker() {
         </div>
       )}
 
-      {/* Actions */}
       <div className="flex justify-between pt-2">
         <button
           onClick={() => setStep('names')}
