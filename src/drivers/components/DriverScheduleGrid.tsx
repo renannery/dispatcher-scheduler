@@ -114,6 +114,8 @@ export function DriverScheduleGrid() {
     partTimeCap,
     coverageScale,
     coverageOverrides,
+    minHoursPerDay,
+    maxHoursPerDay,
     weekendRotationOffset,
     setSchedule,
     setStep,
@@ -157,6 +159,7 @@ export function DriverScheduleGrid() {
     regenSeed.current++
     const fresh = generateDriverSchedule({
       drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay,
       seed: weekendRotationOffset + regenSeed.current,
     })
     setSchedule(fresh)
@@ -170,7 +173,7 @@ export function DriverScheduleGrid() {
       exportedAt: new Date().toISOString(),
       data: {
         drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
-        timeOff, absenceReasons, weekendRotationOffset, schedule,
+        minHoursPerDay, maxHoursPerDay, timeOff, absenceReasons, weekendRotationOffset, schedule,
       },
     })
   }

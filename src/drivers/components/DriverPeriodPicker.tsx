@@ -24,6 +24,8 @@ export function DriverPeriodPicker() {
     partTimeCap,
     coverageScale,
     coverageOverrides,
+    minHoursPerDay,
+    maxHoursPerDay,
     timeOff,
     absenceReasons,
     weekendRotationOffset,
@@ -33,6 +35,8 @@ export function DriverPeriodPicker() {
     setCoverageScale,
     setCoverageOverride,
     resetCoverageOverrides,
+    setMinHoursPerDay,
+    setMaxHoursPerDay,
     setSchedule,
     setStep,
     toggleFullDayOff,
@@ -91,6 +95,8 @@ export function DriverPeriodPicker() {
       partTimeCap,
       coverageScale,
       coverageOverrides,
+      minHoursPerDay,
+      maxHoursPerDay,
       // Seed from the persisted cursor — picks up where the previous
       // schedule's rotation left off instead of always starting at index 0.
       seed: weekendRotationOffset,
@@ -227,7 +233,41 @@ export function DriverPeriodPicker() {
           </div>
         </div>
         <p className="-mt-3 text-xs text-slate-400">
-          Defaults: 40h full-time, 30h part-time. Max 9h per day either way.
+          Defaults: 40h full-time, 30h part-time.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-slate-600">
+              Min hours per shift
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={12}
+              step={1}
+              value={minHoursPerDay}
+              onChange={(e) => setMinHoursPerDay(Number(e.target.value) || 4)}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-slate-600">
+              Max hours per shift
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={12}
+              step={1}
+              value={maxHoursPerDay}
+              onChange={(e) => setMaxHoursPerDay(Number(e.target.value) || 9)}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
+        </div>
+        <p className="-mt-3 text-xs text-slate-400">
+          Defaults: 4h min, 9h max. Patterns outside this range are filtered out before scheduling.
         </p>
 
         <div className="flex flex-col gap-1.5">

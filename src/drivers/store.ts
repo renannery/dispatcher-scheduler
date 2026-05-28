@@ -58,6 +58,10 @@ interface DriverSchedulerStore {
    * a code change.
    */
   coverageOverrides: Record<number, number[]>
+  /** Minimum hours per shift. Defaults to 4. Patterns shorter than this are filtered out. */
+  minHoursPerDay: number
+  /** Maximum hours per shift. Defaults to 9. Patterns longer than this are filtered out. */
+  maxHoursPerDay: number
   timeOff: DriverTimeOff
   /** Per driver, per date, the user-assigned reason for the absence. Display-only. */
   absenceReasons: AbsenceReasonMap
@@ -81,6 +85,8 @@ interface DriverSchedulerStore {
   setCoverageScale: (scale: number) => void
   setCoverageOverride: (dayOfWeek: number, slotIndex: number, value: number) => void
   resetCoverageOverrides: () => void
+  setMinHoursPerDay: (hours: number) => void
+  setMaxHoursPerDay: (hours: number) => void
   /** Bump the persisted rotation cursor by N weeks (called after Generate). */
   advanceWeekendRotation: (weeks: number) => void
   /** Toggle full-day off for this driver on this date. */
@@ -132,6 +138,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   partTimeCap: DEFAULT_PART_TIME_CAP,
   coverageScale: 1,
   coverageOverrides: {},
+  minHoursPerDay: 4,
+  maxHoursPerDay: 9,
   timeOff: {},
   absenceReasons: {},
   weekendRotationOffset: 0,
@@ -216,6 +224,9 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
     }),
 
   resetCoverageOverrides: () => set({ coverageOverrides: {} }),
+
+  setMinHoursPerDay: (hours) => set({ minHoursPerDay: Math.max(1, Math.min(12, Math.round(hours))) }),
+  setMaxHoursPerDay: (hours) => set({ maxHoursPerDay: Math.max(1, Math.min(12, Math.round(hours))) }),
 
   advanceWeekendRotation: (weeks) =>
     set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
@@ -330,6 +341,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       partTimeCap: data.partTimeCap ?? DEFAULT_PART_TIME_CAP,
       coverageScale: data.coverageScale ?? 1,
       coverageOverrides: data.coverageOverrides ?? {},
+      minHoursPerDay: data.minHoursPerDay ?? 4,
+      maxHoursPerDay: data.maxHoursPerDay ?? 9,
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
@@ -346,6 +359,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
         partTimeCap: data.partTimeCap ?? s.partTimeCap,
         coverageScale: data.coverageScale ?? s.coverageScale,
         coverageOverrides: data.coverageOverrides ?? s.coverageOverrides,
+        minHoursPerDay: data.minHoursPerDay ?? s.minHoursPerDay,
+        maxHoursPerDay: data.maxHoursPerDay ?? s.maxHoursPerDay,
         weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
         startDate: nextStart,
         endDate: nextEnd,
@@ -364,6 +379,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       partTimeCap: DEFAULT_PART_TIME_CAP,
       coverageScale: 1,
       coverageOverrides: {},
+      minHoursPerDay: 4,
+      maxHoursPerDay: 9,
       timeOff: {},
       absenceReasons: {},
       schedule: null,

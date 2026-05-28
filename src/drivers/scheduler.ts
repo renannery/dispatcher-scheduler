@@ -88,6 +88,13 @@ interface ScheduleParams {
    * `coverageScale` is applied.
    */
   coverageOverrides?: Record<number, number[]>
+  /**
+   * Minimum / maximum hours per shift, applied as a hard filter on the
+   * pattern pool. Defaults: 4h min, 9h max. Editable on the Period step
+   * so ops can enforce policies like "no 4h shifts" or "allow 10h overtime".
+   */
+  minHoursPerDay?: number
+  maxHoursPerDay?: number
 }
 
 /**
@@ -132,6 +139,8 @@ export function generateDriverSchedule({
   seed = 0,
   coverageScale = 1,
   coverageOverrides = {},
+  minHoursPerDay = 4,
+  maxHoursPerDay = MAX_HOURS_PER_DAY,
 }: ScheduleParams): GeneratedDriverSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -243,16 +252,16 @@ export function generateDriverSchedule({
       let placed = false
       for (const d of candidates) {
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
-        if (remaining < 4) continue  // not enough room for the shortest 4h pattern
+        if (remaining < minHoursPerDay) continue  // not enough room for shortest allowed pattern
 
         // Per-day soft cap = today's demand-share of this driver's remaining
-        // weekly capacity, with a 4h floor (the shortest pattern). Strict
-        // share with no slack keeps enough budget reserved for the back end
-        // of the work-week (Tue/Wed), which otherwise get starved.
+        // weekly capacity, with a `minHoursPerDay` floor. Strict share with
+        // no slack keeps enough budget reserved for the back end of the
+        // work-week (Tue/Wed), which otherwise get starved.
         const dailyCap = Math.min(
           remaining,
-          MAX_HOURS_PER_DAY,
-          Math.max(4, Math.ceil(remaining * todayDemandShare)),
+          maxHoursPerDay,
+          Math.max(minHoursPerDay, Math.ceil(remaining * todayDemandShare)),
         )
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
@@ -262,15 +271,21 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
+          if (h < minHoursPerDay || h > maxHoursPerDay) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
-          // Score: sum of shortfall slots this pattern fills
+          // Score: sum of shortfall slots this pattern fills, minus a
+          // penalty for each slot it covers where demand is already met.
+          // Without the penalty the scorer happily picks a 9 AM-3 PM pattern
+          // to cover mid-day shortfalls and ends up over-staffing 9-10 AM.
           let score = 0
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && shortfall[s] > 0) score += shortfall[s]
+            if (!p[s]) continue
+            if (shortfall[s] > 0) score += shortfall[s]
+            else score -= 1  // soft penalty per over-covered slot
           }
           if (score > bestScore) {
             bestScore = score
