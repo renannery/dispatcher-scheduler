@@ -56,7 +56,7 @@ interface DriverSchedulerStore {
   schedule: GeneratedDriverSchedule | null
 
   setStep: (step: DriverStep) => void
-  addDriver: (name: string, employmentType?: EmploymentType) => void
+  addDriver: (name: string, employmentType?: EmploymentType, options?: { driverId?: string; isShopper?: boolean }) => void
   removeDriver: (id: string) => void
   setEmploymentType: (id: string, type: EmploymentType) => void
   setShopperStatus: (id: string, isShopper: boolean) => void
@@ -120,13 +120,27 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
 
   setStep: (step) => set({ step }),
 
-  addDriver: (name, employmentType = 'full') =>
+  addDriver: (name, employmentType = 'full', options) =>
     set((s) => {
       const trimmed = name.trim()
       if (!trimmed) return s
-      if (s.drivers.some((d) => d.name.toLowerCase() === trimmed.toLowerCase())) return s
+      // Dedup by driverId when provided (so re-importing the same CSV doesn't
+      // duplicate), otherwise by name.
+      if (options?.driverId) {
+        if (s.drivers.some((d) => d.driverId === options.driverId)) return s
+      } else if (s.drivers.some((d) => d.name.toLowerCase() === trimmed.toLowerCase())) {
+        return s
+      }
       const color = DRIVER_COLORS[s.drivers.length % DRIVER_COLORS.length]
-      const next = [...s.drivers, { id: makeId(), name: trimmed, color, employmentType }]
+      const newDriver: Driver = {
+        id: makeId(),
+        name: trimmed,
+        color,
+        employmentType,
+        ...(options?.driverId ? { driverId: options.driverId } : {}),
+        ...(options?.isShopper ? { isShopper: true } : {}),
+      }
+      const next = [...s.drivers, newDriver]
       next.sort((a, b) => a.name.localeCompare(b.name))
       return { drivers: next }
     }),

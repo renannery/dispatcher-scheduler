@@ -1,7 +1,16 @@
 export type EmploymentType = 'full' | 'part'
 
 export interface Driver {
+  /** Client-side ID — used for React keys, store lookups, time-off maps. */
   id: string
+  /**
+   * Optional backend-system ID (e.g. Firestore document ID). When present,
+   * the XLSX export emits this in column S so the backend can match drivers
+   * by ID instead of by name — eliminates substring-match ambiguity for
+   * common first names. Populated by the CSV import when the header
+   * includes `driverId`.
+   */
+  driverId?: string
   name: string
   color: string
   employmentType: EmploymentType

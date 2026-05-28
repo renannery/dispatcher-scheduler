@@ -26,7 +26,14 @@ interface DayBlockDriver {
   name: string
   slots: boolean[]
   isShopper: boolean
+  /** Backend-system driver ID (e.g. Firestore doc ID). Emitted in column S. */
+  driverId?: string
 }
+
+// Column S (col index 19) holds the backend driverId so the importer can
+// reconcile rows by stable ID instead of substring-matching the name.
+const DRIVER_ID_COL = 19
+const TOTAL_COLS = 19  // A..S
 
 interface DayBlockData {
   date: string         // YYYY-MM-DD
@@ -127,12 +134,13 @@ function writeBlock(
 
   writeTitleStrip(ws, headerRow, blockDate)
 
-  // ── Header row: B=DAY, C..Q=slot labels, R='TOTAL' ───────────────────────
+  // ── Header row: B=DAY, C..Q=slot labels, R='TOTAL', S='Driver ID' ────────
   setCell(ws, addr(2, headerRow), dayName)
   for (let s = 0; s < SLOT_COUNT; s++) {
     setCell(ws, addr(3 + s, headerRow), SLOT_LABELS[s])
   }
   setCell(ws, addr(18, headerRow), 'TOTAL')
+  setCell(ws, addr(DRIVER_ID_COL, headerRow), 'Driver ID')
 
   // ── Driver row layout ───────────────────────────────────────────────────
   // Match the reference exactly: regular drivers fill from the top of the
@@ -168,6 +176,8 @@ function writeBlock(
       for (let s = 0; s < SLOT_COUNT; s++) {
         if (drv.slots[s]) setCell(ws, addr(3 + s, r), drv.name)
       }
+      // S: backend driverId — only emit on rows with an actual driver
+      if (drv.driverId) setCell(ws, addr(DRIVER_ID_COL, r), drv.driverId)
     }
     // R: per-row COUNTIF includes the sheet name prefix (backend requires it)
     setFormula(ws, addr(18, r), `COUNTIF(${sheetName}!$C${r}:$Q${r},"*")`)
@@ -282,6 +292,7 @@ function buildWb(schedule: GeneratedDriverSchedule): XLSX.WorkBook {
         name: xlsxName(ds.driver.name, allFullNames),
         slots: entry?.slots ?? emptySlots,
         isShopper: !!ds.driver.isShopper,
+        driverId: ds.driver.driverId,
       }
     }),
   }))
@@ -293,12 +304,13 @@ function buildWb(schedule: GeneratedDriverSchedule): XLSX.WorkBook {
   blocks.forEach((b, i) => writeBlock(ws, sheetName, i, b))
   const lastHeaderRow = blockHeaderRow(blocks.length - 1)
   const maxRow = lastHeaderRow + DATA_ROWS + 2  // header + data + footer + totals
-  ensureRef(ws, maxRow, 18)
+  ensureRef(ws, maxRow, TOTAL_COLS)
   ws['!cols'] = [
     { wch: 5 },   // A
     { wch: 18 },  // B
     ...Array(SLOT_COUNT).fill({ wch: 11 }),  // C..Q
-    { wch: 10 }, // R
+    { wch: 10 }, // R (TOTAL)
+    { wch: 22 }, // S (Driver ID)
   ]
   XLSX.utils.book_append_sheet(wb, ws, sheetName)
 
