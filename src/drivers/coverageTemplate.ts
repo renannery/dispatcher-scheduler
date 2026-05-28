@@ -124,15 +124,17 @@ const WEEKEND_PATTERNS: number[][] = [
   [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 7h:  8 AM – 3 PM
 ]
 
-// ─── Required coverage extracted from reference week ───────────────────────
-// (drivers needed in each slot, weekday slot 0 = 0 since op starts 9 AM)
-const COV_THU = [0, 10, 17, 27, 31, 31, 20, 17, 19, 29, 43, 43, 28, 15, 6]
-const COV_FRI = [0, 10, 19, 29, 37, 37, 26, 22, 25, 37, 54, 54, 34, 17, 6]
-const COV_SAT = [6, 13, 16, 20, 27, 25, 21, 21, 24, 42, 52, 52, 32, 18, 6]
-const COV_SUN = [7, 11, 17, 23, 28, 23, 24, 19, 24, 37, 47, 47, 28, 15, 6]
-const COV_MON = [0,  9, 15, 21, 30, 30, 20, 21, 20, 24, 42, 40, 32, 13, 5]
-const COV_TUE = [0,  9, 16, 24, 32, 32, 22, 20, 17, 23, 38, 38, 23, 12, 5]
-const COV_WED = [0, 10, 15, 23, 29, 30, 21, 19, 19, 25, 37, 37, 25, 12, 5]
+// ─── Required coverage — 5-week average of actual operations ──────────────
+// Apr 30 – Jun 3 2026 (5 weeks of historical schedules). Replaces the
+// original single-week May 21–27 snapshot. Weekly total ~2486h, with Wed
+// being the slowest day (312h) and Fri the busiest (419h).
+const COV_THU = [0, 10, 16, 25, 30, 30, 19, 17, 19, 28, 42, 42, 27, 16, 6]
+const COV_FRI = [0, 10, 20, 29, 37, 37, 26, 23, 26, 39, 56, 56, 36, 18, 6]
+const COV_SAT = [6, 13, 18, 22, 29, 28, 23, 22, 27, 45, 56, 56, 33, 18, 6]
+const COV_SUN = [7, 11, 17, 23, 29, 24, 26, 21, 25, 39, 51, 51, 30, 17, 7]
+const COV_MON = [0, 10, 16, 22, 31, 31, 21, 21, 20, 23, 43, 43, 33, 13, 6]
+const COV_TUE = [0,  9, 16, 24, 31, 31, 20, 19, 18, 24, 39, 39, 25, 14, 6]
+const COV_WED = [0, 10, 14, 22, 29, 30, 21, 19, 19, 24, 38, 39, 27, 14, 6]
 
 export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
   0: { dayOfWeek: 0, dayName: 'Sunday',    slots: DRIVER_SLOTS, requiredCoverage: COV_SUN, shiftPatterns: WEEKEND_PATTERNS },
