@@ -54,6 +54,13 @@ export const DRIVER_SLOTS: DriverTimeSlot[] = [
 // Each pattern: 15-slot bitmap (1 = paid working, 0 = off/gap).
 // Sum of bits = paid hours. All patterns ≤ 9h.
 const WEEKDAY_PATTERNS: number[][] = [
+  // Long shifts (10-11h with built-in unpaid breaks) — only used when
+  // maxHoursPerDay is raised above 9 in the Period step. Lets a smaller
+  // roster squeeze more hours per driver per day.
+  [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0],  // 11h: 9 AM – 9 PM  (3-4 PM break)
+  [0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0],  // 11h: 10 AM – 10 PM (3-4 PM break)
+  [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0],  // 10h: 9 AM – 8 PM  (3-4 PM break)
+  [0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0],  // 10h: 10 AM – 9 PM (3-4 PM break)
   // Morning-evening (start ≤ 11 AM, end ≤ 9 PM)
   [0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0],  // 9h:  9 AM – 8 PM (1-2 PM lunch)   ← workhorse
   [0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0],  // 8h:  10 AM – 8 PM
@@ -127,7 +134,10 @@ export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
   6: { dayOfWeek: 6, dayName: 'Saturday',  slots: DRIVER_SLOTS, requiredCoverage: COV_SAT, shiftPatterns: WEEKEND_PATTERNS },
 }
 
-export const MAX_HOURS_PER_DAY = 9
+// Hard ceiling on shift length. The Period step's `maxHoursPerDay` knob is
+// further clamped by this; if you want shifts longer than 11h, raise this AND
+// add a corresponding pattern (a 12h shift with no pattern available won't help).
+export const MAX_HOURS_PER_DAY = 11
 export const DEFAULT_PART_TIME_CAP = 30
 export const DEFAULT_FULL_TIME_CAP = 40
 
