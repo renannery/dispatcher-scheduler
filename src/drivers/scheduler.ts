@@ -159,6 +159,35 @@ export function generateDriverSchedule({
 
   const capOf = (d: Driver) => (d.employmentType === 'full' ? fullTimeCap : partTimeCap)
 
+  // Per-driver per-week day count. Used to enforce the "1 day off" rule —
+  // a driver who's already worked 6 days this work-week is skipped as a
+  // candidate so they take the 7th day off. Cap is per work-week (Thu→Wed).
+  const daysWorked: Record<string, Record<string, number>> = {}
+  drivers.forEach((d) => { daysWorked[d.id] = {} })
+  const MAX_DAYS_PER_WEEK = 6
+
+  // Pre-assigned off day per driver per work-week. Without this, the greedy
+  // pass burns drivers' caps on heavy days (Thu-Sat) and the 6-day rule
+  // forces Wed to be the off day for almost everyone → Wed near-empty. By
+  // rotating off days across the work-week's 7 days, each day loses ~1/7 of
+  // the roster instead of concentrating losses on Wed.
+  const WORK_WEEK_DOWS = [4, 5, 6, 0, 1, 2, 3]  // Thu, Fri, Sat, Sun, Mon, Tue, Wed
+  const driverIndex = new Map(drivers.map((d, i) => [d.id, i]))
+  const weekIndexByLabel = new Map<string, number>()
+  allDates.forEach((date) => {
+    const lbl = weekLabel(date)
+    if (!weekIndexByLabel.has(lbl)) weekIndexByLabel.set(lbl, weekIndexByLabel.size)
+  })
+  const designatedOffDow = (driverId: string, wLabel: string): number => {
+    const di = driverIndex.get(driverId) ?? 0
+    const wi = weekIndexByLabel.get(wLabel) ?? 0
+    return WORK_WEEK_DOWS[(di + wi + seed) % WORK_WEEK_DOWS.length]
+  }
+
+  // Hard tolerance: a slot is never staffed above target+3 (refuse the pattern
+  // before assigning). Below-target is informational (handled by hiring banner).
+  const OVER_COVERAGE_LIMIT = 3
+
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
   // Regenerate appears to do nothing.
@@ -237,7 +266,14 @@ export function generateDriverSchedule({
       // alphabetically-first driver from systematically losing hours.
       const offset = drivers.length > 0 ? dayIndex % drivers.length : 0
       const rotated = [...drivers.slice(offset), ...drivers.slice(0, offset)]
-      const candidates = rotated.filter((d) => available.includes(d) && !assigned.has(d.id))
+      const candidates = rotated.filter((d) =>
+        available.includes(d)
+        && !assigned.has(d.id)
+        && (daysWorked[d.id][wLabel] ?? 0) < MAX_DAYS_PER_WEEK
+        // Skip drivers whose designated off day is today — rotates off days
+        // across the week so Wed isn't everyone's default off day.
+        && designatedOffDow(d.id, wLabel) !== dow,
+      )
       if (candidates.length === 0) break
 
       // Sort by ascending weekly hours (load-balance), full-timers first when tied.
@@ -255,20 +291,20 @@ export function generateDriverSchedule({
       // For each candidate (in priority order), find the pattern that
       // (a) fits their remaining cap, (b) respects night-rest, (c) doesn't
       // overlap a blocked slot, (d) covers the most current shortfalls,
-      // (e) stays within today's per-driver demand-weighted share.
+      // (e) doesn't push any slot above target+3 (hard ops tolerance).
       let placed = false
       for (const d of candidates) {
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
         if (remaining < effectiveMin) continue  // not enough room for shortest allowed pattern
 
-        // Per-day soft cap = today's demand-share of this driver's remaining
-        // weekly capacity, with an `effectiveMin` floor. Strict share with
-        // no slack keeps enough budget reserved for the back end of the
-        // work-week (Tue/Wed), which otherwise get starved.
+        // Per-day cap = roughly `cap / 6` so drivers spread across 6 days
+        // instead of clustering 9h shifts into 4-5 days (which leaves Wed
+        // empty). Floors at `effectiveMin` and ceils at `maxHoursPerDay`.
+        const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
         const dailyCap = Math.min(
           remaining,
           maxHoursPerDay,
-          Math.max(effectiveMin, Math.ceil(remaining * todayDemandShare)),
+          Math.max(effectiveMin, perDayTarget),
         )
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
@@ -284,15 +320,26 @@ export function generateDriverSchedule({
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
+          // Hard over-coverage cap: refuse any pattern that would push a slot
+          // beyond target+OVER_COVERAGE_LIMIT. The +3 tolerance matches ops:
+          // operations can handle slight overstaffing but anything more
+          // disrupts the floor.
+          let exceedsLimit = false
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] && actualCov[s] + 1 > required[s] + OVER_COVERAGE_LIMIT) {
+              exceedsLimit = true
+              break
+            }
+          }
+          if (exceedsLimit) continue
+
           // Score: sum of shortfall slots this pattern fills, minus a
-          // penalty for each slot it covers where demand is already met.
-          // Without the penalty the scorer happily picks a 9 AM-3 PM pattern
-          // to cover mid-day shortfalls and ends up over-staffing 9-10 AM.
+          // tie-breaker penalty for each over-covered (but still legal) slot.
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
             if (shortfall[s] > 0) score += shortfall[s]
-            else score -= 1  // soft penalty per over-covered slot
+            else score -= 1  // tie-breaker: prefer patterns hitting fewer over-cover slots
           }
           if (score > bestScore) {
             bestScore = score
@@ -303,6 +350,7 @@ export function generateDriverSchedule({
         if (bestPattern && bestScore > 0) {
           const h = slotHours(bestPattern)
           weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+          daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
           lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
           scheduleMap[d.id].push({
             date: dateStr, dayLabel, dayOfWeek: dow,

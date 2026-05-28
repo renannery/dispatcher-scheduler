@@ -99,6 +99,12 @@ const WEEKEND_PATTERNS: number[][] = [
   [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0],  // 9h:  8 AM – 8 PM (1-4 PM split)
   [1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0],  // 9h:  8 AM – 8 PM (2-5 PM break)
   [1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 6h:  8 AM – 3 PM (11-12 break)
+  // Short 8 AM weekend openers — weekend mornings need 6-13 drivers at 8 AM
+  // and the weekday short patterns all start at 9 AM, leaving 8 AM unstaffed.
+  [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 4h:  8 AM – 12 PM
+  [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 5h:  8 AM – 1 PM
+  [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 6h:  8 AM – 2 PM
+  [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 7h:  8 AM – 3 PM
 ]
 
 // ─── Required coverage extracted from reference week ───────────────────────
