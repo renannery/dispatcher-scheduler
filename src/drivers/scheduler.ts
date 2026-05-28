@@ -299,7 +299,10 @@ export function generateDriverSchedule({
         shortfall.push(need)
         totalShort += need
       }
-      if (totalShort === 0) break
+      // (Loop also exits below when no candidate can be placed with score > 0.
+      // We no longer break on totalShort === 0 — instead, drivers continue to
+      // fill SPARE capacity slots within the +3 tolerance band, so a roster
+      // with scaled-down demand still uses up its weekly cap.)
 
       // Eligible drivers: not yet assigned today, under cap, night-rest OK for morning shifts.
       // Rotate the base order by `dayIndex` so different drivers get "first pick"
@@ -379,13 +382,16 @@ export function generateDriverSchedule({
           }
           if (exceedsLimit) continue
 
-          // Score: sum of shortfall slots this pattern fills, minus a
-          // tie-breaker penalty for each over-covered (but still legal) slot.
+          // Score: shortfall slots count heavily (×10) so they always beat
+          // spare-capacity fill; legal-but-over slots count +1 so drivers
+          // keep working past the target until they hit cap or the +3 limit.
+          // Without the +1, drivers would stop the moment shortfall reaches
+          // 0 (leaving FT drivers at 35h with a 45h cap).
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
-            if (shortfall[s] > 0) score += shortfall[s]
-            else score -= 1  // tie-breaker: prefer patterns hitting fewer over-cover slots
+            if (shortfall[s] > 0) score += shortfall[s] * 10
+            else score += 1  // small bonus for filling spare capacity within +3
           }
           if (score > bestScore) {
             bestScore = score
