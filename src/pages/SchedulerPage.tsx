@@ -146,7 +146,14 @@ export function SchedulerPage({ onChangeTeam }: Props) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-6 py-10">
+      <main
+        className={clsx(
+          'mx-auto px-6 py-10',
+          // Wider on the schedule step so the day grid uses the viewport
+          // on large monitors; forms stay narrow for readability.
+          step === 'schedule' ? 'max-w-[1600px]' : 'max-w-3xl',
+        )}
+      >
         {/* Step bar */}
         <div className="mb-10">
           <StepBar current={step} />
@@ -158,8 +165,7 @@ export function SchedulerPage({ onChangeTeam }: Props) {
           <p className="mt-1.5 text-slate-500">{STEP_SUBTITLES[step]}</p>
         </div>
 
-        {/* Step content — expanded width for schedule view */}
-        <div className={step === 'schedule' ? 'max-w-none' : ''}>
+        <div>
           {step === 'names' && <DispatcherInput />}
           {step === 'period' && <PeriodPicker />}
           {step === 'schedule' && schedule && <ScheduleGrid />}

@@ -75,7 +75,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 <div className="text-[9px] text-slate-500">1h</div>
               </th>
             ))}
-            <th className="bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
+            <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
           </tr>
         </thead>
 
@@ -181,7 +181,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                   )
                 })}
 
-                <td className="px-3 py-1.5 text-right">
+                <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
                   {isOff ? (
                     <span className="text-slate-400">—</span>
                   ) : (
@@ -222,7 +222,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 </td>
               )
             })}
-            <td className="px-3 py-1.5 text-right text-[10px] text-slate-500">
+            <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
               {actual.reduce((s, a) => s + a, 0)}h
             </td>
           </tr>
