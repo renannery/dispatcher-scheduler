@@ -366,15 +366,17 @@ export function generateDriverSchedule({
         const remaining = capOf(d) - (weekHours[d.id][wLabel] ?? 0)
         if (remaining < effectiveMin) continue  // not enough room for shortest allowed pattern
 
-        // Per-day cap = the user-set maxHoursPerDay (default 9). We used
-        // to clamp at `perDayTarget` (cap/6 ≈ 8 for cap=45) to spread
-        // hours across 6 days, but that made 8h the default for every
-        // driver-day. Now we allow up to `maxHoursPerDay` and rely on
-        // the soft length penalty below to keep most shifts shorter,
-        // letting longer ones happen only when they cover priority/
-        // shortfall slots that outweigh the penalty.
+        // `maxHoursPerDay` is treated as a SOFT cap — most drivers stay
+        // at/below it, but the algorithm may give a few drivers a single
+        // extra hour when that overflow shift covers a real coverage
+        // gap. Still clamped at the module-level hard ceiling
+        // (MAX_HOURS_PER_DAY = 11). The quadratic length penalty below
+        // makes the overflow rare (e.g. with max=8, going to 9h costs
+        // 6000 score, only worth it when the extra hour hits a critically
+        // short slot).
         const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
-        const dailyCap = Math.min(remaining, maxHoursPerDay)
+        const softMax = Math.min(maxHoursPerDay + 1, MAX_HOURS_PER_DAY)
+        const dailyCap = Math.min(remaining, softMax)
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
@@ -383,7 +385,7 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
-          if (h < effectiveMin || h > maxHoursPerDay) continue
+          if (h < effectiveMin || h > softMax) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
