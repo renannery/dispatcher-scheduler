@@ -76,6 +76,16 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],  // 6h:  3 PM – 9 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],  // 6h:  5 PM – 11 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1],  // 5h:  6 PM – 11 PM
+  // ─── Split shifts (morning + long unpaid break + evening) ───────────────
+  // Cover lunch + dinner peaks with the slow mid-afternoon as unpaid time
+  // off. 3-4 hour breaks. Useful for shaping coverage to the demand curve
+  // (peak 12-1 PM and 6-7 PM) without 9h continuous shifts.
+  [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0],  // 9h:  9 AM – 1 PM  + 5 PM – 10 PM (4h break)
+  [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],  // 10h: 9 AM – 1 PM  + 5 PM – 11 PM (4h break)
+  [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1],  // 10h: 9 AM – 2 PM  + 6 PM – 11 PM (4h break)
+  [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0],  // 8h:  10 AM – 2 PM + 6 PM – 10 PM (4h break)
+  [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1],  // 9h:  10 AM – 2 PM + 6 PM – 11 PM (4h break)
+  [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1],  // 8h:  11 AM – 3 PM + 7 PM – 11 PM (4h break)
   // ─── Short shifts (4-6h, full day coverage) ─────────────────────────────
   // Used when the demand-weighted dailyCap restricts longer shifts (early in
   // the work-week) or when drivers have a small remaining weekly budget
