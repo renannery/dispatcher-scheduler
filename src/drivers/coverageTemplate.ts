@@ -108,6 +108,13 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],  // 4h:  3 PM – 7 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0],  // 4h:  5 PM – 9 PM (evening peak)
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],  // 4h:  7 PM – 11 PM (closing)
+  // Evening-peak patterns that AVOID the 10-11 PM slot (which fills its
+  // +3 over-cap fast on light-target days, blocking 5 PM-11 PM patterns
+  // that would otherwise be picked). These let the scheduler cover the
+  // 6-7 PM peak (Sat/Sun/Mon target 43-56) without touching slot 14.
+  [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0],  // 6h:  4 PM – 10 PM
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0],  // 5h:  5 PM – 10 PM
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0],  // 4h:  6 PM – 10 PM (peak only)
 ]
 
 // Weekend adds early-morning patterns (8 AM start).

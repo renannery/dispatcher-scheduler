@@ -304,19 +304,23 @@ export function generateDriverSchedule({
       // fill SPARE capacity slots within the +3 tolerance band, so a roster
       // with scaled-down demand still uses up its weekly cap.)
 
-      // Identify the most-starved slot — highest shortfall/target ratio.
-      // Patterns covering it will get a +1000 priority boost so low-demand
-      // slots like Mon 9 AM (10 demand) aren't starved by mid-day slots
-      // (31 demand) that dominate pure-absolute scoring.
-      let mostStarvedSlot = -1
-      let mostStarvedRatio = 0
+      // Per-slot priority boost captures BOTH kinds of starvation:
+      //   absolute (× 5):  high-demand slot that's short by many bodies
+      //   relative (× 50): low-demand slot that's mostly empty
+      // Plus a 3× multiplier when a slot is more than half-empty — without
+      // it, evening peaks (target 56, short 7 = 12%) totally outweigh
+      // morning openers (target 10, short 8 = 80%) because evening peaks
+      // are clustered (multiple high-need slots adjacent), so patterns
+      // covering them rack up bigger boosts.
+      const slotPriority: number[] = []
       for (let s = 0; s < required.length; s++) {
-        if (required[s] > 0 && shortfall[s] > 0) {
+        if (shortfall[s] > 0 && required[s] > 0) {
           const ratio = shortfall[s] / required[s]
-          if (ratio > mostStarvedRatio) {
-            mostStarvedRatio = ratio
-            mostStarvedSlot = s
-          }
+          let priority = Math.max(shortfall[s] * 5, ratio * 50)
+          if (ratio > 0.5) priority *= 3  // "starved" multiplier for mostly-empty slots
+          slotPriority[s] = priority
+        } else {
+          slotPriority[s] = 0
         }
       }
 
@@ -418,11 +422,12 @@ export function generateDriverSchedule({
               score += 1
             }
           }
-          // Priority boost: if this pattern covers the most-starved slot
-          // (highest shortfall/target ratio), give it a massive bonus so
-          // it always beats patterns that ignore that slot.
-          if (mostStarvedSlot >= 0 && p[mostStarvedSlot]) {
-            score += 1000
+          // Priority boost = sum of (slot priority × 20) for slots the
+          // pattern covers. Multiple critical slots stack, so a pattern
+          // hitting Sat 6 PM AND 7 PM scores much higher than one hitting
+          // only one of them.
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] && slotPriority[s] > 0) score += slotPriority[s] * 20
           }
           if (score > bestScore) {
             bestScore = score
