@@ -429,6 +429,21 @@ export function generateDriverSchedule({
           for (let s = 0; s < p.length; s++) {
             if (p[s] && slotPriority[s] > 0) score += slotPriority[s] * 20
           }
+          // Soft length preference: pay 1500 points per hour above
+          // `perDayTarget - 1` (7h for the default cap=45). A pattern
+          // only beats that penalty when the extra hour covers a slot
+          // that's significantly short or marked high-priority, so 8h
+          // shifts get reserved for the busiest combinations instead of
+          // becoming the default. Without this, ~50% of driver-days
+          // ended up at the dailyCap length — the user flagged that as
+          // "every full-timer working 9 hours" (one click from overtime).
+          // Bonus: forcing the algorithm to consider shorter patterns
+          // spreads work across more drivers, which also reduces total
+          // coverage gaps.
+          const preferredLength = Math.max(effectiveMin, perDayTarget - 1)
+          if (h > preferredLength) {
+            score -= (h - preferredLength) * 1500
+          }
           if (score > bestScore) {
             bestScore = score
             bestPattern = p
