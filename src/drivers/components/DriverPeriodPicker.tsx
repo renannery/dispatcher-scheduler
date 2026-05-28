@@ -13,6 +13,7 @@ import { DRIVER_SLOTS } from '../coverageTemplate'
 import { generateDriverSchedule } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName, longDay, shortHour } from '../utils'
+import { CoverageGridEditor } from './CoverageGridEditor'
 
 export function DriverPeriodPicker() {
   const {
@@ -22,6 +23,7 @@ export function DriverPeriodPicker() {
     fullTimeCap,
     partTimeCap,
     coverageScale,
+    coverageOverrides,
     timeOff,
     absenceReasons,
     weekendRotationOffset,
@@ -29,6 +31,8 @@ export function DriverPeriodPicker() {
     setFullTimeCap,
     setPartTimeCap,
     setCoverageScale,
+    setCoverageOverride,
+    resetCoverageOverrides,
     setSchedule,
     setStep,
     toggleFullDayOff,
@@ -86,6 +90,7 @@ export function DriverPeriodPicker() {
       fullTimeCap,
       partTimeCap,
       coverageScale,
+      coverageOverrides,
       // Seed from the persisted cursor — picks up where the previous
       // schedule's rotation left off instead of always starting at index 0.
       seed: weekendRotationOffset,
@@ -247,6 +252,13 @@ export function DriverPeriodPicker() {
             <span>2.0× (bigger team)</span>
           </div>
         </div>
+
+        <CoverageGridEditor
+          coverageScale={coverageScale}
+          coverageOverrides={coverageOverrides}
+          onSetOverride={setCoverageOverride}
+          onReset={resetCoverageOverrides}
+        />
       </div>
 
       {isValid && (
