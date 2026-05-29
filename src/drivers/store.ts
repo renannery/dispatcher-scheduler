@@ -326,8 +326,16 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
         return { ...ds, days, weeklyHours, totalHours }
       })
 
+      // Recount per-slot coverage from scratch. Shoppers are excluded
+      // because they belong to a separate operational pool (groceries)
+      // and don't count toward DRIVER coverage targets. Mirrors the
+      // shopper-exclusion rule in scheduler.ts; without it, clicking
+      // a slot in the day grid would inflate the coverage number with
+      // shopper hours and the cell would visually flip from short/ok
+      // to over.
       const newCov = new Array(slotCount).fill(0)
       for (const ds of driverSchedules) {
+        if (ds.driver.isShopper) continue
         const e = ds.days.find((d) => d.date === date)
         if (!e) continue
         e.slots.forEach((on, i) => { if (on) newCov[i]++ })
