@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
@@ -7,7 +7,8 @@ import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 
 import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
-import { analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
+import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
+import { shuffleDriverSchedules } from '../shuffler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -412,6 +413,7 @@ export function DriverScheduleGrid() {
     addDriver,
     undoScheduleEdit,
     redoScheduleEdit,
+    applyShuffledSchedule,
   } = useDriverStore()
   // Track undo/redo button enabled state. We can't use the canUndo/canRedo
   // selectors directly here because they're functions, so subscribe via the
@@ -501,24 +503,53 @@ export function DriverScheduleGrid() {
     setSimResult(null)
   }
 
+  // Shuffle — rotates patterns across compatible drivers WITHOUT re-running
+  // the scheduler. Coverage stays exactly the same (patterns move intact
+  // as closed pairs), and Cmd+Z reverses the rotation because we route
+  // through applyShuffledSchedule which pushes to the undo stack. Each
+  // click uses a new seed so successive shuffles produce different
+  // rotations.
+  const shuffleSeed = useRef(Date.now() & 0xffff)
+  const handleShuffle = () => {
+    if (!schedule) return
+    shuffleSeed.current = (shuffleSeed.current + 1 + Math.floor(Math.random() * 1000)) & 0xffff
+    const shuffled = shuffleDriverSchedules(schedule, timeOff, shuffleSeed.current)
+    applyShuffledSchedule(shuffled)
+    setExpandedDates(new Set())
+  }
+
   // Add a new driver, then regenerate so they immediately appear in
   // the schedule and start filling gaps. Uses the up-to-date driver
   // list from the store after `addDriver` runs (synchronous Zustand set).
   const handleQuickAdd = (d: { name: string; driverId?: string; employmentType: 'full' | 'part'; isShopper: boolean }) => {
     addDriver(d.name, d.employmentType, { driverId: d.driverId, isShopper: d.isShopper })
     setQuickAddOpen(false)
-    // Pull the fresh driver list from the store (post-addDriver).
+    if (!schedule) return
+    // Incremental placement — every existing driver's shifts are kept
+    // intact, only the new driver gets new entries placed into current
+    // coverage gaps. NO full regenerate; no churn. The new driver is
+    // the last entry in the store's drivers array (just appended by
+    // addDriver), pull it out by name+type match to avoid race vs the
+    // synchronous Zustand set.
     const freshDrivers = useDriverStore.getState().drivers
-    regenSeed.current++
-    const fresh = generateDriverSchedule({
-      drivers: freshDrivers, startDate, endDate, timeOff,
-      fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+    const newDriver = freshDrivers[freshDrivers.length - 1]
+    const result = addDriverIncremental({
+      schedule,
+      newDriver,
+      timeOff,
+      coverageScale, coverageOverrides,
       minHoursPerDay, maxHoursPerDay,
-      seed: weekendRotationOffset + regenSeed.current,
     })
-    setSchedule(fresh)
+    setSchedule(result.schedule)
     setExpandedDates(new Set())
     setSimResult(null)
+    if (result.underUtilized) {
+      // Surface the gap-shortage hint in the simResult slot, since the
+      // hiring banner already renders that area cleanly.
+      console.warn(
+        `[add driver] ${newDriver.name} placed at ${result.assignedHours}h / ${result.weeklyCap}h-per-week cap. Not enough coverage gaps in current schedule to absorb their full capacity. Use Regenerate to re-balance if you want to use all their hours.`
+      )
+    }
   }
 
   // Run a hypothetical schedule with N placeholder FT drivers tacked
@@ -757,6 +788,14 @@ export function DriverScheduleGrid() {
           >
             <Plus className="h-4 w-4" />
             Add driver
+          </button>
+          <button
+            onClick={handleShuffle}
+            title="Rotate which driver works which schedule — coverage stays exactly the same. Each click randomizes pairings among compatible drivers. Cmd+Z to undo."
+            className="flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-100"
+          >
+            <Shuffle className="h-4 w-4" />
+            Shuffle
           </button>
           <button
             onClick={handleRegenerate}

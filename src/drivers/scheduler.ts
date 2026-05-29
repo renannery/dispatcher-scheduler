@@ -1844,3 +1844,237 @@ export function hoursStatusBg(hours: number, cap: number): string {
   if (hours >= cap * 0.9) return 'bg-emerald-100 text-emerald-700 border-emerald-200'
   return 'bg-amber-100 text-amber-700 border-amber-200'
 }
+
+// ─── Incremental add-driver ─────────────────────────────────────────────
+//
+// Adds a single driver to an EXISTING schedule without re-running the
+// 8-phase pipeline. Every existing driver's shifts are kept exactly as
+// they are; only the new driver gets new entries. Coverage at the slots
+// they fill goes up — that's the expected outcome.
+//
+// Replaces the old "add-driver triggers full regenerate" flow which
+// churned every driver's assignments. Per user spec:
+//   - Hold all existing driverSchedules fixed
+//   - Place the new driver into current coverage gaps, prioritizing
+//     the largest deficits and honoring opening/peak weighting
+//   - Don't push slots above target just to use up cap
+//   - Respect 12h rest, 4-9h per day, weekly cap, and the new driver's
+//     own time-off
+//
+// Returns a new GeneratedDriverSchedule and an UNDER-utilized flag set
+// when the new driver's assigned hours are notably below their cap
+// (less than 70% — i.e., not enough gaps to absorb them fully).
+
+export interface AddDriverIncrementalResult {
+  schedule: GeneratedDriverSchedule
+  /** Hours assigned to the new driver. */
+  assignedHours: number
+  /** The driver's user-set weekly cap (FT or PT). */
+  weeklyCap: number
+  /** True when total assigned < ~70% × cap × week-count — the schedule
+   *  didn't have enough gaps to absorb the new driver's full capacity. */
+  underUtilized: boolean
+}
+
+export function addDriverIncremental({
+  schedule,
+  newDriver,
+  timeOff,
+  coverageScale = 1,
+  coverageOverrides = {},
+  minHoursPerDay = 4,
+  maxHoursPerDay = MAX_HOURS_PER_DAY,
+}: {
+  schedule: GeneratedDriverSchedule
+  newDriver: Driver
+  timeOff: DriverTimeOff
+  coverageScale?: number
+  coverageOverrides?: Record<number, number[]>
+  minHoursPerDay?: number
+  maxHoursPerDay?: number
+}): AddDriverIncrementalResult {
+  const userCap = newDriver.employmentType === 'full'
+    ? schedule.fullTimeCap
+    : schedule.partTimeCap
+  // Buffer over user cap matches scheduler's bufferedCapOf logic.
+  const legalMax = newDriver.employmentType === 'full'
+    ? LEGAL_WEEKLY_MAX_HOURS
+    : LEGAL_PT_WEEKLY_MAX_HOURS
+  const bufferedCap = Math.min(
+    Math.round(userCap * (1 + USER_CAP_BUFFER_PCT)),
+    legalMax,
+  )
+
+  // Effective min per shift (4h hard floor per ops policy).
+  const effectiveMin = Math.max(4, minHoursPerDay)
+  const softMaxPerDay = Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS, MAX_HOURS_PER_DAY)
+
+  // Work in a shallow copy of coverageActual so we can incrementally
+  // update as we place the new driver's shifts. We DON'T mutate the
+  // existing driverSchedules.
+  const newCoverageActual: Record<string, number[]> = {}
+  for (const date of Object.keys(schedule.coverageActual)) {
+    newCoverageActual[date] = [...schedule.coverageActual[date]]
+  }
+
+  // Build the new driver's empty days array (one entry per date).
+  const newDays: DriverDayEntry[] = schedule.dates.map((di) => ({
+    date: di.date,
+    dayLabel: di.dayLabel,
+    dayOfWeek: di.dayOfWeek,
+    slots: new Array(DRIVER_SLOTS.length).fill(false),
+    totalHours: 0,
+    isOff: true,
+  }))
+
+  // Per work-week running totals (so we don't exceed weekly cap).
+  const weekHours: Record<string, number> = {}
+  // Per work-week running days-worked count (cap at MAX_DAYS_PER_WEEK = 6).
+  const daysWorkedInWeek: Record<string, number> = {}
+  const MAX_DAYS_PER_WEEK = 6
+
+  // Pre-compute each date's per-slot priority weight for scoring (cached).
+  const priorityByDate = new Map<string, number[]>()
+  for (const di of schedule.dates) {
+    const w = new Array(DRIVER_SLOTS.length)
+    for (let s = 0; s < DRIVER_SLOTS.length; s++) {
+      w[s] = newDriver.isShopper ? 1 : slotPriorityWeight(di.dayOfWeek, s)
+    }
+    priorityByDate.set(di.date, w)
+  }
+
+  // Iterate dates in calendar order — calculate the deficit (largest
+  // weighted shortfall) for each date and try to place a pattern that
+  // hits the deficit slots. Calendar order so rest checks against
+  // already-placed adjacent days work correctly.
+  for (let dayIdx = 0; dayIdx < schedule.dates.length; dayIdx++) {
+    const di = schedule.dates[dayIdx]
+    const wLabel = di.weekLabel
+    if (newDriver.isShopper && di.dayOfWeek === 0) continue  // shoppers don't work Sundays
+
+    const remainingWeek = bufferedCap - (weekHours[wLabel] ?? 0)
+    if (remainingWeek < effectiveMin) continue
+    if ((daysWorkedInWeek[wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
+
+    const required = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
+    const cov = newCoverageActual[di.date] ?? new Array(DRIVER_SLOTS.length).fill(0)
+    const weights = priorityByDate.get(di.date)!
+    const blocks = blockedBitmap(timeOff, newDriver, di.date, di.dayOfWeek)
+    // Day completely blocked? skip.
+    if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
+
+    // Day's deficit (weighted shortfall sum). If zero, no incentive
+    // to place — the new driver would just over-staff.
+    let dayDeficit = 0
+    for (let s = 0; s < required.length; s++) {
+      const short = Math.max(0, required[s] - cov[s])
+      dayDeficit += short * weights[s]
+    }
+    if (dayDeficit <= 0) continue
+
+    // Probe every pattern in the day's template, scoring by how much
+    // gap-coverage it provides. Score logic mirrors main pass: each
+    // slot's contribution = max(0, shortfall) × priority weight.
+    // Slots already at-or-over target contribute zero (per spec:
+    // "Don't push slots above target just to use up their hours").
+    const template = DRIVER_DAY_TEMPLATES[di.dayOfWeek]
+    let bestPattern: boolean[] | null = null
+    let bestScore = 0  // strict > 0 needed to place anything
+
+    // Find adjacent days for rest checks.
+    const yest = dayIdx > 0 ? newDays[dayIdx - 1] : null
+    const tomorrow = dayIdx + 1 < newDays.length ? newDays[dayIdx + 1] : null
+    const yestLast = (yest && !yest.isOff) ? lastActive(yest.slots) : -1
+    const tomorrowFirst = (tomorrow && !tomorrow.isOff) ? tomorrow.slots.findIndex(s => s) : -1
+
+    for (const raw of template.shiftPatterns) {
+      const p = raw.map((v) => v === 1)
+      const h = slotHours(p)
+      if (h < effectiveMin || h > softMaxPerDay) continue
+      if (h > remainingWeek) continue
+      if (blocks && p.some((on, i) => on && blocks[i])) continue
+      // Break rule for 8h+ shifts.
+      if (h >= breakRequiredAt(newDriver) && !patternHasBreak(p)) continue
+      // 12h rest with adjacent days that this new driver has already
+      // accepted in earlier iterations.
+      const pFirst = firstActive(p)
+      const pLast = lastActive(p)
+      if (yestLast >= 0 && violatesMinRest(yestLast, pFirst)) continue
+      if (tomorrowFirst >= 0 && violatesMinRest(pLast, tomorrowFirst)) continue
+
+      // Score: weighted shortfall on slots the pattern covers, capped
+      // at the actual deficit per slot. Slots above target contribute 0.
+      let score = 0
+      let helpsAnyGap = false
+      for (let s = 0; s < p.length; s++) {
+        if (!p[s]) continue
+        const short = required[s] - cov[s]
+        if (short > 0) {
+          score += weights[s] * 10 + weights[s] * (short / Math.max(1, required[s])) * 50
+          helpsAnyGap = true
+        }
+        // Above-target slots don't subtract — we tolerate touching them
+        // so a pattern that fills a real gap but also crosses an over-
+        // staffed slot still scores positively.
+      }
+      // Length tie-break: prefer the SHORTER pattern when scores match.
+      // Saves weekly cap for other days of the new driver.
+      score -= h * 0.1
+      if (!helpsAnyGap) continue  // no real gap → don't place
+      if (score > bestScore) {
+        bestScore = score
+        bestPattern = p
+      }
+    }
+
+    if (!bestPattern) continue  // no useful gap-filling pattern for this day
+
+    // Apply the placement.
+    const h = slotHours(bestPattern)
+    newDays[dayIdx] = {
+      date: di.date,
+      dayLabel: di.dayLabel,
+      dayOfWeek: di.dayOfWeek,
+      slots: [...bestPattern],
+      totalHours: h,
+      isOff: false,
+    }
+    weekHours[wLabel] = (weekHours[wLabel] ?? 0) + h
+    daysWorkedInWeek[wLabel] = (daysWorkedInWeek[wLabel] ?? 0) + 1
+    // Only count toward DRIVER coverage if non-shopper (shoppers feed
+    // the separate SHOPPER pool).
+    if (!newDriver.isShopper) {
+      for (let s = 0; s < bestPattern.length; s++) {
+        if (bestPattern[s]) cov[s]++
+      }
+      newCoverageActual[di.date] = cov
+    }
+  }
+
+  // Build the new DriverSchedule entry.
+  const newDriverSchedule: DriverSchedule = {
+    driver: newDriver,
+    days: newDays,
+    weeklyHours: { ...weekHours },
+    totalHours: Object.values(weekHours).reduce((s, v) => s + v, 0),
+  }
+
+  // Append to the existing driverSchedules array (preserve order).
+  const newDriverSchedules = [...schedule.driverSchedules, newDriverSchedule]
+
+  // Under-utilized when total < 70% of the per-week cap × number of weeks.
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size || 1
+  const expectedHours = userCap * weekCount
+  const assignedHours = newDriverSchedule.totalHours
+
+  return {
+    schedule: {
+      ...schedule,
+      driverSchedules: newDriverSchedules,
+      coverageActual: newCoverageActual,
+    },
+    assignedHours,
+    weeklyCap: userCap,
+    underUtilized: assignedHours < expectedHours * 0.7,
+  }
+}

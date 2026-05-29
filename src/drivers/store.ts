@@ -117,6 +117,13 @@ interface DriverSchedulerStore {
   ) => void
   setSchedule: (s: GeneratedDriverSchedule) => void
   toggleDriverSlot: (driverId: string, date: string, slotIndex: number) => void
+  /**
+   * Apply a new schedule produced by the shuffler (rotates patterns
+   * across drivers, coverage unchanged). PUSHES the pre-shuffle schedule
+   * onto the undo stack so Cmd+Z reverses the shuffle — unlike setSchedule
+   * which clears history because it implies a fresh generate.
+   */
+  applyShuffledSchedule: (s: GeneratedDriverSchedule) => void
   /** Undo the most recent toggleDriverSlot edit. No-op if undo stack is empty. */
   undoScheduleEdit: () => void
   /** Redo the most recently-undone edit. No-op if redo stack is empty. */
@@ -330,6 +337,20 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
     // — drop the undo/redo stacks instead of letting them point at a
     // schedule that no longer exists.
     set({ schedule, scheduleUndoStack: [], scheduleRedoStack: [] }),
+
+  applyShuffledSchedule: (shuffled) =>
+    set((state) => {
+      if (!state.schedule) return { schedule: shuffled }
+      // Shuffle is a targeted edit (just rotates drivers across patterns),
+      // not a full regenerate — preserve undo history and push the pre-
+      // shuffle schedule onto the undo stack so Cmd+Z reverses it.
+      const nextUndo = [...state.scheduleUndoStack, state.schedule].slice(-50)
+      return {
+        schedule: shuffled,
+        scheduleUndoStack: nextUndo,
+        scheduleRedoStack: [],
+      }
+    }),
 
   toggleDriverSlot: (driverId, date, slotIndex) =>
     set((state) => {
