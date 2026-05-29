@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
@@ -410,7 +410,40 @@ export function DriverScheduleGrid() {
     setMaxHoursPerDay,
     setCoverageScale,
     addDriver,
+    undoScheduleEdit,
+    redoScheduleEdit,
   } = useDriverStore()
+  // Track undo/redo button enabled state. We can't use the canUndo/canRedo
+  // selectors directly here because they're functions, so subscribe via the
+  // stack lengths instead — those re-render the component when toggle hits.
+  const undoCount = useDriverStore((s) => s.scheduleUndoStack.length)
+  const redoCount = useDriverStore((s) => s.scheduleRedoStack.length)
+  const canUndo = undoCount > 0
+  const canRedo = redoCount > 0
+
+  // Keyboard shortcut: Cmd/Ctrl+Z undoes the last slot-toggle edit,
+  // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) redoes. Skips when the focus is
+  // inside an editable element so we don't hijack the user's text input.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) {
+        return
+      }
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undoScheduleEdit()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        redoScheduleEdit()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [undoScheduleEdit, redoScheduleEdit])
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
@@ -696,6 +729,27 @@ export function DriverScheduleGrid() {
           </div>
         </div>
         <div className="flex gap-2">
+          {/* Undo / Redo — only enabled when there's something on the stack.
+              Keyboard shortcuts are Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z (or Y),
+              wired in the useEffect above. */}
+          <button
+            onClick={undoScheduleEdit}
+            disabled={!canUndo}
+            title={canUndo ? `Undo last edit (${undoCount} in history) — Cmd/Ctrl+Z` : 'Nothing to undo'}
+            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Undo2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Undo</span>
+          </button>
+          <button
+            onClick={redoScheduleEdit}
+            disabled={!canRedo}
+            title={canRedo ? `Redo (${redoCount} available) — Cmd/Ctrl+Shift+Z` : 'Nothing to redo'}
+            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Redo2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Redo</span>
+          </button>
           <button
             onClick={() => setQuickAddOpen(true)}
             title="Add a driver and regenerate — pulls a new body straight into the gaps"

@@ -72,6 +72,15 @@ interface DriverSchedulerStore {
    */
   weekendRotationOffset: number
   schedule: GeneratedDriverSchedule | null
+  /**
+   * Undo / redo stacks for interactive schedule edits (slot toggles).
+   * Each entry is a full schedule snapshot saved at the moment BEFORE
+   * a toggle was applied. Bounded at 50 entries to keep memory in check
+   * on long editing sessions. Cleared whenever a fresh schedule is
+   * generated, hydrated, or otherwise wholesale-replaced.
+   */
+  scheduleUndoStack: GeneratedDriverSchedule[]
+  scheduleRedoStack: GeneratedDriverSchedule[]
 
   setStep: (step: DriverStep) => void
   addDriver: (name: string, employmentType?: EmploymentType, options?: { driverId?: string; isShopper?: boolean }) => void
@@ -108,6 +117,14 @@ interface DriverSchedulerStore {
   ) => void
   setSchedule: (s: GeneratedDriverSchedule) => void
   toggleDriverSlot: (driverId: string, date: string, slotIndex: number) => void
+  /** Undo the most recent toggleDriverSlot edit. No-op if undo stack is empty. */
+  undoScheduleEdit: () => void
+  /** Redo the most recently-undone edit. No-op if redo stack is empty. */
+  redoScheduleEdit: () => void
+  /** True when there's at least one entry on the undo stack. */
+  canUndoScheduleEdit: () => boolean
+  /** True when there's at least one entry on the redo stack. */
+  canRedoScheduleEdit: () => boolean
   /** Replace entire store contents from a parsed snapshot. Jumps to the schedule step. */
   hydrateFromSnapshot: (data: DriverSnapshotData) => void
   /**
@@ -130,7 +147,12 @@ function isAllTrue(arr: boolean[] | undefined): boolean {
   return !!arr && arr.length === DRIVER_SLOTS.length && arr.every(Boolean)
 }
 
-export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
+// Maximum number of schedule snapshots kept on the undo stack. Long
+// editing sessions can otherwise balloon localStorage past quota since
+// every snapshot is a full schedule (~hundreds of KB on big rosters).
+const SCHEDULE_HISTORY_MAX = 50
+
+export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) => ({
   step: 'names',
   drivers: [],
   startDate: defaultStart,
@@ -145,6 +167,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
   absenceReasons: {},
   weekendRotationOffset: 0,
   schedule: null,
+  scheduleUndoStack: [],
+  scheduleRedoStack: [],
 
   setStep: (step) => set({ step }),
 
@@ -300,13 +324,22 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       }
     }),
 
-  setSchedule: (schedule) => set({ schedule }),
+  setSchedule: (schedule) =>
+    // Generating a fresh schedule wholesale-replaces the grid, so any
+    // interactive edits from the previous run are no longer meaningful
+    // — drop the undo/redo stacks instead of letting them point at a
+    // schedule that no longer exists.
+    set({ schedule, scheduleUndoStack: [], scheduleRedoStack: [] }),
 
   toggleDriverSlot: (driverId, date, slotIndex) =>
     set((state) => {
       if (!state.schedule) return state
       const sch = state.schedule
       const slotCount = sch.driverSchedules[0]?.days[0]?.slots.length ?? 15
+      // Snapshot the PRE-edit schedule onto the undo stack so Cmd/Ctrl+Z
+      // can roll this toggle back. Clear the redo stack — once the user
+      // takes a new action after undoing, the future timeline is invalid.
+      const nextUndo = [...state.scheduleUndoStack, sch].slice(-SCHEDULE_HISTORY_MAX)
 
       const driverSchedules = sch.driverSchedules.map((ds) => {
         if (ds.driver.id !== driverId) return ds
@@ -346,8 +379,39 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
           driverSchedules,
           coverageActual: { ...sch.coverageActual, [date]: newCov },
         },
+        scheduleUndoStack: nextUndo,
+        scheduleRedoStack: [],
       }
     }),
+
+  undoScheduleEdit: () => {
+    const state = get()
+    if (state.scheduleUndoStack.length === 0 || !state.schedule) return
+    const undo = [...state.scheduleUndoStack]
+    const prev = undo.pop()!
+    set({
+      schedule: prev,
+      scheduleUndoStack: undo,
+      // Save the current (post-edit) schedule onto the redo stack so the
+      // user can Cmd/Ctrl+Shift+Z back into it.
+      scheduleRedoStack: [...state.scheduleRedoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX),
+    })
+  },
+
+  redoScheduleEdit: () => {
+    const state = get()
+    if (state.scheduleRedoStack.length === 0 || !state.schedule) return
+    const redo = [...state.scheduleRedoStack]
+    const next = redo.pop()!
+    set({
+      schedule: next,
+      scheduleRedoStack: redo,
+      scheduleUndoStack: [...state.scheduleUndoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX),
+    })
+  },
+
+  canUndoScheduleEdit: () => get().scheduleUndoStack.length > 0,
+  canRedoScheduleEdit: () => get().scheduleRedoStack.length > 0,
 
   hydrateFromSnapshot: (data) =>
     set((s) => ({
@@ -365,6 +429,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
+      scheduleUndoStack: [],
+      scheduleRedoStack: [],
     })),
 
   importRotationContext: (data) =>
@@ -402,6 +468,8 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set) => ({
       timeOff: {},
       absenceReasons: {},
       schedule: null,
+      scheduleUndoStack: [],
+      scheduleRedoStack: [],
     }),
 }), {
   name: 'driver-scheduler',
