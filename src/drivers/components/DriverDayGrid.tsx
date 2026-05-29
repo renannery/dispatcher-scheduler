@@ -151,13 +151,19 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             const cap = ds.driver.employmentType === 'full' ? fullTimeCap : partTimeCap
             const pctOfCap = cap > 0 ? weekH / cap : 0
             const isFirstShopper = rowIdx === firstShopperIdx
+            const isShopperRow = ds.driver.isShopper
             return (
               <tr
                 key={ds.driver.id}
                 className={clsx(
                   'border-t border-slate-100',
-                  isFirstShopper && 'border-t-2 border-t-amber-300',
-                  rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50',
+                  isFirstShopper && 'border-t-2 border-t-purple-300',
+                  // Shopper rows: purple tint to match the SHP badge
+                  // and the purple footer row. Drivers: standard
+                  // zebra-stripe white/slate.
+                  isShopperRow
+                    ? (rowIdx % 2 === 0 ? 'bg-purple-50/60' : 'bg-purple-100/40')
+                    : (rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'),
                 )}
               >
                 <td className="sticky left-0 bg-inherit px-3 py-1.5">
