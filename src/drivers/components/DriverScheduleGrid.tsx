@@ -774,6 +774,30 @@ export function DriverScheduleGrid() {
         const ptAtCap = ptSummary.filter((h) => h >= schedule.partTimeCap).length
         const ptUnder = ptSummary.filter((h) => h > 0 && h < schedule.partTimeCap).length
 
+        // Days-off distribution across all NON-SHOPPER staff this week.
+        // Shoppers always work 6 non-Sundays so excluding them keeps the
+        // "days off" tally focused on the driver pool the user controls.
+        // Buckets:
+        //   1d off = 6 days worked (one day off this work-week)
+        //   2d off = 5 days worked
+        //   3d off = 4 days worked
+        //   4d+ off = 3 or fewer days worked (folded into one bucket)
+        const dayOffBuckets = { '1d': 0, '2d': 0, '3d': 0, '4d+': 0 }
+        const weekDateSet = new Set(weekDates.map((di) => di.date))
+        for (const ds of schedule.driverSchedules) {
+          if (ds.driver.isShopper) continue
+          let worked = 0
+          for (const e of ds.days) {
+            if (weekDateSet.has(e.date) && !e.isOff) worked++
+          }
+          if (worked === 0) continue  // already counted as "off"
+          const off = 7 - worked
+          if (off === 1) dayOffBuckets['1d']++
+          else if (off === 2) dayOffBuckets['2d']++
+          else if (off === 3) dayOffBuckets['3d']++
+          else if (off >= 4) dayOffBuckets['4d+']++
+        }
+
         // Overtime tally — over the legal weekly max for that driver's
         // employment type (FT 45h, PT 30h). Computed across both pools
         // for the week's payroll picture.
@@ -834,6 +858,45 @@ export function DriverScheduleGrid() {
                     <HoverHint label={`${ptAtCap + ptUnder} part-time driver${(ptAtCap + ptUnder) === 1 ? '' : 's'} scheduled this week (${ptAtCap} at ${schedule.partTimeCap}h cap, ${ptUnder} under)`}>
                       <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span>
                     </HoverHint>{' '}PT
+                  </div>
+                  {/* Days-off distribution pills — fairness at a glance.
+                      Excludes shoppers (always work 6 non-Sundays). 1d-off
+                      shown emerald (= "worked 6 days, fully used"); 2d-off
+                      slate (normal); 3d-off and 4d+-off amber/red so under-
+                      utilization is visually obvious. */}
+                  <div className="flex items-center gap-1 text-xs">
+                    {dayOffBuckets['1d'] > 0 && (
+                      <HoverHint label={`${dayOffBuckets['1d']} driver${dayOffBuckets['1d'] === 1 ? '' : 's'} worked 6 days this week (1 day off)`}>
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700">
+                          {dayOffBuckets['1d']}
+                          <span className="text-[10px] font-normal opacity-80">1d off</span>
+                        </span>
+                      </HoverHint>
+                    )}
+                    {dayOffBuckets['2d'] > 0 && (
+                      <HoverHint label={`${dayOffBuckets['2d']} driver${dayOffBuckets['2d'] === 1 ? '' : 's'} worked 5 days this week (2 days off)`}>
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+                          {dayOffBuckets['2d']}
+                          <span className="text-[10px] font-normal opacity-80">2d off</span>
+                        </span>
+                      </HoverHint>
+                    )}
+                    {dayOffBuckets['3d'] > 0 && (
+                      <HoverHint label={`${dayOffBuckets['3d']} driver${dayOffBuckets['3d'] === 1 ? '' : 's'} worked 4 days this week (3 days off) — under-utilized`}>
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700">
+                          {dayOffBuckets['3d']}
+                          <span className="text-[10px] font-normal opacity-80">3d off</span>
+                        </span>
+                      </HoverHint>
+                    )}
+                    {dayOffBuckets['4d+'] > 0 && (
+                      <HoverHint label={`${dayOffBuckets['4d+']} driver${dayOffBuckets['4d+'] === 1 ? '' : 's'} worked 3 or fewer days this week (4+ days off) — heavily under-utilized`}>
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700">
+                          {dayOffBuckets['4d+']}
+                          <span className="text-[10px] font-normal opacity-80">4+d off</span>
+                        </span>
+                      </HoverHint>
+                    )}
                   </div>
                   {/* Overtime tally — visible whenever any driver crosses 45h/wk or any
                       shift goes past 9h. Lets ops see legal exposure for payroll. */}
