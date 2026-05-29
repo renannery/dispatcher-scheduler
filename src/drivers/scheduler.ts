@@ -4,11 +4,13 @@ import {
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   LEGAL_DAILY_MAX_HOURS,
+  LEGAL_WEEKLY_MAX_HOURS,
   MAX_HOURS_PER_DAY,
   OT_DAILY_BONUS,
   OT_FLEET_PCT,
   OT_WEEKLY_BONUS,
   SHOPPER_COVERAGE,
+  USER_CAP_BUFFER_PCT,
   effectiveCoverage,
 } from './coverageTemplate'
 import type {
@@ -145,6 +147,16 @@ export function generateDriverSchedule({
   const coverageActual: Record<string, number[]> = {}
 
   const capOf = (d: Driver) => (d.employmentType === 'full' ? fullTimeCap : partTimeCap)
+  // Soft buffer over the user-set cap (+10% by default). Used in
+  // cap-fill phases so a few drivers can stretch past their target
+  // cap to fill coverage gaps, but clamped at the legal pre-OT
+  // weekly max so this never silently triggers legal overtime. The
+  // main scheduling pass + length penalty keep most drivers at their
+  // target cap; only when shortfall remains does the buffer get used.
+  const bufferedCapOf = (d: Driver) => Math.min(
+    Math.round(capOf(d) * (1 + USER_CAP_BUFFER_PCT)),
+    LEGAL_WEEKLY_MAX_HOURS,
+  )
 
   // Per-driver per-week day count. Used to enforce the "1 day off" rule —
   // a driver who's already worked 6 days this work-week is skipped as a
@@ -258,7 +270,12 @@ export function generateDriverSchedule({
     for (const d of drivers) {
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
-      const atCap = (weekHours[d.id][wLabel] ?? 0) >= capOf(d) - 0.5  // leave no room for even 1h
+      // atCap uses the BUFFERED cap (user cap + 10%, clamped at legal)
+      // so drivers near their user-set target stay eligible for the
+      // main pass if shortfall remains. The main pass's spread logic
+      // still aims for user cap, but a few drivers can stretch into
+      // the buffer when needed.
+      const atCap = (weekHours[d.id][wLabel] ?? 0) >= bufferedCapOf(d) - 0.5
       // Shoppers don't work Sundays (grocery store is closed).
       const isShopperOnSunday = d.isShopper && dow === 0
       if (fullyBlocked || atCap || isShopperOnSunday) {
@@ -525,7 +542,11 @@ export function generateDriverSchedule({
   // ~7-8h each (more fair) instead of 5 days at max.
   for (const d of drivers) {
     if (d.isShopper) continue  // shoppers always work 6 days already
-    const cap = capOf(d)
+    // Phase 1 add-shift also uses the BUFFERED cap so drivers can
+    // pick up a new short shift on an off-day even when slightly past
+    // target cap. Without this, drivers at user cap (e.g., 40h) couldn't
+    // help with Wed shortfall even with 4h of buffer headroom available.
+    const cap = bufferedCapOf(d)
     for (let i = 0; i < scheduleMap[d.id].length; i++) {
       const entry = scheduleMap[d.id][i]
       if (!entry.isOff) continue
@@ -621,7 +642,10 @@ export function generateDriverSchedule({
       const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
       const cov = coverageActual[dateStr]
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
-      const cap = capOf(d)
+      // Phase 2 extend uses the BUFFERED cap (user cap + 10%, clamped
+      // at legal max). Lets the algorithm stretch a few drivers past
+      // their target cap to fill residual gaps, but never past legal.
+      const cap = bufferedCapOf(d)
 
       // Try extending up to 2 times (1h on each side, in priority order).
       for (let pass = 0; pass < 2; pass++) {

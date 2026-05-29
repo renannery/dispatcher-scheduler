@@ -241,6 +241,15 @@ export const OT_FLEET_PCT = 0.10              // top 10% of FT can do OT
 export const OT_WEEKLY_BONUS = 5              // +5h per OT-eligible driver → 50h/wk
 export const OT_DAILY_BONUS = 1               // +1h per OT-eligible shift → 10h/day
 
+// Soft "buffer" over the USER-set cap (distinct from legal overtime).
+// If the user sets cap=40, drivers can stretch to 44h (40 × 1.10) when
+// the algorithm needs them to cover gaps — but still clamped at the
+// legal 45h/wk maximum so this doesn't silently push anyone into legal
+// OT. Same idea daily: max=8 lets a few drivers reach 9h (already done
+// via the existing soft-overflow on daily max). Default 10% but the
+// user can tune in the Period step in a future commit.
+export const USER_CAP_BUFFER_PCT = 0.10
+
 // Sum of required driver-hours per day-of-week (0=Sun…6=Sat). Used by the
 // scheduler to weight how much of a driver's weekly capacity should be spent
 // today vs. saved for the rest of the work-week (Thu→Wed). Without this
