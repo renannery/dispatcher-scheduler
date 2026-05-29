@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
@@ -7,8 +7,28 @@ import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS } from '../coverageTemplate'
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
-import type { GeneratedDriverSchedule } from '../types'
+import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
 import { displayName, shortHour } from '../utils'
+
+// Work-week boundary: Thu (dow=4) starts a new week. Returns the
+// Thursday on/before the given date as "YYYY-MM-DD" so it can key a Map.
+function workWeekKey(date: string): string {
+  const d = new Date(date + 'T12:00:00')
+  const dow = d.getDay()
+  // (dow + 3) % 7 = days since the most recent Thursday.
+  d.setDate(d.getDate() - ((dow + 3) % 7))
+  return d.toISOString().slice(0, 10)
+}
+
+function weeklyHoursForDriver(ds: DriverSchedule, dateInWeek: string): number {
+  const wk = workWeekKey(dateInWeek)
+  let total = 0
+  for (const day of ds.days) {
+    if (day.isOff) continue
+    if (workWeekKey(day.date) === wk) total += day.totalHours ?? 0
+  }
+  return total
+}
 
 interface Props {
   schedule: GeneratedDriverSchedule
@@ -23,6 +43,8 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
   const toggleDriverSlot = useDriverStore((s) => s.toggleDriverSlot)
   const timeOff = useDriverStore((s) => s.timeOff)
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
+  const fullTimeCap = useDriverStore((s) => s.fullTimeCap)
+  const partTimeCap = useDriverStore((s) => s.partTimeCap)
   const template = DRIVER_DAY_TEMPLATES[dayOfWeek]
   const required = template?.requiredCoverage ?? DRIVER_SLOTS.map(() => 0)
   const actual = schedule.coverageActual[date] ?? DRIVER_SLOTS.map(() => 0)
@@ -32,16 +54,29 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     (i) => required[i] > 0 || actual[i] > 0,
   )
 
-  // Apply row filters: external search filter takes precedence over the local OFF toggle
-  const allRows = schedule.driverSchedules.map((ds) => {
-    const entry = ds.days.find((d) => d.date === date)
-    return { ds, entry, isOff: !entry || entry.isOff }
-  })
+  // Apply row filters: external search filter takes precedence over the local OFF toggle.
+  // Sort: non-shoppers first, then shoppers (so they cluster at the bottom of the day grid
+  // for easy verification of shopper coverage — matches the XLSX export grouping).
+  const allRows = useMemo(() => {
+    const rows = schedule.driverSchedules.map((ds) => {
+      const entry = ds.days.find((d) => d.date === date)
+      return { ds, entry, isOff: !entry || entry.isOff }
+    })
+    rows.sort((a, b) => {
+      const aShop = a.ds.driver.isShopper ? 1 : 0
+      const bShop = b.ds.driver.isShopper ? 1 : 0
+      return aShop - bShop
+    })
+    return rows
+  }, [schedule.driverSchedules, date])
   const visibleRows = allRows.filter(({ ds, isOff }) => {
     if (driverIdFilter) return driverIdFilter.has(ds.driver.id)
     return showOff || !isOff
   })
   const hiddenOffCount = driverIdFilter ? 0 : allRows.filter((r) => r.isOff).length
+
+  // Index of first shopper among visible rows — we draw a divider above it.
+  const firstShopperIdx = visibleRows.findIndex((r) => r.ds.driver.isShopper)
 
   return (
     <div className="overflow-x-auto">
@@ -86,11 +121,16 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             </td></tr>
           )}
           {visibleRows.map(({ ds, entry, isOff }, rowIdx) => {
+            const weekH = weeklyHoursForDriver(ds, date)
+            const cap = ds.driver.employmentType === 'full' ? fullTimeCap : partTimeCap
+            const pctOfCap = cap > 0 ? weekH / cap : 0
+            const isFirstShopper = rowIdx === firstShopperIdx
             return (
               <tr
                 key={ds.driver.id}
                 className={clsx(
                   'border-t border-slate-100',
+                  isFirstShopper && 'border-t-2 border-t-amber-300',
                   rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50',
                 )}
               >
@@ -118,6 +158,23 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                     >
                       {ds.driver.employmentType === 'full' ? 'FT' : 'PT'}
                     </span>
+                    {ds.driver.isShopper && (
+                      <span className="rounded bg-purple-100 px-1 text-[9px] font-bold text-purple-700">
+                        SHP
+                      </span>
+                    )}
+                    {/* Weekly hours pill — color signals load: green ok, amber close to cap, red over */}
+                    <HoverHint label={`Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h / ${cap}h cap`}>
+                      <span className={clsx(
+                        'rounded px-1.5 text-[9px] font-bold tabular-nums',
+                        pctOfCap >= 1.0 ? 'bg-red-100 text-red-700' :
+                        pctOfCap >= 0.92 ? 'bg-amber-100 text-amber-700' :
+                        pctOfCap >= 0.5 ? 'bg-slate-100 text-slate-600' :
+                        'bg-slate-50 text-slate-400',
+                      )}>
+                        {weekH.toFixed(0)}h
+                      </span>
+                    </HoverHint>
                     {isOff && (() => {
                       const r = absenceReasons[ds.driver.id]?.[date]
                       if (r) {

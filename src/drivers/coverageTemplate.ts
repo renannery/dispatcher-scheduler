@@ -53,6 +53,12 @@ export const DRIVER_SLOTS: DriverTimeSlot[] = [
 // ─── Canonical shift patterns ──────────────────────────────────────────────
 // Each pattern: 15-slot bitmap (1 = paid working, 0 = off/gap).
 // Sum of bits = paid hours. All patterns ≤ 9h.
+// Hard rule (ops policy): NO pattern may have a break (an unpaid 0 between
+// two work blocks) inside the food-delivery peak windows:
+//   - 11 AM–1 PM (slots 3, 4) — lunch peak
+//   - 6 PM–8 PM (slots 10, 11) — dinner peak
+// Breaks in the mid-afternoon lull (2-5 PM, slots 6-8) and morning slot
+// rest (4-6 PM, slots 8-9) are allowed. Any new pattern must respect this.
 const WEEKDAY_PATTERNS: number[][] = [
   // Long shifts (10-11h with built-in unpaid breaks) — only used when
   // maxHoursPerDay is raised above 9 in the Period step. Lets a smaller
@@ -127,7 +133,9 @@ const WEEKEND_PATTERNS: number[][] = [
   ...WEEKDAY_PATTERNS,
   [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0],  // 9h:  8 AM – 8 PM (1-4 PM split)
   [1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0],  // 9h:  8 AM – 8 PM (2-5 PM break)
-  [1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 6h:  8 AM – 3 PM (11-12 break)
+  // REMOVED: 8 AM – 3 PM with 11-12 PM break — break sits in the
+  // forbidden lunch-peak window (11 AM-1 PM). Continuous 8 AM-3 PM 7h
+  // pattern is already in the pool below as the weekend opener.
   // Short 8 AM weekend openers — weekend mornings need 6-13 drivers at 8 AM
   // and the weekday short patterns all start at 9 AM, leaving 8 AM unstaffed.
   [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 4h:  8 AM – 12 PM
