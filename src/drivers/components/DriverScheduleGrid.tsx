@@ -1,12 +1,11 @@
 import clsx from 'clsx'
 import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
-import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
 import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
-import { analyzeCoverageHealth, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -726,14 +725,6 @@ export function DriverScheduleGrid() {
       {weekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
 
-        const heavyDateInfo = weekDates.find((d) => HEAVY_DAYS.has(d.dayOfWeek))
-        const weekendOffId = heavyDateInfo
-          ? weekendOffDriverId(parseISO(heavyDateInfo.date), parseISO(schedule.startDate), drivers, schedule.seed)
-          : null
-        const weekendOffDriver = weekendOffId
-          ? schedule.driverSchedules.find((ds) => ds.driver.id === weekendOffId)?.driver
-          : null
-
         const weekHoursSummary = schedule.driverSchedules.map((ds) => ({
           name:  ds.driver.name,
           type:  ds.driver.employmentType,
@@ -797,15 +788,6 @@ export function DriverScheduleGrid() {
                     )}
                     <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span> PT
                   </div>
-                  {weekendOffDriver && (
-                    <span
-                      className="flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700"
-                      title={`${weekendOffDriver.name} has Fri/Sat/Sun off this 2-week block`}
-                    >
-                      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: weekendOffDriver.color }} />
-                      {displayName(weekendOffDriver.name)}: weekend off
-                    </span>
-                  )}
                   {/* Overtime tally — visible whenever any driver crosses 45h/wk or any
                       shift goes past 9h. Lets ops see legal exposure for payroll. */}
                   {(otDrivers > 0 || dailyOtDays > 0) && (

@@ -15,10 +15,6 @@ import type {
   GeneratedDriverSchedule,
 } from './types'
 
-// Days the weekend-off rotation gives a driver off — narrowed from
-// Fri+Sat+Sun (3-day perk) to just Sat+Sun per ops policy.
-export const HEAVY_DAYS = new Set([6, 0])
-
 const NIGHT_SLOT_THRESHOLD = 13   // 9-10 PM or later = closing
 const MORNING_SLOT_THRESHOLD = 2  // starts ≤ 10 AM = morning
 
@@ -40,29 +36,6 @@ function weekLabel(date: Date): string {
   const thu = addDays(date, -((dow + 3) % 7))
   const wed = addDays(thu, 6)
   return `${format(thu, 'MMM d')} – ${format(wed, 'MMM d')}`
-}
-
-export function weekendOffDriverId(
-  date: Date,
-  scheduleStart: Date,
-  drivers: Driver[],
-  seed = 0,
-): string | null {
-  if (drivers.length < 2) return null
-  const toThursday = (d: Date) => {
-    const dow = d.getDay()
-    return addDays(d, -((dow + 3) % 7))
-  }
-  const startThu = toThursday(scheduleStart)
-  const dateThu = toThursday(date)
-  const weeks = Math.round(differenceInDays(dateThu, startThu) / 7)
-  // 1-week rotation so each schedule cycle visits a different driver every week.
-  // (Previously 2-week blocks made the cycle 2× as long — for 57 drivers it
-  // would take ~2 years to visit everyone.) Seed comes from the regenerate
-  // counter so successive Regenerate clicks rotate to a different starting point.
-  const fullTimers = drivers.filter((d) => d.employmentType === 'full')
-  if (fullTimers.length === 0) return null
-  return fullTimers[(weeks + seed) % fullTimers.length].id
 }
 
 interface ScheduleParams {
@@ -209,31 +182,11 @@ export function generateDriverSchedule({
     const wi = weekIndexByLabel.get(wLabel) ?? 0
     return offDayPool[(di + wi + seed) % offDayPool.length]
   }
-  const isWeekendOffDriverThisWeek = (driverId: string, wLabel: string): boolean => {
-    // Mirrors weekendOffDriverId() but operates on weekLabel for cross-day reuse.
-    const fullTimers = drivers.filter((d) => d.employmentType === 'full')
-    if (fullTimers.length === 0) return false
-    const wi = weekIndexByLabel.get(wLabel) ?? 0
-    return fullTimers[(wi + seed) % fullTimers.length].id === driverId
-  }
 
   // Hard over-cap: a slot is never staffed beyond its tolerance band
   // (target + coverageTolerance(target)). The band is 15% per slot, so
   // small targets get tight ceilings (target 10 → max 12) and large
   // targets get looser ones (target 56 → max 64).
-
-  // Weekend-off rotation gives one FT driver Fri+Sat+Sun off (4 work days
-  // instead of 6). That's a 2-day-off "perk" on top of the normal 1-day-off
-  // rule, and it only makes sense when the roster has spare capacity. If
-  // demand exceeds supply, skip the perk so every driver works their normal
-  // 6 days — otherwise we starve the heavy days even more.
-  const totalSupply = drivers.reduce((s, d) => s + capOf(d), 0)
-  const weeklyDemand = WORK_WEEK_DOWS.reduce(
-    (s, dow) => s + effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0),
-    0,
-  )
-  // Need at least one FT-cap of headroom to "afford" giving someone the weekend.
-  const canAffordWeekendOff = totalSupply >= weeklyDemand + fullTimeCap
 
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
@@ -256,13 +209,6 @@ export function generateDriverSchedule({
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
 
-    // Only run weekend-off rotation when the roster has spare capacity.
-    // On tight rosters, giving one driver Fri+Sat+Sun off would starve the
-    // heavy days even more — so let everyone work their normal 6 days.
-    const weekendOffId = (canAffordWeekendOff && HEAVY_DAYS.has(dow))
-      ? weekendOffDriverId(date, start, drivers, seed)
-      : null
-
     // Relax `minHoursPerDay` on the LAST day of the work-week (Wed) so
     // drivers with leftover weekly cap (typically 4h) can still take a
     // fill-in shift. Without this, setting min=5 silently starves Wed.
@@ -277,9 +223,8 @@ export function generateDriverSchedule({
     for (const d of drivers) {
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
-      const onWeekendBreak = d.id === weekendOffId
       const atCap = (weekHours[d.id][wLabel] ?? 0) >= capOf(d) - 0.5  // leave no room for even 1h
-      if (fullyBlocked || onWeekendBreak || atCap) {
+      if (fullyBlocked || atCap) {
         dayOff.push(d)
       } else {
         available.push(d)
@@ -345,14 +290,9 @@ export function generateDriverSchedule({
       const candidates = rotated.filter((d) => {
         if (!available.includes(d) || assigned.has(d.id)) return false
         if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
-        // Skip drivers whose designated off day is today — rotates off days
-        // across the week so Wed isn't everyone's default off day. EXCEPT
-        // when the driver is also this week's weekend-off driver (they're
-        // already getting Fri+Sat+Sun off; an additional designated off day
-        // would leave them with only 3 work days).
-        if (!canAffordWeekendOff || !isWeekendOffDriverThisWeek(d.id, wLabel)) {
-          if (designatedOffDow(d.id, wLabel) === dow) return false
-        }
+        // Skip drivers whose designated off day is today — rotates off
+        // days across the week so Wed isn't everyone's default off day.
+        if (designatedOffDow(d.id, wLabel) === dow) return false
         return true
       })
       if (candidates.length === 0) break
