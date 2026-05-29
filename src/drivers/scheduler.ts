@@ -1082,6 +1082,108 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 6: SPREAD pass — eliminate "3+ days off" ─────────────────────
+  // On surplus-capacity rosters (e.g. 78 FT drivers with ~2300h demand),
+  // the main pass picks ~30 drivers per day and stops once each day's
+  // coverage is met. Late-alphabet drivers (D15, D6, etc.) end up with
+  // 3-4 days worked while early-alphabet drivers (Adip, Bobby, etc.)
+  // hit 6 days. The rotation only helps with ties — once a driver lags
+  // a few hours behind, ascending-hours sort keeps picking them on slow
+  // days only, leaving them stranded on busy ones.
+  //
+  // This pass forces SPREAD: any driver with < SPREAD_TARGET_DAYS days
+  // worked AND remaining cap gets a SHORT (3-4h) shift placed on one
+  // of their off-days, even when the day is fully covered, as long as
+  // it doesn't push slots past the standard +15% over-cap.
+  //
+  // The user's explicit rule: "no driver should have 3+ days off." On
+  // surplus rosters this requires mild over-coverage as the cost of
+  // fairness — but the +15% ceiling still caps the damage.
+  const SPREAD_TARGET_DAYS = 5
+  // Spread tolerance is +25% — looser than the main pass's +15% because
+  // by the time Phase 6 runs, many slots are already at or near +15% from
+  // Phase 5's gap-filling. The hard absolute cap is +30% (matches Phase 5)
+  // so spread fairness wins over coverage strictness, but never blows past
+  // double-staffing.
+  const spreadFillTol = (req: number) => req <= 0 ? 0 : Math.max(1, Math.round(req * 0.25))
+  for (const d of drivers) {
+    if (d.isShopper) continue  // shoppers already work all 6 non-Sundays
+    for (let i = 0; i < scheduleMap[d.id].length; i++) {
+      const entry = scheduleMap[d.id][i]
+      if (!entry.isOff) continue
+      const dateStr = entry.date
+      const dow = entry.dayOfWeek
+      const wLabel = weekLabel(parseISO(dateStr))
+      const currentDays = daysWorked[d.id][wLabel] ?? 0
+      if (currentDays >= SPREAD_TARGET_DAYS) continue
+      if (currentDays >= MAX_DAYS_PER_WEEK) continue
+      const cap = bufferedCapOf(d)
+      const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+      if (remaining < 3) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
+
+      const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+      const cov = coverageActual[dateStr]
+      const template = DRIVER_DAY_TEMPLATES[dow]
+
+      // Short (3-4h) patterns only — minimizes over-coverage damage.
+      let bestPattern: boolean[] | null = null
+      let bestScore = -Infinity
+      for (const raw of template.shiftPatterns) {
+        const p = raw.map(v => v === 1)
+        const h = slotHours(p)
+        if (h < 3 || h > 4) continue
+        if (h > remaining) continue
+        if (blocks && p.some((on, idx) => on && blocks[idx])) continue
+        // Night-rest with YESTERDAY (for morning-start patterns).
+        if (firstActive(p) <= MORNING_SLOT_THRESHOLD) {
+          const yest = scheduleMap[d.id][i - 1]
+          if (yest && !yest.isOff) {
+            let yestLast = -1
+            for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yestLast = z; break }
+            if (yestLast >= NIGHT_SLOT_THRESHOLD) continue
+          }
+        }
+        // Night-rest with TOMORROW (for closing patterns).
+        if (lastActive(p) >= NIGHT_SLOT_THRESHOLD) {
+          const tomorrow = scheduleMap[d.id][i + 1]
+          if (tomorrow && !tomorrow.isOff) {
+            const tFirst = tomorrow.slots.findIndex(x => x)
+            if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+          }
+        }
+        let exceeds = false
+        let helps = 0
+        for (let s = 0; s < p.length; s++) {
+          if (!p[s]) continue
+          if (cov[s] + 1 > required[s] + spreadFillTol(required[s])) { exceeds = true; break }
+          if (required[s] - cov[s] > 0) helps++
+        }
+        if (exceeds) continue
+        // Prefer patterns that ALSO help with shortfall (×10 weight),
+        // tie-break by shorter pattern (saves cap for future off-days).
+        // Unlike Phase 1, accept helps=0 — the spread goal alone is enough.
+        const score = helps * 10 - h
+        if (score > bestScore) {
+          bestScore = score
+          bestPattern = p
+        }
+      }
+      if (!bestPattern) continue
+
+      // Apply.
+      const h = slotHours(bestPattern)
+      entry.isOff = false
+      entry.slots = [...bestPattern]
+      entry.totalHours = h
+      weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+      daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
+      for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+      lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
