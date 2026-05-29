@@ -178,7 +178,11 @@ export function generateDriverSchedule({
   const avgDailyDemand = dailyDemands.reduce((a, b) => a + b, 0) / dailyDemands.length
   const offDayPool: number[] = []
   WORK_WEEK_DOWS.forEach((dow, i) => {
-    const extra = Math.max(0, Math.round((avgDailyDemand - dailyDemands[i]) / 10))
+    // Extra entries for slow days (more drivers off there). Capped at +2
+    // so no single day exceeds ~3 entries in a 7-day pool — keeps no
+    // single day's off probability above ~23% (was up to 30% on slow
+    // days like Wed, which over-emptied Wed on tight rosters).
+    const extra = Math.min(2, Math.max(0, Math.round((avgDailyDemand - dailyDemands[i]) / 15)))
     for (let j = 0; j < 1 + extra; j++) offDayPool.push(dow)
   })
   const designatedOffDow = (driverId: string, wLabel: string): number => {
@@ -192,11 +196,34 @@ export function generateDriverSchedule({
   // small targets get tight ceilings (target 10 → max 12) and large
   // targets get looser ones (target 56 → max 64).
 
+  // Iterate dates with the SLOWEST day of each work-week scheduled
+  // FIRST. Without this, busy days like Fri/Sat fill drivers to cap
+  // before Wed gets considered — on tight rosters Wed ends up with
+  // 30-100h shortfall just because everyone hit cap earlier.
+  // Sorting slowest-first lets Wed get first pick of drivers; busier
+  // days still fill later because pattern scoring favors their bigger
+  // shortfall.
+  const datesByWorkWeek = new Map<string, Date[]>()
+  for (const d of allDates) {
+    const wk = weekLabel(d)
+    if (!datesByWorkWeek.has(wk)) datesByWorkWeek.set(wk, [])
+    datesByWorkWeek.get(wk)!.push(d)
+  }
+  const iterationDates: Date[] = []
+  for (const dates of datesByWorkWeek.values()) {
+    const sorted = [...dates].sort((a, b) => {
+      const ra = effectiveCoverage(a.getDay(), coverageScale, coverageOverrides).reduce((s, v) => s + v, 0)
+      const rb = effectiveCoverage(b.getDay(), coverageScale, coverageOverrides).reduce((s, v) => s + v, 0)
+      return ra - rb  // slowest first
+    })
+    iterationDates.push(...sorted)
+  }
+
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
   // Regenerate appears to do nothing.
   let dayIndex = seed
-  for (const date of allDates) {
+  for (const date of iterationDates) {
     const dateStr = format(date, 'yyyy-MM-dd')
     const dow = date.getDay()
     const template = DRIVER_DAY_TEMPLATES[dow]
