@@ -486,7 +486,89 @@ export function generateDriverSchedule({
     dayIndex++
   }
 
-  // ─── Cap-fill post-pass ──────────────────────────────────────────────────
+  // ─── Phase 1 of cap-fill: ADD a shift on an off-day ────────────────────
+  // If a driver has < 6 days worked AND remaining cap >= effective min,
+  // try to place a new short shift on one of their off-days BEFORE the
+  // extend pass. Otherwise the extend pass would push existing shifts to
+  // max (e.g. 5×8h → 5×9h = 45h cap), eating the leftover that could
+  // have funded a 6th day. Adding-then-extending gives us 6 days at
+  // ~7-8h each (more fair) instead of 5 days at max.
+  for (const d of drivers) {
+    if (d.isShopper) continue  // shoppers always work 6 days already
+    const cap = capOf(d)
+    for (let i = 0; i < scheduleMap[d.id].length; i++) {
+      const entry = scheduleMap[d.id][i]
+      if (!entry.isOff) continue
+      const dateStr = entry.date
+      const dow = entry.dayOfWeek
+      const wLabel = weekLabel(parseISO(dateStr))
+      const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+      const minShift = (dow === 3) ? 3 : minHoursPerDay  // Wed allows 3h orphan filler
+      if (remaining < minShift) continue
+      if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
+      if (d.isShopper) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
+      const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+      const cov = coverageActual[dateStr]
+
+      // Find a short pattern (≤ remaining) that fits the driver's
+      // blocks and doesn't push any slot past the over-cap. Pick the
+      // one that covers the most short slots.
+      //
+      // Use a generous +15% over-cap tolerance HERE (vs the main
+      // pass's +5%) so cap-fill shifts can squeeze into days where
+      // most slots are at the +5% ceiling. Leaving a driver at 5 days
+      // with 3-4h orphan is worse than over-staffing one slot by 1 body.
+      const fillTolerance = (req: number) => req <= 0 ? 0 : Math.max(1, Math.round(req * 0.15))
+      const template = DRIVER_DAY_TEMPLATES[dow]
+      let bestPattern: boolean[] | null = null
+      let bestFit = -1
+      for (const raw of template.shiftPatterns) {
+        const p = raw.map(v => v === 1)
+        const h = slotHours(p)
+        if (h < minShift || h > remaining) continue
+        if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
+        if (firstActive(p) <= MORNING_SLOT_THRESHOLD) {
+          const yest = scheduleMap[d.id][i - 1]
+          if (yest && !yest.isOff) {
+            let yestLast = -1
+            for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yestLast = z; break }
+            if (yestLast >= NIGHT_SLOT_THRESHOLD) continue
+          }
+        }
+        if (blocks && p.some((on, idx) => on && blocks[idx])) continue
+        let exceeds = false
+        let helps = 0
+        for (let s = 0; s < p.length; s++) {
+          if (!p[s]) continue
+          if (cov[s] + 1 > required[s] + fillTolerance(required[s])) { exceeds = true; break }
+          if (required[s] - cov[s] > 0) helps++
+        }
+        if (exceeds) continue
+        // Prefer the pattern that covers the most under-target slots.
+        // Tie-break: prefer SHORTER pattern (saves cap for other off-days).
+        const score = helps * 10 - h
+        if (score > bestFit) {
+          bestFit = score
+          bestPattern = p
+        }
+      }
+      if (!bestPattern) continue
+
+      // Apply: replace the OFF entry with a real shift.
+      const h = slotHours(bestPattern)
+      entry.isOff = false
+      entry.slots = [...bestPattern]
+      entry.totalHours = h
+      weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+      daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
+      for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+      lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
+    }
+  }
+
+  // ─── Phase 2 of cap-fill: EXTEND existing shifts by 1h ───────────────────
   // After the main per-day scheduling, some drivers still have unused
   // weekly cap (e.g. 36/43h = 7h orphaned). The user's manual edits show
   // ops would extend those drivers' existing shifts by 1h on either side
@@ -537,10 +619,11 @@ export function generateDriverSchedule({
           if (required[s] <= 0) continue                       // outside ops hours
           if (blocks && blocks[s]) continue                    // driver-blocked slot
           // For non-shoppers, the extension counts toward driver
-          // coverage — refuse if it'd push past the over-cap. For
-          // shoppers the extension doesn't affect cov[s] at all, so
-          // skip the check (their hour goes anywhere they had room).
-          if (!d.isShopper && cov[s] + 1 > required[s] + coverageTolerance(required[s])) continue
+          // coverage — refuse if it'd push past the over-cap. Use the
+          // generous +15% tolerance for cap-fill (vs the main pass's
+          // +5%) so drivers can hit their weekly cap.
+          const fillTol = required[s] <= 0 ? 0 : Math.max(1, Math.round(required[s] * 0.15))
+          if (!d.isShopper && cov[s] + 1 > required[s] + fillTol) continue
           // Night-rest: if extending into the morning of NEXT day would
           // conflict, skip. The night-rest rule applies to MORNING shifts
           // after a closing shift the day before — we check shifts we
