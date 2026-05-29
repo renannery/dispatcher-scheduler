@@ -1123,15 +1123,18 @@ export function generateDriverSchedule({
   // a few hours behind, ascending-hours sort keeps picking them on slow
   // days only, leaving them stranded on busy ones.
   //
-  // This pass forces SPREAD: any driver with < SPREAD_TARGET_DAYS days
-  // worked AND remaining cap gets a SHORT (3-4h) shift placed on one
-  // of their off-days, even when the day is fully covered, as long as
-  // it doesn't push slots past the standard +15% over-cap.
+  // This pass forces SPREAD: any driver with remaining cap and < 6 days
+  // worked gets a SHORT (4-5h) shift placed on one of their off-days,
+  // even when the day is fully covered, as long as it doesn't push
+  // slots past the standard +25% over-cap (or +50% on busy days).
   //
-  // The user's explicit rule: "no driver should have 3+ days off." On
-  // surplus rosters this requires mild over-coverage as the cost of
-  // fairness — but the +15% ceiling still caps the damage.
-  const SPREAD_TARGET_DAYS = 5
+  // The user's explicit rules:
+  //   "No driver should have 3+ days off" — drivers fill empty days
+  //   until they hit 6.
+  //   "Busy days (Fri/Sat/Sun/Thu) should run over coverage" — Phase 6
+  //   walks off-days in priority order so busy days fill first.
+  //   "Drivers with spare cap should improve yellow slow-day slots" —
+  //   slow days also receive spread (after busy days saturate).
   // Spread tolerance is +25% — looser than the main pass's +15% because
   // by the time Phase 6 runs, many slots are already at or near +15% from
   // Phase 5's gap-filling. The hard absolute cap is +30% (matches Phase 5)
@@ -1194,14 +1197,15 @@ export function generateDriverSchedule({
       const wLabel = weekLabel(parseISO(dateStr))
       const currentDays = daysWorked[d.id][wLabel] ?? 0
       if (currentDays >= MAX_DAYS_PER_WEEK) continue
-      // Standard cap: 5 days. EXCEPTION: allow a 6th day if it's a busy
-      // day (Fri/Sat/Sun/Thu, priority > 0). Per user request, busy days
-      // should run "more people than the coverage target" — letting
-      // already-5-day drivers pick up a 4-5h Fri/Sat shift pushes those
-      // days' peak slots into "over" (gray) status.
+      // Allow up to 6 days per week on ANY day (not just busy days).
+      // Per user feedback: drivers with 2 days off and spare weekly cap
+      // should improve coverage on the still-yellow slow-day slots, not
+      // sit idle. The priority order above (Fri > Sat > Sun > Thu >
+      // slow days) ensures busy days fill FIRST — slow days only
+      // receive a driver's 6th day once busy days hit their +50%
+      // ceiling. PT drivers naturally stop at 5 days because their
+      // 30h cap is used up.
       const isBusyDay = (BUSY_DAY_PRIORITY[dow] ?? 0) > 0
-      const dayLimit = isBusyDay ? MAX_DAYS_PER_WEEK : SPREAD_TARGET_DAYS
-      if (currentDays >= dayLimit) continue
       const cap = bufferedCapOf(d)
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
       if (remaining < 4) continue  // 4h-min policy
@@ -1242,21 +1246,35 @@ export function generateDriverSchedule({
           }
         }
         let exceeds = false
-        let helps = 0
+        let slotScore = 0
         // Busy days get the looser +50% ceiling so peak slots (which are
         // sandwiched between already-saturated 5 PM / 8 PM slots) can
         // still be filled.
         const tolFn = isBusyDay ? busySpreadFillTol : spreadFillTol
+        const standardTol = (req: number) =>
+          req <= 0 ? 0 : Math.max(1, Math.round(req * 0.15))
         for (let s = 0; s < p.length; s++) {
           if (!p[s]) continue
           if (cov[s] + 1 > required[s] + tolFn(required[s])) { exceeds = true; break }
-          if (required[s] - cov[s] > 0) helps++
+          // Score each slot the pattern touches based on its current
+          // coverage status (matches UI color buckets):
+          //   SHORT (red):   pattern fills a real gap        → +100
+          //   OK (at target): driver adds the first "over" body → +30
+          //   MILD (yellow): pattern pushes a yellow slot toward gray → +20
+          //   OVER (gray):   already over-staffed, no need     → +1
+          // This makes Phase 6 prefer patterns that hit not-yet-saturated
+          // peak slots (often still yellow at +1 or +2) over patterns
+          // that pile more bodies onto morning slots that are already gray.
+          const diff = cov[s] - required[s]  // pos = over, 0 = at, neg = short
+          if (diff < 0) slotScore += 100
+          else if (diff === 0) slotScore += 30
+          else if (diff <= standardTol(required[s])) slotScore += 20
+          else slotScore += 1
         }
         if (exceeds) continue
-        // Prefer patterns that ALSO help with shortfall (×10 weight),
-        // tie-break by shorter pattern (saves cap for future off-days).
-        // Unlike Phase 1, accept helps=0 — the spread goal alone is enough.
-        const score = helps * 10 - h
+        // Final score: per-slot weighted score minus length (prefer shorter
+        // among equally-valuable patterns).
+        const score = slotScore - h
         if (score > bestScore) {
           bestScore = score
           bestPattern = p
