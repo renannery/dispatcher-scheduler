@@ -409,8 +409,11 @@ export function generateDriverSchedule({
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
           // Hard over-coverage cap: refuse any pattern that would push a
-          // slot beyond target + coverageTolerance(target). Matches ops
-          // policy "we can be flex ±15% per slot".
+          // slot beyond target + coverageTolerance(target). Tried
+          // relaxing this for patterns that also fill shortfall, but
+          // benchmarking showed it INCREASED severe gaps (relaxed runs:
+          // 130 → 198 severe) because freed-up dirty patterns out-scored
+          // cleaner gap-only ones. The cap stays as a hard constraint.
           let exceedsLimit = false
           for (let s = 0; s < p.length; s++) {
             if (p[s] && actualCov[s] + 1 > required[s] + coverageTolerance(required[s])) {

@@ -532,13 +532,16 @@ export function DriverScheduleGrid() {
           onApply={handleApplyEdits}
         />
       )}
+      {/* Hiring recommendation — only shown when the gap is big enough that
+          adjusting cap/max likely won't close it. Below 20h/wk shortfall,
+          the suggestions banner above is the right tool. */}
       {health.weeklyShortfallHours >= 20 && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
           <div className="flex-1 text-sm text-amber-900">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-semibold">
-                Roster is {Math.round(health.weeklyShortfallHours)} driver-hours short per week.
+                Minimum coverage not met — roster is {Math.round(health.weeklyShortfallHours)} driver-hours short per week.
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold">
                 <UserPlus className="h-3 w-3" />
@@ -556,7 +559,7 @@ export function DriverScheduleGrid() {
                 </span>
               ))}
               .
-              {' '}Or drop the coverage scale on the Period step to relax targets.
+              {' '}Use the <span className="font-semibold">+ Add driver</span> button above to add bodies, or relax targets via Coverage scale.
             </p>
           </div>
         </div>
