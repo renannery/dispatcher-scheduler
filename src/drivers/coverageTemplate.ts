@@ -225,6 +225,14 @@ export const DEFAULT_FULL_TIME_CAP = 45
 export const LEGAL_DAILY_MAX_HOURS = 9
 export const LEGAL_WEEKLY_MAX_HOURS = 45
 
+// Overtime policy — applied only as a LAST RESORT when normal cap-fill
+// can't meet coverage demand. The algorithm picks the top X% of FT
+// drivers (by current weekly hours, so the most-engaged ones) and lets
+// each go up to +5h/week and +1h/day past the legal pre-OT caps.
+export const OT_FLEET_PCT = 0.10              // top 10% of FT can do OT
+export const OT_WEEKLY_BONUS = 5              // +5h per OT-eligible driver → 50h/wk
+export const OT_DAILY_BONUS = 1               // +1h per OT-eligible shift → 10h/day
+
 // Sum of required driver-hours per day-of-week (0=Sun…6=Sat). Used by the
 // scheduler to weight how much of a driver's weekly capacity should be spent
 // today vs. saved for the rest of the work-week (Thu→Wed). Without this

@@ -5,6 +5,9 @@ import {
   DRIVER_SLOTS,
   LEGAL_DAILY_MAX_HOURS,
   MAX_HOURS_PER_DAY,
+  OT_DAILY_BONUS,
+  OT_FLEET_PCT,
+  OT_WEEKLY_BONUS,
   SHOPPER_COVERAGE,
   effectiveCoverage,
 } from './coverageTemplate'
@@ -654,6 +657,82 @@ export function generateDriverSchedule({
           lastSlotWorked[d.id][dateStr] = best
         }
       }
+    }
+  }
+
+  // ─── Phase 3 of cap-fill: OVERTIME pass (last resort) ────────────────────
+  // After Phase 1 (add shift) + Phase 2 (extend within 45h cap), if any
+  // day still has driver shortfall, allow up to OT_FLEET_PCT of FT drivers
+  // (5 drivers for a 53-FT roster) to go past the legal weekly cap by
+  // OT_WEEKLY_BONUS and past the daily cap by OT_DAILY_BONUS. The pass
+  // picks the highest-utilized drivers (already running close to cap, so
+  // already proven willing/available) and extends their shifts to cover
+  // residual gaps. Each extension is real legal overtime — shown as the
+  // purple OT pill in the UI so payroll knows.
+  const ftDrivers = drivers.filter(d => d.employmentType === 'full' && !d.isShopper)
+  const otBudget = Math.max(1, Math.floor(ftDrivers.length * OT_FLEET_PCT))
+  // Track per-driver OT used (across all weeks), capped at OT_WEEKLY_BONUS per week
+  const otWeekHours: Record<string, Record<string, number>> = {}
+  for (const d of ftDrivers) otWeekHours[d.id] = {}
+
+  // Find dates with remaining shortfall
+  for (let i = 0; i < allDates.length; i++) {
+    const date = allDates[i]
+    const dateStr = format(date, 'yyyy-MM-dd')
+    const dow = date.getDay()
+    const wLabel = weekLabel(date)
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    let shortfall = 0
+    for (let s = 0; s < required.length; s++) shortfall += Math.max(0, required[s] - cov[s])
+    if (shortfall === 0) continue
+
+    // Build OT-eligible pool for THIS week: top OT_FLEET_PCT FT drivers
+    // by current weekly hours (most-utilized = most-willing to take OT).
+    const candidates = [...ftDrivers]
+      .sort((a, b) => (weekHours[b.id][wLabel] ?? 0) - (weekHours[a.id][wLabel] ?? 0))
+      .slice(0, otBudget)
+
+    for (const d of candidates) {
+      // Per-driver OT hours used so far this week.
+      const otUsed = otWeekHours[d.id][wLabel] ?? 0
+      if (otUsed >= OT_WEEKLY_BONUS) continue  // OT budget exhausted
+
+      // Find this driver's shift on this day (or null if off).
+      const entry = scheduleMap[d.id].find(e => e.date === dateStr)
+      if (!entry) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+
+      // EXTEND case: existing shift, add 1h on either side (10h daily max
+      // via OT_DAILY_BONUS = 1, so 9h + 1 = 10h).
+      if (!entry.isOff) {
+        const currentHours = entry.totalHours ?? 0
+        if (currentHours >= LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS) continue
+        const slots = entry.slots
+        const first = slots.findIndex(s => s)
+        let last = -1
+        for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last = z; break }
+        const tries: number[] = []
+        if (first > 0) tries.push(first - 1)
+        if (last >= 0 && last < slots.length - 1) tries.push(last + 1)
+        let placed = false
+        for (const s of tries) {
+          if (placed) break
+          if (required[s] <= 0) continue
+          if (blocks && blocks[s]) continue
+          if (cov[s] + 1 > required[s]) continue  // only fill REAL shortfall, no piling on
+          slots[s] = true
+          entry.totalHours = currentHours + 1
+          cov[s]++
+          weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
+          otWeekHours[d.id][wLabel] = otUsed + 1
+          placed = true
+        }
+      }
+      // Note: we don't ADD a new shift on an off-day for OT — that's
+      // a bigger schedule disruption. Extending an existing shift by 1h
+      // is the cleanest OT pattern (driver already on-site, just stays
+      // longer or comes in earlier).
     }
   }
 
