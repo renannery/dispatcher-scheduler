@@ -1683,6 +1683,101 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 9: MORNING-EXTEND — backward-extend shifts to fill opening
+  // floor gaps (Sat/Sun 8 AM, Sat/Sun 9 AM, etc.) ─────────────────────
+  //
+  // After Phases 1-8, opening slots can still be short because: (a) the
+  // 12h rest rule bars prior-night closers from opening early, AND (b)
+  // even drivers who COULD open are often assigned to start at 9 AM or
+  // later (the highest-scoring pattern wasn't an 8 AM starter).
+  //
+  // This phase walks each date with floor-slot opening shortfall and,
+  // for each shortfall slot in order [8a, 9a, 10a], finds drivers whose
+  // current shift STARTS at the next-later slot and extends them
+  // backward by 1h. Specifically targets Sat/Sun 8 AM (the only day-
+  // type with required[0] > 0) and the broader 9-10 AM gaps too.
+  //
+  // Constraints honored at every extension:
+  //   - within bufferedCapOf(d) for the week
+  //   - within maxHoursPerDay + 1 soft daily ceiling
+  //   - 8h+ break rule (refuses if extension creates 8h+ continuous)
+  //   - 12h rest with yesterday's close
+  //   - driver not blocked at the target slot
+  //   - shopper rule (no Sunday work)
+  //
+  // Per slot, extends drivers in shuffledDrivers order (no alphabetical
+  // bias) and stops as soon as the slot reaches target.
+  const OPENING_SLOTS_TO_FILL = [0, 1, 2]  // 8 AM, 9 AM, 10 AM
+  for (const di of allDates) {
+    const dateStr = format(di, 'yyyy-MM-dd')
+    const dow = di.getDay()
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    if (!cov) continue
+
+    for (const targetSlot of OPENING_SLOTS_TO_FILL) {
+      if (required[targetSlot] <= 0) continue
+      let shortfall = required[targetSlot] - (cov[targetSlot] ?? 0)
+      if (shortfall <= 0) continue
+
+      // Find candidate drivers: those whose shift on this date STARTS
+      // at targetSlot + 1 (so extending backward by 1 covers targetSlot).
+      // Iterating shuffled order so we don't favor early-alphabet drivers.
+      for (const d of shuffledDrivers) {
+        if (shortfall <= 0) break
+        if (d.isShopper && dow === 0) continue   // shoppers don't work Sundays
+
+        const entry = scheduleMap[d.id].find((e) => e.date === dateStr)
+        if (!entry || entry.isOff) continue
+        const first = entry.slots.findIndex((s) => s)
+        if (first !== targetSlot + 1) continue   // shift doesn't start adjacent to gap
+
+        // Capacity check: extension adds 1h to weekly hours.
+        const wLabel = weekLabel(parseISO(dateStr))
+        const cap = bufferedCapOf(d)
+        if ((weekHours[d.id][wLabel] ?? 0) + 1 > cap) continue
+
+        // Daily-hour check: Phase 9 allows up to LEGAL_DAILY_MAX_HOURS +
+        // OT_DAILY_BONUS (10h) because the floor slot would otherwise
+        // stay structurally short — even drivers at the 9h soft cap
+        // can give the extra hour. Shows up as daily OT in the UI
+        // (purple pill in the hour cell on the day-grid), so payroll sees it.
+        const newHours = (entry.totalHours ?? 0) + 1
+        if (newHours > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS, MAX_HOURS_PER_DAY)) continue
+
+        // Block check: driver mustn't be blocked at targetSlot.
+        const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+        if (blocks && blocks[targetSlot]) continue
+
+        // Break rule: if extension makes shift 8h+, must already have a
+        // break in the existing pattern (since we're only adding 1h at
+        // the start, the post-extension shift inherits the original's
+        // break state — but if it was 7h-continuous and becomes 8h-
+        // continuous, the rule fires).
+        if (newHours >= breakRequiredAt(d) && !patternHasBreak(entry.slots)) continue
+
+        // 12h rest with yesterday's close: extending earlier brings the
+        // start time forward, so rest with yesterday's last slot shrinks.
+        const yest = scheduleMap[d.id].find((e) => {
+          const ed = parseISO(e.date)
+          const expected = addDays(parseISO(dateStr), -1)
+          return format(ed, 'yyyy-MM-dd') === format(expected, 'yyyy-MM-dd')
+        })
+        if (yest && !yest.isOff) {
+          const yLast = lastActive(yest.slots)
+          if (violatesMinRest(yLast, targetSlot)) continue
+        }
+
+        // Apply the backward-extension.
+        entry.slots[targetSlot] = true
+        entry.totalHours = newHours
+        cov[targetSlot]++
+        weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
+        shortfall--
+      }
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
