@@ -14,6 +14,8 @@ import {
   SHOPPER_COVERAGE,
   USER_CAP_BUFFER_PCT,
   effectiveCoverage,
+  isFloorSlot,
+  isProtectedOpeningSlot,
   slotPriorityWeight,
 } from './coverageTemplate'
 import type {
@@ -193,6 +195,42 @@ export function generateDriverSchedule({
     hasMaxShiftThisWeek[d.id] = {}
   })
   const coverageActual: Record<string, number[]> = {}
+
+  // ─── Closer cap (Layer 2 of the morning-shortfall fix) ─────────────────
+  // Drivers whose shift ENDS at slot ≥ CLOSER_END_THRESHOLD (10 PM end)
+  // can't open the next morning under the 12h rest rule — they'd need
+  // to start no earlier than 10 AM. So every additional "closer" eats
+  // into the pool of drivers available to staff the 9 AM target.
+  //
+  // Approach: count closers per date by SCANNING scheduleMap on demand
+  // (every placement/extension checks the live count). Costs O(drivers)
+  // per check but avoids the bookkeeping bugs that a manually-maintained
+  // counter accumulates across 8 mutation sites (main pass + Phase 1, 2,
+  // 3, 4, 5, 6, 8). The main pass also adds a per-pattern score penalty
+  // for the 21st+ closer to bias placement toward earlier-ending
+  // alternatives at the source.
+  const CLOSER_END_THRESHOLD = 13
+  const MAX_CLOSERS_PER_NIGHT = 20
+  const CLOSER_OVERAGE_PENALTY = 10000
+
+  function countClosersOn(dateStr: string): number {
+    let n = 0
+    for (const id of Object.keys(scheduleMap)) {
+      const entry = scheduleMap[id].find((e) => e.date === dateStr)
+      if (!entry || entry.isOff) continue
+      let last = -1
+      for (let z = entry.slots.length - 1; z >= 0; z--) {
+        if (entry.slots[z]) { last = z; break }
+      }
+      if (last >= CLOSER_END_THRESHOLD) n++
+    }
+    return n
+  }
+
+  function dayHasMorningOpening(dow: number): boolean {
+    const r = effectiveCoverage((dow + 1) % 7, coverageScale, coverageOverrides)
+    return r[0] + r[1] + r[2] > 0
+  }
 
   const capOf = (d: Driver) => (d.employmentType === 'full' ? fullTimeCap : partTimeCap)
   // Legal pre-OT weekly max for the driver's employment type:
@@ -599,6 +637,34 @@ export function generateDriverSchedule({
             const over = h - preferredLength
             score -= over * over * 1500
           }
+          // Layer 1 — Opening-floor penalty. Scoped to the PROTECTED
+          // opening slots (8-10 AM) because those are the slots that
+          // were getting drained to feed peaks. Penalizing every floor
+          // slot would make every pattern score deeply negative on
+          // busy days (sum of unfilled peak shortfalls dominates), so
+          // the main pass would refuse to place patterns at all.
+          // Restricting to opening slots gives the algorithm the bias
+          // we want — pull drivers into morning — without nuking the
+          // rest of the day's scoring.
+          const OPENING_FLOOR_PENALTY = 1500
+          if (!d.isShopper) {
+            for (let s = 0; s < p.length; s++) {
+              if (!isProtectedOpeningSlot(dow, s)) continue
+              const stillShortAfter = myReq[s] - (myCov[s] + (p[s] ? 1 : 0))
+              if (stillShortAfter > 0) score -= OPENING_FLOOR_PENALTY * stillShortAfter
+            }
+          }
+          // Layer 2 — Closer-cap penalty. If this pattern ENDS at slot
+          // ≥ 13 (closer) AND the next day has positive morning targets,
+          // dock the score once we've already booked MAX_CLOSERS_PER_NIGHT
+          // closers for today. Effect: the 21st+ closer pays a steep
+          // cost, so the algorithm picks a shorter-end equivalent pattern
+          // for that driver — keeping them rest-eligible to open tomorrow.
+          if (!d.isShopper && lastActive(p) >= CLOSER_END_THRESHOLD && dayHasMorningOpening(dow)) {
+            const closersSoFar = countClosersOn(dateStr)
+            const overQuota = Math.max(0, closersSoFar + 1 - MAX_CLOSERS_PER_NIGHT)
+            if (overQuota > 0) score -= CLOSER_OVERAGE_PENALTY * overQuota
+          }
           if (score > bestScore) {
             bestScore = score
             bestPattern = p
@@ -822,6 +888,17 @@ export function generateDriverSchedule({
           // +5%) so drivers can hit their weekly cap.
           const fillTol = required[s] <= 0 ? 0 : Math.max(1, Math.round(required[s] * 0.15))
           if (!d.isShopper && cov[s] + 1 > required[s] + fillTol) continue
+          // Closer-cap check: if the extension would turn this driver
+          // into a closer (newLast ≥ CLOSER_END_THRESHOLD) AND the day
+          // already has ≥ MAX_CLOSERS_PER_NIGHT closers AND tomorrow
+          // has morning targets, refuse. Prevents Phase 2 from quietly
+          // pushing the closer pool past the cap the main pass enforced.
+          if (!d.isShopper) {
+            const currentLast = lastActive(slots)
+            const newLast = Math.max(s, currentLast)
+            const isClosingExtension = newLast >= CLOSER_END_THRESHOLD && currentLast < CLOSER_END_THRESHOLD
+            if (isClosingExtension && dayHasMorningOpening(dow) && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
+          }
           // Min-rest check: extending the END of today's shift may shrink
           // rest before TOMORROW's start, extending the START may shrink
           // rest after YESTERDAY's end. Check both directions because
@@ -1339,6 +1416,12 @@ export function generateDriverSchedule({
             if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
           }
         }
+        // Closer-cap: Phase 6 places NEW shifts on off-days. If the new
+        // pattern ends ≥ CLOSER_END_THRESHOLD and today's closer count is
+        // already at the cap AND tomorrow has morning targets, skip.
+        if (lastActive(p) >= CLOSER_END_THRESHOLD
+            && dayHasMorningOpening(dow)
+            && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
         let exceeds = false
         let slotScore = 0
         // Busy days get the looser +50% ceiling so peak slots (which are
@@ -1535,6 +1618,18 @@ export function generateDriverSchedule({
             if (required[s] <= 0) continue                    // outside ops hours
             if (blocks && blocks[s]) continue                 // driver-blocked slot
             if (cov[s] + 1 > required[s] + tolFn(required[s])) continue
+            // Closer-cap: if this extension would turn the driver into
+            // a new closer (newLast crosses CLOSER_END_THRESHOLD) AND
+            // today's closer count is at the cap AND tomorrow has
+            // morning targets, skip. Mirrors the Phase 2 check.
+            {
+              const currentLast = last
+              const newLast = Math.max(s, currentLast)
+              const isClosingExtension = newLast >= CLOSER_END_THRESHOLD && currentLast < CLOSER_END_THRESHOLD
+              if (isClosingExtension
+                  && dayHasMorningOpening(dow)
+                  && countClosersOn(entry.date) >= MAX_CLOSERS_PER_NIGHT) continue
+            }
             // 12h rest BOTH directions — Phase 8 can extend either side
             // of the existing shift (start earlier OR end later), so we
             // need to check against yesterday's close AND tomorrow's start.
@@ -1575,6 +1670,7 @@ export function generateDriverSchedule({
         if (!bestEntry || bestSlotIdx < 0) break
 
         // Apply the extension.
+        const prevLast = lastActive(bestEntry.slots)
         bestEntry.slots[bestSlotIdx] = true
         bestEntry.totalHours = (bestEntry.totalHours ?? 0) + 1
         coverageActual[bestEntry.date][bestSlotIdx]++
@@ -1582,6 +1678,7 @@ export function generateDriverSchedule({
         if (bestSlotIdx > (lastSlotWorked[d.id][bestEntry.date] ?? -1)) {
           lastSlotWorked[d.id][bestEntry.date] = bestSlotIdx
         }
+        void prevLast  // closer count is recomputed on demand, no manual track
       }
     }
   }
@@ -1652,17 +1749,22 @@ export function analyzeCoverageHealth(
   const perDate = schedule.dates.map((di) => {
     const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
     const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
-    // Under-coverage on LOW-priority slots (3-4 PM) is acceptable per
-    // ops policy — exclude from the shortfall total so the hiring
-    // recommender doesn't urge new hires to cover slots ops explicitly
-    // wants to leave thinner. Other gaps still count fully.
+    // Under-coverage on the single LOW-priority non-floor slot (3 PM)
+    // is acceptable per ops policy — exclude from the shortfall total
+    // so the hiring recommender doesn't urge new hires to cover a slot
+    // ops explicitly wants thinner. Every floor slot (everything except
+    // 3 PM) counts fully even when its weight happens to be < 0.5.
     let shortfall = 0
     let overstaff = 0
     for (let s = 0; s < target.length; s++) {
       const diff = target[s] - (actual[s] ?? 0)
       if (diff > 0) {
-        const w = slotPriorityWeight(di.dayOfWeek, s)
-        if (w >= LOW_PRIORITY_WEIGHT) shortfall += diff
+        if (isFloorSlot(di.dayOfWeek, s)) {
+          shortfall += diff
+        } else {
+          const w = slotPriorityWeight(di.dayOfWeek, s)
+          if (w >= LOW_PRIORITY_WEIGHT) shortfall += diff
+        }
       } else if (diff < 0) {
         overstaff += -diff
       }
@@ -1713,10 +1815,12 @@ export function coverageStatus(
   if (required === 0) return actual > 0 ? 'over' : 'ok'
   const diff = required - actual
   if (diff > 0) {
-    // Per Rule 2: 3-4 PM (and similar low-priority slots) may legitimately
-    // run under target — flag amber, not red, so ops doesn't read it as a
-    // service gap. Only triggers when the caller passed dow/slot.
-    if (dow !== undefined && slot !== undefined) {
+    // Per Rule 2: 3 PM (the one non-floor slot) may legitimately run
+    // under target — flag amber, not red, so ops doesn't read it as a
+    // service gap. EVERY OTHER slot is a hard floor (FLOOR_SLOTS in
+    // coverageTemplate.ts) — under-coverage there stays red regardless
+    // of priority weight, even when the weight is < LOW_PRIORITY_WEIGHT.
+    if (dow !== undefined && slot !== undefined && !isFloorSlot(dow, slot)) {
       const w = slotPriorityWeight(dow, slot)
       if (w < LOW_PRIORITY_WEIGHT) return 'short-low-priority'
     }

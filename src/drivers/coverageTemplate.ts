@@ -222,13 +222,20 @@ const COV_WED = [0,  9, 12, 20, 26, 26, 14, 11, 15, 20, 36, 36, 25, 15, 6]
 // A slot with weight < 0.5 that's under-target gets a milder color
 // ('short-low-priority', muted amber) instead of red 'short' — see
 // coverageStatus() in scheduler.ts.
-const PRIORITY_FRI = [1.0, 1.0, 1.0, 1.5, 2.5, 2.5, 1.0, 0.3, 0.5, 1.5, 2.5, 2.5, 1.5, 1.0, 0.5]
-const PRIORITY_SAT = [1.0, 1.0, 1.2, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
-const PRIORITY_SUN = [1.0, 1.0, 1.2, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
-const PRIORITY_THU = [1.0, 1.0, 1.0, 1.3, 1.8, 1.8, 1.0, 0.3, 0.5, 1.3, 1.8, 1.8, 1.3, 1.0, 0.5]
-const PRIORITY_MON = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.8, 1.8, 1.3, 1.0, 0.5]
-const PRIORITY_TUE = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
-const PRIORITY_WED = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
+// Opening-hour slots (8 AM, 9 AM, 10 AM = indices 0, 1, 2) carry a
+// REAL boost — not just default 1.0 — because the optimizer was
+// draining them to feed lunch/dinner peaks (snap10 diagnostic showed
+// Sat 8 AM landing 5/6, 9 AM 12/18). Fri/Sat get 2.0, other days
+// get 1.8 so morning placements compete on equal footing with the
+// dinner-peak shoulders. Combined with the FLOOR_SLOTS hard-floor
+// mechanism below, this stops the morning bleed.
+const PRIORITY_FRI = [2.0, 2.0, 1.8, 1.5, 2.5, 2.5, 1.0, 0.3, 0.5, 1.5, 2.5, 2.5, 1.5, 1.0, 0.5]
+const PRIORITY_SAT = [2.0, 2.0, 1.8, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+const PRIORITY_SUN = [2.0, 2.0, 1.8, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+const PRIORITY_THU = [1.8, 1.8, 1.5, 1.3, 1.8, 1.8, 1.0, 0.3, 0.5, 1.3, 1.8, 1.8, 1.3, 1.0, 0.5]
+const PRIORITY_MON = [1.8, 1.8, 1.5, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.8, 1.8, 1.3, 1.0, 0.5]
+const PRIORITY_TUE = [1.8, 1.8, 1.5, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
+const PRIORITY_WED = [1.8, 1.8, 1.5, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
 
 export const SLOT_PRIORITY_WEIGHT: Record<number, number[]> = {
   0: PRIORITY_SUN, 1: PRIORITY_MON, 2: PRIORITY_TUE, 3: PRIORITY_WED,
@@ -239,6 +246,42 @@ export const SLOT_PRIORITY_WEIGHT: Record<number, number[]> = {
  *  if the lookup misses (defensive — never zero-multiplies a score). */
 export function slotPriorityWeight(dow: number, slot: number): number {
   return SLOT_PRIORITY_WEIGHT[dow]?.[slot] ?? 1.0
+}
+
+// ─── Hard-floor slots ───────────────────────────────────────────────────
+// Per ops policy: these slots MUST meet target. They cannot be demoted
+// to 'short-low-priority', the hiring recommender counts their gaps as
+// full shortfall, and the main pass adds a large score penalty for any
+// pattern that would leave them short. The ONLY slot allowed to fall
+// below target is slot 7 (3 PM) — the slowest hour of the day, where
+// under-coverage is explicitly acceptable.
+//
+// Currently floor = every slot EXCEPT 3 PM. If ops ever wants a
+// different policy ("4 PM may also dip"), edit FLOOR_SLOTS here — the
+// algorithm reads from this single source of truth.
+const NON_FLOOR_SLOT_IDX = 7  // 3-4 PM
+export const FLOOR_SLOTS: number[] = (() => {
+  const arr: number[] = []
+  for (let i = 0; i < 15; i++) if (i !== NON_FLOOR_SLOT_IDX) arr.push(i)
+  return arr
+})()
+
+/** True when the (dow, slot) has a HARD floor — coverage must meet target.
+ *  Currently dow-independent (3 PM is the only exempt slot every day) but
+ *  the signature keeps dow so day-specific rules can be added later. */
+export function isFloorSlot(_dow: number, slot: number): boolean {
+  return slot !== NON_FLOOR_SLOT_IDX
+}
+
+/** Subset of floor slots that the main-pass scorer ACTIVELY penalizes
+ *  when left short — i.e. the slots where ops most needs the algorithm
+ *  to fight for coverage. Currently the opening window (8-10 AM, indices
+ *  0-2) which the optimizer was draining to feed peaks. Keeping this
+ *  narrower than FLOOR_SLOTS prevents the scorer from going so deeply
+ *  negative on busy-day patterns that it refuses to place anything. */
+export const PROTECTED_OPENING_SLOTS: number[] = [0, 1, 2]
+export function isProtectedOpeningSlot(_dow: number, slot: number): boolean {
+  return PROTECTED_OPENING_SLOTS.includes(slot)
 }
 
 /** Threshold below which a slot is considered "low priority" — used by
