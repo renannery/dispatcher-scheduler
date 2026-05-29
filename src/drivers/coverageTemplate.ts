@@ -177,30 +177,37 @@ const WEEKEND_PATTERNS: number[][] = [
 ]
 
 // ─── Required coverage — 5-week DRIVER-ONLY average ───────────────────────
-// Apr 30 – Jun 3 2026 (5 weeks of historical schedules). Re-derived with
-// shoppers (Annie, Eliraiza, Kishan, Noli) EXCLUDED, because shoppers
-// belong to a separate operational pool (groceries) and were inflating
-// the prior version's targets. Sunday is unchanged — shoppers don't work
-// Sundays (grocery store closed). Weekly total: ~2298h (was 2486h with
-// shoppers — the 188h reduction = 4 shoppers × ~47h).
-const COV_THU = [0,  9, 14, 23, 28, 28, 16, 15, 16, 24, 38, 39, 25, 16, 6]
-const COV_FRI = [0,  9, 18, 26, 34, 34, 23, 21, 23, 36, 52, 52, 34, 18, 6]
-const COV_SAT = [6, 12, 16, 19, 26, 25, 21, 19, 25, 41, 52, 52, 31, 18, 6]
-const COV_SUN = [7, 11, 17, 23, 29, 24, 26, 21, 25, 39, 51, 51, 30, 17, 7]
-const COV_MON = [0,  9, 15, 20, 29, 29, 19, 19, 17, 19, 40, 40, 31, 12, 6]
-const COV_TUE = [0,  8, 14, 22, 28, 28, 18, 17, 15, 20, 35, 35, 23, 14, 6]
-const COV_WED = [0,  9, 12, 20, 27, 27, 18, 17, 17, 20, 34, 35, 24, 14, 6]
+// Apr 30 – May 6 2026 single high-coverage reference week (57 drivers
+// in operation that week — a snapshot from when the roster was larger
+// than the 5-week historical average). Replaces the previous 5-week
+// average baseline (Apr 30 – Jun 3) at the user's request: ops wants
+// the targets to reflect the peak operating state, not the average,
+// so generated schedules push more bodies into the busiest hours.
+// Shoppers (Annie, Eliraiza, Kishan, Noli) excluded — they're scored
+// against the separate SHOPPER_COVERAGE pool below.
+//
+// Biggest peak increases vs prior baseline:
+//   Sat 5p: 41→46, Sat 6p/7p: 52→56, Sun 6p/7p: 51→54
+//   Fri 6p/7p: 52→54, Mon 6p/7p: 40→42, Wed 6p/7p: 34→36
+// Weekly total: ~2354h (was 2298h, +56h reflecting the larger roster).
+const COV_THU = [0,  9, 16, 23, 29, 29, 17, 15, 16, 24, 39, 39, 25, 16, 6]
+const COV_FRI = [0,  9, 19, 25, 34, 34, 23, 22, 23, 36, 54, 54, 35, 18, 6]
+const COV_SAT = [6, 12, 17, 21, 27, 28, 22, 19, 28, 46, 56, 56, 29, 18, 7]
+const COV_SUN = [7, 11, 17, 24, 31, 26, 28, 23, 25, 41, 54, 54, 31, 17, 7]
+const COV_MON = [0,  9, 16, 22, 30, 30, 19, 18, 17, 20, 42, 42, 32, 14, 6]
+const COV_TUE = [0,  9, 15, 21, 26, 26, 16, 16, 17, 22, 36, 36, 23, 14, 6]
+const COV_WED = [0,  9, 12, 20, 26, 26, 17, 15, 18, 20, 36, 36, 25, 15, 6]
 
 // ─── Shopper coverage targets (separate pool, groceries) ─────────────────
-// 5-week historical average of shopper-only hours per slot, from the same
-// XLSX source. Sunday is 0 — shoppers don't work Sundays. Shown as a
+// From the Apr 30 – May 6 2026 reference week (same source as the driver
+// targets above). Sunday is 0 — shoppers don't work Sundays. Shown as a
 // SECOND row in the day-grid footer so ops can verify shopper presence
 // independently from driver coverage.
-const SHOP_COV_THU = [0, 1, 2, 2, 2, 2, 3, 2, 3, 4, 4, 4, 2, 0, 0]
+const SHOP_COV_THU = [0, 1, 1, 2, 3, 3, 2, 2, 2, 3, 3, 2, 2, 0, 0]
 const SHOP_COV_FRI = [0, 1, 2, 3, 3, 3, 3, 2, 3, 3, 4, 4, 2, 0, 0]
 const SHOP_COV_SAT = [0, 1, 2, 3, 3, 3, 2, 3, 2, 4, 4, 4, 2, 0, 0]
 const SHOP_COV_SUN = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-const SHOP_COV_MON = [0, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 3, 2, 1, 0]
+const SHOP_COV_MON = [0, 1, 2, 2, 3, 3, 2, 2, 3, 4, 2, 2, 1, 0, 0]
 const SHOP_COV_TUE = [0, 1, 2, 2, 3, 3, 2, 2, 3, 4, 4, 4, 2, 0, 0]
 const SHOP_COV_WED = [0, 1, 2, 2, 2, 3, 3, 2, 2, 4, 4, 4, 3, 0, 0]
 
