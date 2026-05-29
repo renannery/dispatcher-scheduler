@@ -131,8 +131,8 @@ export function PeriodPicker() {
           <Upload className="h-4 w-4 shrink-0" />
           <span className="flex-1">
             {isRotationDragActive
-              ? 'Drop the JSON here…'
-              : 'Drop a previously exported JSON to load the roster and pick up the weekend-off rotation where it left off.'}
+              ? 'Drop the snapshot here…'
+              : 'Drop a previously exported snapshot to load the roster, settings, and pick up rotations where you left off.'}
           </span>
         </div>
         {importInfo && (

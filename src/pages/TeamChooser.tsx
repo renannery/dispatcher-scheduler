@@ -90,7 +90,7 @@ export function TeamChooser({ onPick }: Props) {
           </button>
         </div>
 
-        {/* Or load a previously exported JSON */}
+        {/* Or load a previously exported snapshot */}
         <div className="mt-8 w-full">
           <div className="mb-2 text-center text-xs uppercase tracking-wide text-slate-400">
             Or
@@ -108,10 +108,10 @@ export function TeamChooser({ onPick }: Props) {
             <Upload className="h-5 w-5 shrink-0" />
             <span>
               {isDragActive ? (
-                'Drop the JSON here…'
+                'Drop the snapshot here…'
               ) : (
                 <>
-                  <span className="font-medium text-slate-700">Drop a saved JSON</span> to load an existing schedule.
+                  <span className="font-medium text-slate-700">Drop a saved snapshot</span> to load an existing schedule.
                   The team is detected from the file.
                 </>
               )}

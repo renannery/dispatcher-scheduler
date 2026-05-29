@@ -684,11 +684,11 @@ export function DriverScheduleGrid() {
           </button>
           <button
             onClick={handleExportJson}
-            title="Save the full schedule state so you can reload it later"
+            title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
             className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             <FileJson className="h-4 w-4" />
-            JSON
+            Snapshot
           </button>
           <PdfMenu drivers={drivers} loading={pdfLoading} onSelect={handlePdfSelect} />
           <button
@@ -925,11 +925,11 @@ export function DriverScheduleGrid() {
         <div className="flex gap-2">
           <button
             onClick={handleExportJson}
-            title="Save the full schedule state so you can reload it later"
+            title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
             className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             <FileJson className="h-4 w-4" />
-            JSON
+            Snapshot
           </button>
           <PdfMenu drivers={drivers} loading={pdfLoading} onSelect={handlePdfSelect} />
           <button
