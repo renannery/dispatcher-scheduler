@@ -1004,6 +1004,20 @@ export function DriverScheduleGrid() {
                       ⚠ OT: {(otHours + dailyOtHours).toFixed(1)}h
                     </span>
                   )}
+                  {/* 10h-shift pill — dedicated counter so ops can spot the
+                      Phase 9 morning-extension OT shifts (and any other 10h
+                      shifts) at a glance and trim them manually if desired.
+                      Same set as the daily-OT tally above (every dailyOtDays
+                      shift is by definition >9h, almost always exactly 10h
+                      under current rules). Click hint via tooltip. */}
+                  {dailyOtDays > 0 && (
+                    <span
+                      className="flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700"
+                      title={`${dailyOtDays} shift${dailyOtDays === 1 ? '' : 's'} extended to 10h (legal daily overtime). Often produced by Phase 9 morning-extend to fill 8 AM gaps. Trim manually in the day grid if you want to bring them back to 9h.`}
+                    >
+                      {dailyOtDays}× 10h
+                    </span>
+                  )}
                 </div>
                 <div className="flex shrink-0 gap-2 text-xs text-slate-400">
                   <button
