@@ -284,5 +284,23 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
 }), {
   name: 'dispatcher-scheduler',
   storage: createJSONStorage(() => localStorage),
-  partialize: (state) => ({ weekendRotationOffset: state.weekendRotationOffset }),
+  // v2: persist full working set (was just weekendRotationOffset). Refresh
+  // / browser close no longer drops in-flight schedule edits.
+  version: 2,
+  migrate: (persisted: unknown, fromVersion: number) => {
+    if (fromVersion < 2 && persisted && typeof persisted === 'object') {
+      const p = persisted as Partial<SchedulerStore>
+      return { weekendRotationOffset: p.weekendRotationOffset ?? 0 }
+    }
+    return persisted as Partial<SchedulerStore>
+  },
+  partialize: (state) => ({
+    dispatchers: state.dispatchers,
+    startDate: state.startDate,
+    endDate: state.endDate,
+    timeOff: state.timeOff,
+    absenceReasons: state.absenceReasons,
+    weekendRotationOffset: state.weekendRotationOffset,
+    schedule: state.schedule,
+  }),
 }))

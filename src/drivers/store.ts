@@ -474,7 +474,37 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
 }), {
   name: 'driver-scheduler',
   storage: createJSONStorage(() => localStorage),
-  // Only persist the long-running rotation cursor; everything else is
-  // schedule-specific and can be re-derived or imported via JSON.
-  partialize: (state) => ({ weekendRotationOffset: state.weekendRotationOffset }),
+  // Bump when the persisted shape changes in a non-back-compat way.
+  // The migrate fn drops incompatible data instead of corrupting state.
+  version: 2,
+  migrate: (persisted: unknown, fromVersion: number) => {
+    // v1 only stored { weekendRotationOffset }. Anything older just gets
+    // its rotation cursor preserved and the new fields default-initialize.
+    if (fromVersion < 2 && persisted && typeof persisted === 'object') {
+      const p = persisted as Partial<DriverSchedulerStore>
+      return { weekendRotationOffset: p.weekendRotationOffset ?? 0 }
+    }
+    return persisted as Partial<DriverSchedulerStore>
+  },
+  // Auto-save the full working set so refresh / browser close doesn't
+  // nuke in-flight edits. Excludes the undo/redo stacks (they balloon
+  // localStorage on long sessions and aren't useful after refresh
+  // anyway — the user just lost the editor context for those edits).
+  // Step is persisted so you land back where you left off.
+  partialize: (state) => ({
+    step: state.step,
+    drivers: state.drivers,
+    startDate: state.startDate,
+    endDate: state.endDate,
+    fullTimeCap: state.fullTimeCap,
+    partTimeCap: state.partTimeCap,
+    coverageScale: state.coverageScale,
+    coverageOverrides: state.coverageOverrides,
+    minHoursPerDay: state.minHoursPerDay,
+    maxHoursPerDay: state.maxHoursPerDay,
+    timeOff: state.timeOff,
+    absenceReasons: state.absenceReasons,
+    weekendRotationOffset: state.weekendRotationOffset,
+    schedule: state.schedule,
+  }),
 }))
