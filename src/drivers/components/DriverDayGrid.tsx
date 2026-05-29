@@ -193,12 +193,15 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 key={ds.driver.id}
                 className={clsx(
                   'border-t border-slate-100',
-                  isFirstShopper && 'border-t-2 border-t-purple-300',
-                  // Shopper rows: purple tint to match the SHP badge
-                  // and the purple footer row. Drivers: standard
-                  // zebra-stripe white/slate.
+                  // Bold purple separator above the first shopper so the
+                  // shopper block is obviously a different roster section.
+                  isFirstShopper && 'border-t-4 border-t-purple-500',
+                  // Shopper rows: SATURATED purple so they're impossible
+                  // to confuse with drivers. Prior tint (purple-50/60) was
+                  // too washed-out and ops kept mistaking shoppers for
+                  // regular drivers in the grid.
                   isShopperRow
-                    ? (rowIdx % 2 === 0 ? 'bg-purple-50/60' : 'bg-purple-100/40')
+                    ? (rowIdx % 2 === 0 ? 'bg-purple-200' : 'bg-purple-300')
                     : (rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'),
                 )}
               >
@@ -211,7 +214,12 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                       {ds.driver.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
                     </div>
                     <span
-                      className={clsx('font-medium', isOff ? 'text-slate-400' : 'text-slate-800')}
+                      className={clsx(
+                        'font-medium',
+                        isShopperRow
+                          ? (isOff ? 'text-purple-500' : 'text-purple-900')
+                          : (isOff ? 'text-slate-400' : 'text-slate-800'),
+                      )}
                       title={ds.driver.name}
                     >
                       {displayName(ds.driver.name)}
@@ -227,7 +235,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                       {ds.driver.employmentType === 'full' ? 'FT' : 'PT'}
                     </span>
                     {ds.driver.isShopper && (
-                      <span className="rounded bg-purple-100 px-1 text-[9px] font-bold text-purple-700">
+                      <span className="rounded bg-purple-700 px-1.5 text-[9px] font-bold text-white shadow-sm ring-1 ring-purple-800">
                         SHP
                       </span>
                     )}
