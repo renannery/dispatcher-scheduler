@@ -126,6 +126,16 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0],  // 6h:  4 PM – 10 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0],  // 5h:  5 PM – 10 PM
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0],  // 4h:  6 PM – 10 PM (peak only)
+  // ─── 3h "orphan-filler" patterns ────────────────────────────────────────
+  // Specifically used on a driver's LAST work-week day when their
+  // remaining weekly cap is 3h and they can't otherwise fit a 4h
+  // minimum shift. Without these, a cap=43 driver ends at 40h after
+  // 5×8h and the 3h sliver gets stranded. The scheduler enables
+  // these via `effectiveMin=3` on the last day of the work-week.
+  [0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 3h:  9 AM – 12 PM
+  [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 3h:  12 PM – 3 PM
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0],  // 3h:  5 PM – 8 PM (dinner peak)
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0],  // 3h:  6 PM – 9 PM (dinner peak)
 ]
 
 // Weekend adds early-morning patterns (8 AM start).

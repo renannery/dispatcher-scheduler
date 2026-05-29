@@ -214,7 +214,11 @@ export function generateDriverSchedule({
     // fill-in shift. Without this, setting min=5 silently starves Wed.
     // The strict min still applies Thu-Tue.
     const isLastWorkWeekDay = remainingDows.length === 1
-    const effectiveMin = isLastWorkWeekDay ? Math.min(minHoursPerDay, 4) : minHoursPerDay
+    // On the last work-week day (Wed), allow short orphan-filler shifts
+    // (down to 3h) so drivers with a 3h sliver of remaining cap can
+    // still get placed and hit their weekly target. Other days keep
+    // the user-set min (default 4).
+    const effectiveMin = isLastWorkWeekDay ? Math.min(minHoursPerDay, 3) : minHoursPerDay
 
     // Split into off / available
     const available: Driver[] = []
