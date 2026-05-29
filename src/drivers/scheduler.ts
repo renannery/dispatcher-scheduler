@@ -38,6 +38,24 @@ function lastActive(pattern: boolean[]): number {
   return -1
 }
 
+/** True if the pattern has at least one "off" slot between its first and
+ *  last "on" slot — i.e. there's a real break in the middle. */
+function patternHasBreak(p: boolean[]): boolean {
+  const first = firstActive(p)
+  const last = lastActive(p)
+  if (first < 0 || last <= first) return false
+  for (let i = first + 1; i < last; i++) if (!p[i]) return true
+  return false
+}
+
+/** Minimum shift length above which a break (≥1h) is required.
+ *   Drivers: 9h+ (legal max daily; standard restaurant ops)
+ *   Shoppers: 8h+ (stricter — they're on their feet pushing carts;
+ *     ops policy is no continuous 8h grocery runs without a break) */
+function breakRequiredAt(d: Driver): number {
+  return d.isShopper ? 8 : 9
+}
+
 function weekLabel(date: Date): string {
   const dow = date.getDay()
   const thu = addDays(date, -((dow + 3) % 7))
@@ -469,6 +487,9 @@ export function generateDriverSchedule({
           if (h > remaining) continue
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
+          // Long-shift break rule (drivers 9h+, shoppers 8h+). Reject any
+          // continuous pattern at or past the driver's threshold.
+          if (h >= breakRequiredAt(d) && !patternHasBreak(p)) continue
 
           // Score shoppers against SHOPPER demand, others against driver
           // demand. This is the single key change: shopper shifts now
@@ -696,18 +717,12 @@ export function generateDriverSchedule({
         const currentHours = slots.filter(Boolean).length
         if (currentHours >= maxHoursPerDay + 1) break  // already at soft max
         if (currentHours >= LEGAL_DAILY_MAX_HOURS) break  // legal max
-        // Ops rule: 9h+ shifts MUST include a break (≥1h). If extending
-        // would make this a 9h CONTINUOUS shift (no break in the
-        // existing slots), refuse the extension — the algorithm should
-        // pick a different driver or just leave the gap.
-        if (currentHours + 1 >= 9) {
-          let hasBreak = false
-          const first0 = slots.findIndex(s => s)
-          let last0 = -1
-          for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last0 = z; break }
-          for (let i = first0 + 1; i < last0; i++) if (!slots[i]) { hasBreak = true; break }
-          if (!hasBreak) break
-        }
+        // Ops rule: long shifts MUST include a break (≥1h). Drivers at 9h+,
+        // shoppers at 8h+ (stricter — on-feet grocery work). If extending
+        // would push this shift past the threshold while still continuous,
+        // refuse — the algorithm should pick a different driver or just
+        // leave the gap.
+        if (currentHours + 1 >= breakRequiredAt(d) && !patternHasBreak(slots)) break
 
         const first = slots.findIndex(s => s)
         const last = (() => { for (let s = slots.length - 1; s >= 0; s--) if (slots[s]) return s; return -1 })()
