@@ -81,6 +81,14 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0],  // 7h:  11 AM – 8 PM
   [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0],  // 8h:  12 PM – 10 PM
   [0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0],  // 9h:  11 AM – 10 PM
+  // Late-start straight shifts — lets the rebalance pass swap a
+  // 9 AM-start driver to a 12 PM/1 PM start when mornings are over-
+  // staffed and evening peaks are short. Without these, the rebalance
+  // can't find same-length alternatives that cover 6-8 PM peaks.
+  [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 9h:  12 PM – 9 PM (continuous, covers lunch+dinner)
+  [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],  // 9h:  1 PM – 10 PM (continuous, dinner+closing)
+  [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],  // 8h:  12 PM – 8 PM (continuous)
+  [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 8h:  1 PM – 9 PM (continuous)
   // Mid-afternoon
   [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0],  // 7h:  12 PM – 9 PM
   [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 7h:  2 PM – 9 PM

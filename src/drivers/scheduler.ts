@@ -754,6 +754,107 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 4 of cap-fill: REBALANCE (shift-later swap) ──────────────────
+  // After Phases 1-3 some days still show "morning over-staffed, evening
+  // peak short". This pass walks each day and tries to SWAP a driver's
+  // current pattern for a different one (same length, same template
+  // pool, respecting blocks + night-rest) that reduces the day's total
+  // shortfall. Matches the user's manual edits where drivers were
+  // shifted from 9 AM starts to 11 AM-12 PM starts to land coverage
+  // on the 6-8 PM dinner peak.
+  for (let dayIdx = 0; dayIdx < allDates.length; dayIdx++) {
+    const date = allDates[dayIdx]
+    const dateStr = format(date, 'yyyy-MM-dd')
+    const dow = date.getDay()
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    const template = DRIVER_DAY_TEMPLATES[dow]
+    const allPatterns = template.shiftPatterns
+      .map((raw) => raw.map((v) => v === 1))
+      .filter((p) => slotHours(p) <= MAX_HOURS_PER_DAY)
+
+    function totalUnder(c: number[]): number {
+      let t = 0
+      for (let s = 0; s < required.length; s++) t += Math.max(0, required[s] - c[s])
+      return t
+    }
+    if (totalUnder(cov) === 0) continue
+
+    // Pass repeatedly until no improvement (max 50 iterations safety).
+    for (let iter = 0; iter < 50; iter++) {
+      let bestDriver: Driver | null = null
+      let bestPattern: boolean[] | null = null
+      let bestImprovement = 0
+      const beforeUnder = totalUnder(cov)
+      if (beforeUnder === 0) break
+
+      for (const d of drivers) {
+        if (d.isShopper) continue  // shoppers tracked separately
+        const entry = scheduleMap[d.id][dayIdx]
+        if (!entry || entry.isOff || entry.date !== dateStr) continue
+        const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+        const curHours = entry.totalHours ?? 0
+
+        // Compute coverage as if THIS driver's current pattern were removed.
+        const covWithout = [...cov]
+        for (let s = 0; s < entry.slots.length; s++) if (entry.slots[s]) covWithout[s]--
+
+        for (const p of allPatterns) {
+          const h = slotHours(p)
+          if (h !== curHours) continue                 // keep same length (preserves cap)
+          // No-op: skip if pattern is the SAME as current.
+          let same = true
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] !== entry.slots[s]) { same = false; break }
+          }
+          if (same) continue
+          if (blocks && p.some((on, i) => on && blocks[i])) continue
+          // Night-rest with TOMORROW (only matters if shift ends past closing).
+          let pLast = -1
+          for (let s = p.length - 1; s >= 0; s--) if (p[s]) { pLast = s; break }
+          if (pLast >= NIGHT_SLOT_THRESHOLD) {
+            const tomorrow = scheduleMap[d.id][dayIdx + 1]
+            if (tomorrow && !tomorrow.isOff && firstActive(tomorrow.slots) <= MORNING_SLOT_THRESHOLD) continue
+          }
+          // Night-rest with YESTERDAY (only matters if THIS shift starts in the morning).
+          const pFirst = firstActive(p)
+          if (pFirst <= MORNING_SLOT_THRESHOLD) {
+            const yest = scheduleMap[d.id][dayIdx - 1]
+            if (yest && !yest.isOff) {
+              let yLast = -1
+              for (let s = yest.slots.length - 1; s >= 0; s--) if (yest.slots[s]) { yLast = s; break }
+              if (yLast >= NIGHT_SLOT_THRESHOLD) continue
+            }
+          }
+
+          // Compute new coverage with this pattern, check if total under improves.
+          const covWith = [...covWithout]
+          for (let s = 0; s < p.length; s++) if (p[s]) covWith[s]++
+          const newUnder = totalUnder(covWith)
+          const improvement = beforeUnder - newUnder
+          if (improvement > bestImprovement) {
+            // The swap is reducing TOTAL shortfall — accept it even if
+            // a slot it touches is already over the +5% main cap. The
+            // alternative (leaving the gap) is worse than mild extra
+            // over-coverage on a slot that was already over.
+            bestImprovement = improvement
+            bestDriver = d
+            bestPattern = p
+          }
+        }
+      }
+
+      if (!bestDriver || !bestPattern) break
+
+      // Apply the swap.
+      const entry = scheduleMap[bestDriver.id][dayIdx]
+      for (let s = 0; s < entry.slots.length; s++) if (entry.slots[s]) cov[s]--
+      entry.slots = [...bestPattern]
+      for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+      lastSlotWorked[bestDriver.id][dateStr] = lastActive(bestPattern)
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
