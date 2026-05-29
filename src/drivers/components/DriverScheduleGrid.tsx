@@ -1012,7 +1012,11 @@ export function DriverScheduleGrid() {
                       under current rules). Click hint via tooltip. */}
                   {dailyOtDays > 0 && (
                     <span
-                      className="flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700"
+                      // Red palette matches the per-shift "Hrs" cell pill
+                      // in the day grid (DriverDayGrid renders >9h shifts
+                      // with bg-red-100 text-red-700 ring-1 ring-red-400),
+                      // so the two visual cues for the same shifts line up.
+                      className="flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700 ring-1 ring-red-400"
                       title={`${dailyOtDays} shift${dailyOtDays === 1 ? '' : 's'} extended to 10h (legal daily overtime). Often produced by Phase 9 morning-extend to fill 8 AM gaps. Trim manually in the day grid if you want to bring them back to 9h.`}
                     >
                       {dailyOtDays}× 10h
