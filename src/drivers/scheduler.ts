@@ -661,6 +661,18 @@ export function generateDriverSchedule({
         const currentHours = slots.filter(Boolean).length
         if (currentHours >= maxHoursPerDay + 1) break  // already at soft max
         if (currentHours >= LEGAL_DAILY_MAX_HOURS) break  // legal max
+        // Ops rule: 9h+ shifts MUST include a break (≥1h). If extending
+        // would make this a 9h CONTINUOUS shift (no break in the
+        // existing slots), refuse the extension — the algorithm should
+        // pick a different driver or just leave the gap.
+        if (currentHours + 1 >= 9) {
+          let hasBreak = false
+          const first0 = slots.findIndex(s => s)
+          let last0 = -1
+          for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last0 = z; break }
+          for (let i = first0 + 1; i < last0; i++) if (!slots[i]) { hasBreak = true; break }
+          if (!hasBreak) break
+        }
 
         const first = slots.findIndex(s => s)
         const last = (() => { for (let s = slots.length - 1; s >= 0; s--) if (slots[s]) return s; return -1 })()
@@ -783,6 +795,17 @@ export function generateDriverSchedule({
         const currentHours = entry.totalHours ?? 0
         if (currentHours >= LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS) continue
         const slots = entry.slots
+        // Ops rule: 9h+ shifts MUST include a break. If extending would
+        // make this a 9h-continuous shift, skip — OT bonus has to wait
+        // until another driver's shift can take the extra hour.
+        if (currentHours + 1 >= 9) {
+          let hasBreak = false
+          const f0 = slots.findIndex(s => s)
+          let l0 = -1
+          for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { l0 = z; break }
+          for (let i = f0 + 1; i < l0; i++) if (!slots[i]) { hasBreak = true; break }
+          if (!hasBreak) continue
+        }
         const first = slots.findIndex(s => s)
         let last = -1
         for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last = z; break }
