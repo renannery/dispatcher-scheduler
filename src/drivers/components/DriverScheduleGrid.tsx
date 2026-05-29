@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
 import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -238,6 +238,155 @@ function Knob({ label, suffix, value, setValue, min, max, step = 1, format, hint
   )
 }
 
+// ─── Quick-add driver modal ──────────────────────────────────────────────────
+//
+// One-shot form for adding a single driver from the schedule step. After
+// submit, the parent re-runs the scheduler so the new driver starts filling
+// gaps right away — no need to go back to the Names step.
+
+interface QuickAddDriverModalProps {
+  open: boolean
+  onClose: () => void
+  onSubmit: (driver: { name: string; driverId?: string; employmentType: 'full' | 'part'; isShopper: boolean }) => void
+}
+
+function QuickAddDriverModal({ open, onClose, onSubmit }: QuickAddDriverModalProps) {
+  const [name, setName] = useState('')
+  const [driverId, setDriverId] = useState('')
+  const [employmentType, setEmploymentType] = useState<'full' | 'part'>('full')
+  const [isShopper, setIsShopper] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      // Reset on close so re-opening shows a fresh form.
+      setName('')
+      setDriverId('')
+      setEmploymentType('full')
+      setIsShopper(false)
+    }
+  }, [open])
+
+  if (!open) return null
+
+  const trimmedName = name.trim()
+  const canSubmit = trimmedName.length > 0
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!canSubmit) return
+    onSubmit({
+      name: trimmedName,
+      driverId: driverId.trim() || undefined,
+      employmentType,
+      isShopper,
+    })
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+      onClick={onClose}
+    >
+      <form
+        className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-800">Add driver to schedule</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <p className="mb-4 text-xs text-slate-500">
+          The new driver will be added to the roster and the schedule re-generated.
+          Existing assignments may shift to incorporate them.
+        </p>
+
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+            Name <span className="text-slate-400">(required)</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Maria Garcia"
+              autoFocus
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+            Driver ID <span className="text-slate-400">(optional, for backend lookup)</span>
+            <input
+              type="text"
+              value={driverId}
+              onChange={(e) => setDriverId(e.target.value)}
+              placeholder="e.g. cUZ2A5Q30pss1tBvtJ8W"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+          </label>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-slate-700">Term</span>
+            <div className="flex gap-2">
+              {(['full', 'part'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setEmploymentType(t)}
+                  className={clsx(
+                    'flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition',
+                    employmentType === t
+                      ? 'border-blue-500 bg-blue-50 text-blue-700'
+                      : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50',
+                  )}
+                >
+                  {t === 'full' ? 'Full-time' : 'Part-time'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="mt-1 flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={isShopper}
+              onChange={(e) => setIsShopper(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-purple-600 focus:ring-2 focus:ring-purple-200"
+            />
+            Shopper (groups at the bottom of each day grid + XLSX)
+          </label>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className={clsx(
+              'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold shadow-sm transition',
+              canSubmit
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'cursor-not-allowed bg-slate-200 text-slate-400',
+            )}
+          >
+            <Plus className="h-4 w-4" />
+            Add &amp; regenerate
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 export function DriverScheduleGrid() {
   const {
     schedule,
@@ -258,11 +407,13 @@ export function DriverScheduleGrid() {
     setFullTimeCap,
     setMaxHoursPerDay,
     setCoverageScale,
+    addDriver,
   } = useDriverStore()
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
 
   const trimmedSearch = search.trim().toLowerCase()
   const matchedDriverIds = useMemo(() => {
@@ -298,6 +449,25 @@ export function DriverScheduleGrid() {
     regenSeed.current++
     const fresh = generateDriverSchedule({
       drivers, startDate, endDate, timeOff, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay,
+      seed: weekendRotationOffset + regenSeed.current,
+    })
+    setSchedule(fresh)
+    setExpandedDates(new Set())
+  }
+
+  // Add a new driver, then regenerate so they immediately appear in
+  // the schedule and start filling gaps. Uses the up-to-date driver
+  // list from the store after `addDriver` runs (synchronous Zustand set).
+  const handleQuickAdd = (d: { name: string; driverId?: string; employmentType: 'full' | 'part'; isShopper: boolean }) => {
+    addDriver(d.name, d.employmentType, { driverId: d.driverId, isShopper: d.isShopper })
+    setQuickAddOpen(false)
+    // Pull the fresh driver list from the store (post-addDriver).
+    const freshDrivers = useDriverStore.getState().drivers
+    regenSeed.current++
+    const fresh = generateDriverSchedule({
+      drivers: freshDrivers, startDate, endDate, timeOff,
+      fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
       minHoursPerDay, maxHoursPerDay,
       seed: weekendRotationOffset + regenSeed.current,
     })
@@ -400,6 +570,14 @@ export function DriverScheduleGrid() {
           part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setQuickAddOpen(true)}
+            title="Add a driver and regenerate — pulls a new body straight into the gaps"
+            className="flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+          >
+            <Plus className="h-4 w-4" />
+            Add driver
+          </button>
           <button
             onClick={handleRegenerate}
             className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
@@ -646,6 +824,12 @@ export function DriverScheduleGrid() {
           </button>
         </div>
       </div>
+
+      <QuickAddDriverModal
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        onSubmit={handleQuickAdd}
+      />
     </div>
   )
 }
