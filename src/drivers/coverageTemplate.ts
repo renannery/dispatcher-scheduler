@@ -189,14 +189,62 @@ const WEEKEND_PATTERNS: number[][] = [
 // Biggest peak increases vs prior baseline:
 //   Sat 5p: 41→46, Sat 6p/7p: 52→56, Sun 6p/7p: 51→54
 //   Fri 6p/7p: 52→54, Mon 6p/7p: 40→42, Wed 6p/7p: 34→36
-// Weekly total: ~2354h (was 2298h, +56h reflecting the larger roster).
-const COV_THU = [0,  9, 16, 23, 29, 29, 17, 15, 16, 24, 39, 39, 25, 16, 6]
-const COV_FRI = [0,  9, 19, 25, 34, 34, 23, 22, 23, 36, 54, 54, 35, 18, 6]
-const COV_SAT = [6, 12, 17, 21, 27, 28, 22, 19, 28, 46, 56, 56, 29, 18, 7]
-const COV_SUN = [7, 11, 17, 24, 31, 26, 28, 23, 25, 41, 54, 54, 31, 17, 7]
-const COV_MON = [0,  9, 16, 22, 30, 30, 19, 18, 17, 20, 42, 42, 32, 14, 6]
-const COV_TUE = [0,  9, 15, 21, 26, 26, 16, 16, 17, 22, 36, 36, 23, 14, 6]
-const COV_WED = [0,  9, 12, 20, 26, 26, 17, 15, 18, 20, 36, 36, 25, 15, 6]
+//
+// Mid-afternoon 2-5 PM (slot indices 6, 7, 8) TRIMMED ~3-6 below Apr 30
+// reference: the user's manual edit on the Jun 4 schedule pulled 19
+// driver-hours out of this window (especially −11 at 3 PM) without
+// missing service. Ops policy: this is the slowest part of the day, so
+// the baseline target itself should be lower — combined with the per-DOW
+// SLOT_PRIORITY_WEIGHT below to push the algorithm to staff it leaner
+// AND tolerate brief under-coverage there.
+// Weekly total: ~2300h.
+const COV_THU = [0,  9, 16, 23, 29, 29, 14, 11, 13, 24, 39, 39, 25, 16, 6]
+const COV_FRI = [0,  9, 19, 25, 34, 34, 19, 16, 19, 36, 54, 54, 35, 18, 6]
+const COV_SAT = [6, 12, 17, 21, 27, 28, 18, 14, 23, 46, 56, 56, 29, 18, 7]
+const COV_SUN = [7, 11, 17, 24, 31, 26, 24, 18, 22, 41, 54, 54, 31, 17, 7]
+const COV_MON = [0,  9, 16, 22, 30, 30, 16, 13, 14, 20, 42, 42, 32, 14, 6]
+const COV_TUE = [0,  9, 15, 21, 26, 26, 13, 11, 14, 22, 36, 36, 23, 14, 6]
+const COV_WED = [0,  9, 12, 20, 26, 26, 14, 11, 15, 20, 36, 36, 25, 15, 6]
+
+// ─── Per-DOW per-slot PRIORITY weights ──────────────────────────────────
+// Multiplicative weights applied wherever the scheduler scores filling a
+// slot: main pass, Phase 5 narrow gap-fill, Phase 6 spread, Phase 8 push.
+// Higher weight → algorithm prefers placing a body here. Lower weight →
+// algorithm tolerates under-coverage here.
+//
+// Per ops policy:
+//   - Friday peaks (12-2 PM and 6-8 PM) are SHARP → weight 2.5
+//   - Sat/Sun peaks are FLATTER (longer broad mid-day demand) → weight 1.8
+//   - 3 PM is the slowest hour everywhere → weight 0.3 (under-coverage OK)
+//   - 4 PM dampened → weight 0.5
+//   - 10 PM closing-edge dampened → weight 0.5
+//
+// A slot with weight < 0.5 that's under-target gets a milder color
+// ('short-low-priority', muted amber) instead of red 'short' — see
+// coverageStatus() in scheduler.ts.
+const PRIORITY_FRI = [1.0, 1.0, 1.0, 1.5, 2.5, 2.5, 1.0, 0.3, 0.5, 1.5, 2.5, 2.5, 1.5, 1.0, 0.5]
+const PRIORITY_SAT = [1.0, 1.0, 1.2, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+const PRIORITY_SUN = [1.0, 1.0, 1.2, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+const PRIORITY_THU = [1.0, 1.0, 1.0, 1.3, 1.8, 1.8, 1.0, 0.3, 0.5, 1.3, 1.8, 1.8, 1.3, 1.0, 0.5]
+const PRIORITY_MON = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.8, 1.8, 1.3, 1.0, 0.5]
+const PRIORITY_TUE = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
+const PRIORITY_WED = [1.0, 1.0, 1.0, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
+
+export const SLOT_PRIORITY_WEIGHT: Record<number, number[]> = {
+  0: PRIORITY_SUN, 1: PRIORITY_MON, 2: PRIORITY_TUE, 3: PRIORITY_WED,
+  4: PRIORITY_THU, 5: PRIORITY_FRI, 6: PRIORITY_SAT,
+}
+
+/** Read the priority weight for a given (dow, slot). Defaults to 1.0
+ *  if the lookup misses (defensive — never zero-multiplies a score). */
+export function slotPriorityWeight(dow: number, slot: number): number {
+  return SLOT_PRIORITY_WEIGHT[dow]?.[slot] ?? 1.0
+}
+
+/** Threshold below which a slot is considered "low priority" — used by
+ *  coverageStatus() to render under-target slots in amber (acceptable
+ *  shortfall) instead of red (real gap). */
+export const LOW_PRIORITY_WEIGHT = 0.5
 
 // ─── Shopper coverage targets (separate pool, groceries) ─────────────────
 // From the Apr 30 – May 6 2026 reference week (same source as the driver

@@ -79,11 +79,15 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0 || shopperRequired[i] > 0,
   )
 
-  // Slots with driver coverage shortfall — used to tint the entire
-  // column red so ops can scan a day grid and spot where to add hours.
+  // Slots with REAL coverage shortfall — used to tint the entire column
+  // red so ops can scan a day grid and spot where to add hours. Excludes
+  // low-priority slots (3-4 PM) where under-target is acceptable per
+  // ops policy — those get the gentler short-low-priority status in the
+  // coverage pills but no full-column red tint.
   const shortSlots = new Set<number>()
   for (const si of visibleSlotIndices) {
-    if (required[si] - actual[si] > 0) shortSlots.add(si)
+    const status = coverageStatus(actual[si], required[si], dayOfWeek, si)
+    if (status === 'short') shortSlots.add(si)
   }
 
   // Apply row filters: external search filter takes precedence over the local OFF toggle.
@@ -188,7 +192,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             {visibleSlotIndices.map((si) => {
               const a = actual[si]
               const r = required[si]
-              const status = coverageStatus(a, r)
+              const status = coverageStatus(a, r, dayOfWeek, si)
               return (
                 <th key={si} className={clsx(
                   'sticky top-11 z-20 px-0.5 py-1 bg-slate-100 text-center',
@@ -200,9 +204,10 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                       status === 'ok'    && 'bg-emerald-100 text-emerald-700',
                       status === 'mild'  && 'bg-amber-100 text-amber-700',
                       status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
+                      status === 'short-low-priority' && 'bg-amber-50 text-amber-600',
                       status === 'over'  && 'bg-slate-200 text-slate-500',
                     )}
-                    title={`Actual: ${a} | Required: ${r}`}
+                    title={`Actual: ${a} | Required: ${r}${status === 'short-low-priority' ? ' (low-priority slot — under-coverage acceptable)' : ''}`}
                   >
                     {a}
                     {r > 0 && <span className="ml-0.5 opacity-50">/{r}</span>}
@@ -473,7 +478,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             {visibleSlotIndices.map((si) => {
               const a = actual[si]
               const r = required[si]
-              const status = coverageStatus(a, r)
+              const status = coverageStatus(a, r, dayOfWeek, si)
               return (
                 <td key={si} className={clsx('px-0.5 py-1 text-center', shortSlots.has(si) && 'bg-red-50/70')}>
                   <div
@@ -482,6 +487,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                       status === 'ok'    && 'bg-emerald-100 text-emerald-700',
                       status === 'mild'  && 'bg-amber-100 text-amber-700',
                       status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
+                      status === 'short-low-priority' && 'bg-amber-50 text-amber-600',
                       status === 'over'  && 'bg-slate-100 text-slate-400',
                     )}
                     title={`Actual: ${a} | Required: ${r}`}

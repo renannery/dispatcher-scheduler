@@ -6,6 +6,7 @@ import {
   LEGAL_DAILY_MAX_HOURS,
   LEGAL_PT_WEEKLY_MAX_HOURS,
   LEGAL_WEEKLY_MAX_HOURS,
+  LOW_PRIORITY_WEIGHT,
   MAX_HOURS_PER_DAY,
   OT_DAILY_BONUS,
   OT_FLEET_PCT,
@@ -13,6 +14,7 @@ import {
   SHOPPER_COVERAGE,
   USER_CAP_BUFFER_PCT,
   effectiveCoverage,
+  slotPriorityWeight,
 } from './coverageTemplate'
 import type {
   Driver,
@@ -22,8 +24,34 @@ import type {
   GeneratedDriverSchedule,
 } from './types'
 
-const NIGHT_SLOT_THRESHOLD = 13   // 9-10 PM or later = closing
-const MORNING_SLOT_THRESHOLD = 2  // starts ≤ 10 AM = morning
+// ─── Minimum rest between consecutive shifts (12 hours) ────────────────
+// Ops policy: a driver who finishes a shift must have at least MIN_REST_H
+// hours off before starting the next one. With slot 0 = 8-9 AM and slot
+// 14 = 10-11 PM (ending at 23:00), the math:
+//   yesterday's end hour = 8 + lastSlot + 1 = 9 + lastSlot  (in 24h time)
+//   today's start hour   = 8 + firstSlot                    (next day)
+//   rest hours = 24 - (9 + lastSlot) + (8 + firstSlot)
+//              = 23 + firstSlot - lastSlot
+// So rest ≥ 12 ⇔ firstSlot ≥ lastSlot - 11.
+//
+// Example: closes at 11 PM (slot 14, ends 23:00). lastSlot=14, need
+// firstSlot ≥ 3 (= 11 AM start). 11 PM → 11 AM = 12h ✓.
+// Example: closes at 10 PM (slot 13, ends 22:00). lastSlot=13, need
+// firstSlot ≥ 2 (= 10 AM start). 10 PM → 10 AM = 12h ✓.
+//
+// Replaces the previous coarse "(lastSlot ≥ 13) AND (firstSlot ≤ 2) →
+// block" check, which over-blocked some valid 12h pairs and under-blocked
+// some sub-12h ones (e.g. 9 PM close → 8 AM start = 11h, was allowed).
+const MIN_REST_HOURS = 12
+
+/** True when starting `firstSlot` the day after working through `lastSlot`
+ *  would give less than MIN_REST_HOURS of rest. Returns false (allowed)
+ *  when either slot is invalid. */
+function violatesMinRest(lastSlot: number, firstSlot: number): boolean {
+  if (lastSlot < 0 || firstSlot < 0) return false
+  const restHours = 23 + firstSlot - lastSlot
+  return restHours < MIN_REST_HOURS
+}
 
 function slotHours(slots: boolean[]): number {
   return slots.reduce((sum, on) => sum + (on ? 1 : 0), 0)
@@ -296,8 +324,21 @@ export function generateDriverSchedule({
     // and let drivers spend their leftover weekly cap on a short fill-in.
     const remainingDows = workWeekRemaining(dow)
 
-    const workedNightYesterday = (id: string) =>
-      (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
+    /** Last slot the driver worked yesterday (−1 if off / not scheduled). */
+    const yesterdaysLastSlot = (id: string) =>
+      lastSlotWorked[id][yesterday] ?? -1
+
+    /** First slot of TOMORROW's shift, if already placed in scheduleMap.
+     *  Returns −1 when tomorrow hasn't been processed yet (slowest-first
+     *  iteration means today's "tomorrow" may already be in scheduleMap)
+     *  or when tomorrow is OFF. Used by the main pass to enforce 12h
+     *  rest BOTH directions, not just against yesterday. */
+    const tomorrow = format(addDays(date, 1), 'yyyy-MM-dd')
+    const tomorrowsFirstSlot = (id: string): number => {
+      const entry = scheduleMap[id].find((e) => e.date === tomorrow)
+      if (!entry || entry.isOff) return -1
+      return entry.slots.findIndex((s) => s)
+    }
 
     // Per ops policy: every workday must be at least 4 hours. No
     // 3h orphan-filler shortcuts, even on the last work-week day.
@@ -486,7 +527,14 @@ export function generateDriverSchedule({
           if (h > maxHoursPerDay && !hasMaxShiftThisWeek[d.id][wLabel]) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
-          if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
+          if (violatesMinRest(yesterdaysLastSlot(d.id), firstActive(p))) continue
+          // Rest check against tomorrow too, in case tomorrow was already
+          // placed by a higher-priority earlier iteration (Mon/Tue often
+          // get scheduled before Sun under slowest-first order).
+          {
+            const tFirst = tomorrowsFirstSlot(d.id)
+            if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
+          }
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
           // Long-shift break rule (drivers 9h+, shoppers 8h+). Reject any
           // continuous pattern at or past the driver's threshold.
@@ -511,21 +559,31 @@ export function generateDriverSchedule({
           }
           if (exceedsLimit) continue
 
-          // Score = base contribution + most-starved-slot priority boost.
+          // Score = base contribution × per-slot priority weight + most-
+          // starved-slot priority boost. The weight multiplier (peak
+          // boost, slow-zone dampening) lives in coverageTemplate.ts —
+          // a 3 PM slot has weight 0.3 so filling it earns less, while
+          // a Fri 6 PM peak has weight 2.5 so filling it earns more.
+          // Shoppers use weight 1.0 across the board (they're scored
+          // against the SHOPPER pool, not driver coverage targets).
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
+            const w = d.isShopper ? 1 : slotPriorityWeight(dow, s)
             if (myShort[s] > 0) {
               const t = myReq[s] || myShort[s]
-              score += myShort[s] * 10 + (myShort[s] / t) * 50
+              score += w * (myShort[s] * 10 + (myShort[s] / t) * 50)
             } else {
               const overage = myCov[s] - myReq[s]
               if (overage > 0) score -= overage * 700
-              else score += 1
+              else score += w  // base "spare-fill" bonus, weighted
             }
           }
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && myPriority[s] > 0) score += myPriority[s] * 20
+            if (p[s] && myPriority[s] > 0) {
+              const w = d.isShopper ? 1 : slotPriorityWeight(dow, s)
+              score += w * myPriority[s] * 20
+            }
           }
           // Soft length preference: pay a *quadratic* penalty for each
           // hour above `perDayTarget - 1` (7h for the default cap=45).
@@ -596,6 +654,20 @@ export function generateDriverSchedule({
   // ~7-8h each (more fair) instead of 5 days at max.
   // Iterates shuffledDrivers so cap-fill doesn't reintroduce alphabetical
   // bias by always processing A-named drivers first.
+
+  // ─── Re-sort scheduleMap into calendar order BEFORE Phase 1+ ───────────
+  // The main pass appends entries in slowest-first iteration order (e.g.
+  // Wed,Tue,Thu,Mon,Fri,Sat,Sun) — NOT calendar order. Phase 1+ scan
+  // each driver's entry list and assume `[i-1]` is yesterday and `[i+1]`
+  // is tomorrow for night-rest / shift-extension checks. If we don't
+  // sort, those checks compare against the wrong neighbor and the strict
+  // 12h rest rule produces violations the algorithm thought it was
+  // avoiding. Sort once here so every later phase sees a canonical
+  // calendar-ordered schedule.
+  for (const id of Object.keys(scheduleMap)) {
+    scheduleMap[id].sort((a, b) => a.date.localeCompare(b.date))
+  }
+
   for (const d of shuffledDrivers) {
     if (d.isShopper) continue  // shoppers always work 6 days already
     // Phase 1 add-shift also uses the BUFFERED cap so drivers can
@@ -640,26 +712,30 @@ export function generateDriverSchedule({
         const h = slotHours(p)
         if (h < minShift || h > remaining) continue
         if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
-        if (firstActive(p) <= MORNING_SLOT_THRESHOLD) {
+        {
           const yest = scheduleMap[d.id][i - 1]
           if (yest && !yest.isOff) {
-            let yestLast = -1
-            for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yestLast = z; break }
-            if (yestLast >= NIGHT_SLOT_THRESHOLD) continue
+            if (violatesMinRest(lastActive(yest.slots), firstActive(p))) continue
+          }
+          const tomorrow = scheduleMap[d.id][i + 1]
+          if (tomorrow && !tomorrow.isOff) {
+            const tFirst = tomorrow.slots.findIndex(x => x)
+            if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
           }
         }
         if (blocks && p.some((on, idx) => on && blocks[idx])) continue
         let exceeds = false
-        let helps = 0
+        let weightedHelps = 0
         for (let s = 0; s < p.length; s++) {
           if (!p[s]) continue
           if (cov[s] + 1 > required[s] + fillTolerance(required[s])) { exceeds = true; break }
-          if (required[s] - cov[s] > 0) helps++
+          if (required[s] - cov[s] > 0) weightedHelps += slotPriorityWeight(dow, s)
         }
         if (exceeds) continue
-        // Prefer the pattern that covers the most under-target slots.
-        // Tie-break: prefer SHORTER pattern (saves cap for other off-days).
-        const score = helps * 10 - h
+        // Prefer patterns that fill the most weighted-under-target slots
+        // (peak slots count more than slow slots). Tie-break: shorter
+        // pattern (saves cap for other off-days).
+        const score = weightedHelps * 10 - h
         if (score > bestFit) {
           bestFit = score
           bestPattern = p
@@ -746,15 +822,24 @@ export function generateDriverSchedule({
           // +5%) so drivers can hit their weekly cap.
           const fillTol = required[s] <= 0 ? 0 : Math.max(1, Math.round(required[s] * 0.15))
           if (!d.isShopper && cov[s] + 1 > required[s] + fillTol) continue
-          // Night-rest: if extending into the morning of NEXT day would
-          // conflict, skip. The night-rest rule applies to MORNING shifts
-          // after a closing shift the day before — we check shifts we
-          // EXTEND into closing only against tomorrow's start.
-          if (s >= NIGHT_SLOT_THRESHOLD) {
+          // Min-rest check: extending the END of today's shift may shrink
+          // rest before TOMORROW's start, extending the START may shrink
+          // rest after YESTERDAY's end. Check both directions because
+          // Phase 2 can pick either side of the existing shift.
+          {
             const tomorrow = scheduleMap[d.id][i + 1]
             if (tomorrow && !tomorrow.isOff) {
               const tFirst = tomorrow.slots.findIndex(x => x)
-              if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+              const newLast = Math.max(s, lastActive(slots))
+              if (violatesMinRest(newLast, tFirst)) continue
+            }
+          }
+          {
+            const yest = scheduleMap[d.id][i - 1]
+            if (yest && !yest.isOff) {
+              const yLast = lastActive(yest.slots)
+              const newFirst = Math.min(s, slots.findIndex(x => x))
+              if (violatesMinRest(yLast, newFirst)) continue
             }
           }
           // Pick the slot with the larger shortfall.
@@ -863,6 +948,22 @@ export function generateDriverSchedule({
           if (required[s] <= 0) continue
           if (blocks && blocks[s]) continue
           if (cov[s] + 1 > required[s]) continue  // only fill REAL shortfall, no piling on
+          // 12h rest check both directions — Phase 3 extends either side.
+          {
+            const entryIdx = scheduleMap[d.id].indexOf(entry)
+            const tomorrow = scheduleMap[d.id][entryIdx + 1]
+            if (tomorrow && !tomorrow.isOff) {
+              const tFirst = tomorrow.slots.findIndex(x => x)
+              const newLast = Math.max(s, last)
+              if (violatesMinRest(newLast, tFirst)) continue
+            }
+            const yest = scheduleMap[d.id][entryIdx - 1]
+            if (yest && !yest.isOff) {
+              const yLast = lastActive(yest.slots)
+              const newFirst = Math.min(s, first)
+              if (violatesMinRest(yLast, newFirst)) continue
+            }
+          }
           slots[s] = true
           entry.totalHours = currentHours + 1
           cov[s]++
@@ -933,21 +1034,19 @@ export function generateDriverSchedule({
           }
           if (same) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue
-          // Night-rest with TOMORROW (only matters if shift ends past closing).
-          let pLast = -1
-          for (let s = p.length - 1; s >= 0; s--) if (p[s]) { pLast = s; break }
-          if (pLast >= NIGHT_SLOT_THRESHOLD) {
+          // 12h rest with TOMORROW.
+          const pLast = lastActive(p)
+          {
             const tomorrow = scheduleMap[d.id][dayIdx + 1]
-            if (tomorrow && !tomorrow.isOff && firstActive(tomorrow.slots) <= MORNING_SLOT_THRESHOLD) continue
+            if (tomorrow && !tomorrow.isOff && violatesMinRest(pLast, firstActive(tomorrow.slots))) continue
           }
-          // Night-rest with YESTERDAY (only matters if THIS shift starts in the morning).
+          // 12h rest with YESTERDAY.
           const pFirst = firstActive(p)
-          if (pFirst <= MORNING_SLOT_THRESHOLD) {
+          {
             const yest = scheduleMap[d.id][dayIdx - 1]
             if (yest && !yest.isOff) {
-              let yLast = -1
-              for (let s = yest.slots.length - 1; s >= 0; s--) if (yest.slots[s]) { yLast = s; break }
-              if (yLast >= NIGHT_SLOT_THRESHOLD) continue
+              const yLast = lastActive(yest.slots)
+              if (violatesMinRest(yLast, pFirst)) continue
             }
           }
 
@@ -1048,29 +1147,19 @@ export function generateDriverSchedule({
         if (remaining < 4) continue  // 4h-min policy
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
         if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
-        // Night-rest with YESTERDAY (for morning-start patterns).
+        // Min-rest lookup against yesterday's close and tomorrow's start.
         const yest = scheduleMap[d.id][dayIdx - 1]
-        const yestLastClose = (() => {
-          if (!yest || yest.isOff) return false
-          let yLast = -1
-          for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yLast = z; break }
-          return yLast >= NIGHT_SLOT_THRESHOLD
-        })()
-        // Night-rest with TOMORROW (for closing patterns).
+        const yestLast = (yest && !yest.isOff) ? lastActive(yest.slots) : -1
         const tomorrow = scheduleMap[d.id][dayIdx + 1]
-        const tomorrowMorningStart = (() => {
-          if (!tomorrow || tomorrow.isOff) return false
-          const tFirst = tomorrow.slots.findIndex(x => x)
-          return tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD
-        })()
+        const tomorrowFirst = (tomorrow && !tomorrow.isOff) ? tomorrow.slots.findIndex(x => x) : -1
 
         for (const p of narrowPatterns) {
           const h = slotHours(p)
           if (h > remaining) continue
           if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue
-          if (firstActive(p) <= MORNING_SLOT_THRESHOLD && yestLastClose) continue
-          if (lastActive(p) >= NIGHT_SLOT_THRESHOLD && tomorrowMorningStart) continue
+          if (violatesMinRest(yestLast, firstActive(p))) continue
+          if (tomorrowFirst >= 0 && violatesMinRest(lastActive(p), tomorrowFirst)) continue
 
           // Check that the pattern actually fills a shortfall slot.
           let touchesShortfall = false
@@ -1238,21 +1327,16 @@ export function generateDriverSchedule({
         if (h < 4 || h > 5) continue
         if (h > remaining) continue
         if (blocks && p.some((on, idx) => on && blocks[idx])) continue
-        // Night-rest with YESTERDAY (for morning-start patterns).
-        if (firstActive(p) <= MORNING_SLOT_THRESHOLD) {
+        // 12h rest with yesterday's close and tomorrow's start.
+        {
           const yest = scheduleMap[d.id][i - 1]
-          if (yest && !yest.isOff) {
-            let yestLast = -1
-            for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yestLast = z; break }
-            if (yestLast >= NIGHT_SLOT_THRESHOLD) continue
-          }
+          if (yest && !yest.isOff && violatesMinRest(lastActive(yest.slots), firstActive(p))) continue
         }
-        // Night-rest with TOMORROW (for closing patterns).
-        if (lastActive(p) >= NIGHT_SLOT_THRESHOLD) {
+        {
           const tomorrow = scheduleMap[d.id][i + 1]
           if (tomorrow && !tomorrow.isOff) {
             const tFirst = tomorrow.slots.findIndex(x => x)
-            if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+            if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
           }
         }
         let exceeds = false
@@ -1267,19 +1351,18 @@ export function generateDriverSchedule({
           if (!p[s]) continue
           if (cov[s] + 1 > required[s] + tolFn(required[s])) { exceeds = true; break }
           // Score each slot the pattern touches based on its current
-          // coverage status (matches UI color buckets):
-          //   SHORT (red):   pattern fills a real gap        → +100
-          //   OK (at target): driver adds the first "over" body → +30
-          //   MILD (yellow): pattern pushes a yellow slot toward gray → +20
-          //   OVER (gray):   already over-staffed, no need     → +1
-          // This makes Phase 6 prefer patterns that hit not-yet-saturated
-          // peak slots (often still yellow at +1 or +2) over patterns
-          // that pile more bodies onto morning slots that are already gray.
+          // coverage status (matches UI color buckets), THEN multiply by
+          // the per-slot priority weight so peak slots (weight 2.5 on Fri
+          // 12-2/6-8 PM) are preferentially filled and slow slots
+          // (weight 0.3 at 3 PM) are passively avoided.
+          const w = slotPriorityWeight(dow, s)
           const diff = cov[s] - required[s]  // pos = over, 0 = at, neg = short
-          if (diff < 0) slotScore += 100
-          else if (diff === 0) slotScore += 30
-          else if (diff <= standardTol(required[s])) slotScore += 20
-          else slotScore += 1
+          let raw: number
+          if (diff < 0) raw = 100
+          else if (diff === 0) raw = 30
+          else if (diff <= standardTol(required[s])) raw = 20
+          else raw = 1
+          slotScore += raw * w
         }
         if (exceeds) continue
         // Final score: per-slot weighted score minus length (prefer shorter
@@ -1452,26 +1535,35 @@ export function generateDriverSchedule({
             if (required[s] <= 0) continue                    // outside ops hours
             if (blocks && blocks[s]) continue                 // driver-blocked slot
             if (cov[s] + 1 > required[s] + tolFn(required[s])) continue
-            // Night-rest with tomorrow if extending into closing.
-            if (s >= NIGHT_SLOT_THRESHOLD) {
+            // 12h rest BOTH directions — Phase 8 can extend either side
+            // of the existing shift (start earlier OR end later), so we
+            // need to check against yesterday's close AND tomorrow's start.
+            {
               const tomorrow = scheduleMap[d.id][idx + 1]
               if (tomorrow && !tomorrow.isOff) {
                 const tFirst = tomorrow.slots.findIndex(x => x)
-                if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+                const newLast = Math.max(s, lastActive(slots))
+                if (tFirst >= 0 && violatesMinRest(newLast, tFirst)) continue
+              }
+              const yest = scheduleMap[d.id][idx - 1]
+              if (yest && !yest.isOff) {
+                const yLast = lastActive(yest.slots)
+                const newFirst = Math.min(s, slots.findIndex(x => x))
+                if (violatesMinRest(yLast, newFirst)) continue
               }
             }
-            // Score by current coverage status (matches UI color buckets):
-            //   SHORT (red):    +100
-            //   OK (at target): +30
-            //   MILD (yellow):  +20
-            //   OVER (gray):    +1
-            // Yellow gets priority — that's the user's explicit goal.
+            // Score by current coverage status × per-slot priority weight.
+            // Status buckets: SHORT 100 / OK 30 / MILD 20 / OVER 1.
+            // Weight: peak slots (Fri 12-2/6-8 PM = 2.5) pull spare cap
+            // toward them; slow slots (3 PM = 0.3) get nearly ignored.
+            const w = slotPriorityWeight(dow, s)
             const diff = cov[s] - required[s]
-            let slotScore: number
-            if (diff < 0) slotScore = 100
-            else if (diff === 0) slotScore = 30
-            else if (diff <= yellowTol(required[s])) slotScore = 20
-            else slotScore = 1
+            let raw: number
+            if (diff < 0) raw = 100
+            else if (diff === 0) raw = 30
+            else if (diff <= yellowTol(required[s])) raw = 20
+            else raw = 1
+            const slotScore = raw * w
             if (slotScore > bestScore) {
               bestScore = slotScore
               bestEntry = entry
@@ -1560,14 +1652,20 @@ export function analyzeCoverageHealth(
   const perDate = schedule.dates.map((di) => {
     const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
     const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
-    // ALL under-coverage counts (no tolerance subtraction). Per policy
-    // the coverage targets are a hard minimum — any gap is a real gap.
+    // Under-coverage on LOW-priority slots (3-4 PM) is acceptable per
+    // ops policy — exclude from the shortfall total so the hiring
+    // recommender doesn't urge new hires to cover slots ops explicitly
+    // wants to leave thinner. Other gaps still count fully.
     let shortfall = 0
     let overstaff = 0
     for (let s = 0; s < target.length; s++) {
       const diff = target[s] - (actual[s] ?? 0)
-      if (diff > 0) shortfall += diff
-      else if (diff < 0) overstaff += -diff
+      if (diff > 0) {
+        const w = slotPriorityWeight(di.dayOfWeek, s)
+        if (w >= LOW_PRIORITY_WEIGHT) shortfall += diff
+      } else if (diff < 0) {
+        overstaff += -diff
+      }
     }
     return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
   })
@@ -1588,25 +1686,42 @@ export function analyzeCoverageHealth(
 
 // ─── Coverage + hour color helpers (UI) ─────────────────────────────────────
 
-export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
+export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short' | 'short-low-priority'
 
 /**
  * Color-codes how far a slot's actual coverage is from its target:
- *   - 'ok'    at-or-above target with required > 0
- *   - 'mild'  over target but within +15% (still ok-ish, soft yellow)
- *   - 'short' ANY under-coverage (red — coverage targets are hard minimums)
- *   - 'over'  required = 0 but staffed (unusual — slate)
+ *   - 'ok'                 at-or-above target with required > 0
+ *   - 'mild'               over target but within +15% (yellow)
+ *   - 'short'              under-coverage on a NORMAL or HIGH-priority slot
+ *                          (red — coverage targets are hard minimums there)
+ *   - 'short-low-priority' under-coverage on a LOW-priority slot (3-4 PM)
+ *                          (muted amber — acceptable shortfall per ops policy)
+ *   - 'over'               required = 0 but staffed, or staffed > +15%
  *
- * The under-coverage tolerance was REMOVED per user policy:
- *   "coverage targets proposed must be respected, we can't have less
- *    drivers than the minimum."
- * Over-coverage still gets a 15% "mild" band because being a bit over
- * isn't a problem — only a waste.
+ * The dow/slot parameters are optional so legacy callers (UI rendering
+ * just based on actual/required without context) still work — they get
+ * the standard short/red bucket. When the dow/slot ARE provided, an
+ * under-target slot with priority weight < LOW_PRIORITY_WEIGHT (0.5)
+ * gets the gentler 'short-low-priority' status instead of red.
  */
-export function coverageStatus(actual: number, required: number): CoverageStatus {
+export function coverageStatus(
+  actual: number,
+  required: number,
+  dow?: number,
+  slot?: number,
+): CoverageStatus {
   if (required === 0) return actual > 0 ? 'over' : 'ok'
   const diff = required - actual
-  if (diff > 0) return 'short'  // any shortfall = severe per policy
+  if (diff > 0) {
+    // Per Rule 2: 3-4 PM (and similar low-priority slots) may legitimately
+    // run under target — flag amber, not red, so ops doesn't read it as a
+    // service gap. Only triggers when the caller passed dow/slot.
+    if (dow !== undefined && slot !== undefined) {
+      const w = slotPriorityWeight(dow, slot)
+      if (w < LOW_PRIORITY_WEIGHT) return 'short-low-priority'
+    }
+    return 'short'
+  }
   if (diff === 0) return 'ok'
   // diff < 0 → over target
   const tol = coverageTolerance(required)
