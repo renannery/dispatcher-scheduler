@@ -171,7 +171,16 @@ export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
 // add a corresponding pattern (a 12h shift with no pattern available won't help).
 export const MAX_HOURS_PER_DAY = 11
 export const DEFAULT_PART_TIME_CAP = 30
-export const DEFAULT_FULL_TIME_CAP = 40
+// Legal pre-overtime weekly cap for full-timers: 45h. Hours beyond this
+// are weekly overtime per labor law.
+export const DEFAULT_FULL_TIME_CAP = 45
+
+// Legal pre-overtime daily ceiling: 9h. Used both as the default value of
+// the Period step's `maxHoursPerDay` knob AND as the absolute clamp for
+// the soft-overflow logic — so an op-driven schedule never silently pushes
+// a driver into 10h+ daily overtime.
+export const LEGAL_DAILY_MAX_HOURS = 9
+export const LEGAL_WEEKLY_MAX_HOURS = 45
 
 // Sum of required driver-hours per day-of-week (0=Sun…6=Sat). Used by the
 // scheduler to weight how much of a driver's weekly capacity should be spent

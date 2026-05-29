@@ -3,6 +3,7 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 import {
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
+  LEGAL_DAILY_MAX_HOURS,
   MAX_HOURS_PER_DAY,
   effectiveCoverage,
 } from './coverageTemplate'
@@ -380,13 +381,14 @@ export function generateDriverSchedule({
         // `maxHoursPerDay` is treated as a SOFT cap — most drivers stay
         // at/below it, but the algorithm may give a few drivers a single
         // extra hour when that overflow shift covers a real coverage
-        // gap. Still clamped at the module-level hard ceiling
-        // (MAX_HOURS_PER_DAY = 11). The quadratic length penalty below
-        // makes the overflow rare (e.g. with max=8, going to 9h costs
-        // 6000 score, only worth it when the extra hour hits a critically
-        // short slot).
+        // gap. The overflow is clamped at the LEGAL daily max (9h) so
+        // schedules never silently push a driver into 10h+ daily
+        // overtime, regardless of what the user set as `maxHoursPerDay`.
+        // The quadratic length penalty below makes overflow rare
+        // (e.g. with max=8, going to 9h costs 6000 score, only worth
+        // it when the extra hour hits a critically short slot).
         const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
-        const softMax = Math.min(maxHoursPerDay + 1, MAX_HOURS_PER_DAY)
+        const softMax = Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS, MAX_HOURS_PER_DAY)
         const dailyCap = Math.min(remaining, softMax)
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)

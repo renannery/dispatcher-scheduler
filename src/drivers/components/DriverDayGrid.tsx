@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
-import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS } from '../coverageTemplate'
+import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
@@ -163,18 +163,40 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                         SHP
                       </span>
                     )}
-                    {/* Weekly hours pill — color signals load: green ok, amber close to cap, red over */}
-                    <HoverHint label={`Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h / ${cap}h cap`}>
-                      <span className={clsx(
-                        'rounded px-1.5 text-[9px] font-bold tabular-nums',
-                        pctOfCap >= 1.0 ? 'bg-red-100 text-red-700' :
-                        pctOfCap >= 0.92 ? 'bg-amber-100 text-amber-700' :
-                        pctOfCap >= 0.5 ? 'bg-slate-100 text-slate-600' :
-                        'bg-slate-50 text-slate-400',
-                      )}>
-                        {weekH.toFixed(0)}h
-                      </span>
-                    </HoverHint>
+                    {/* Weekly hours pill — color signals load:
+                          purple = LEGAL OVERTIME (>45h/wk)
+                          red    = over user's soft cap (when cap < 45)
+                          amber  = close to cap (≥92%)
+                          slate  = normal */}
+                    {(() => {
+                      const isLegalOT = weekH > LEGAL_WEEKLY_MAX_HOURS
+                      const isOverCap = pctOfCap >= 1.0 && !isLegalOT
+                      const tooltip = isLegalOT
+                        ? `Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h — ${(weekH - LEGAL_WEEKLY_MAX_HOURS).toFixed(1)}h WEEKLY OVERTIME (legal max ${LEGAL_WEEKLY_MAX_HOURS}h)`
+                        : `Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h / ${cap}h cap`
+                      return (
+                        <HoverHint label={tooltip}>
+                          <span className={clsx(
+                            'rounded px-1.5 text-[9px] font-bold tabular-nums',
+                            isLegalOT ? 'bg-purple-100 text-purple-700 ring-1 ring-purple-400' :
+                            isOverCap ? 'bg-red-100 text-red-700' :
+                            pctOfCap >= 0.92 ? 'bg-amber-100 text-amber-700' :
+                            pctOfCap >= 0.5 ? 'bg-slate-100 text-slate-600' :
+                            'bg-slate-50 text-slate-400',
+                          )}>
+                            {weekH.toFixed(0)}h{isLegalOT && ' OT'}
+                          </span>
+                        </HoverHint>
+                      )
+                    })()}
+                    {/* Daily overtime badge — shown when the day's shift exceeds 9h legal max */}
+                    {!isOff && entry && (entry.totalHours ?? 0) > LEGAL_DAILY_MAX_HOURS && (
+                      <HoverHint label={`Daily overtime: ${entry.totalHours?.toFixed(1)}h (${(entry.totalHours! - LEGAL_DAILY_MAX_HOURS).toFixed(1)}h over the 9h legal max)`}>
+                        <span className="rounded bg-purple-100 px-1 text-[9px] font-bold uppercase tracking-wide text-purple-700 ring-1 ring-purple-400">
+                          OT
+                        </span>
+                      </HoverHint>
+                    )}
                     {isOff && (() => {
                       const r = absenceReasons[ds.driver.id]?.[date]
                       if (r) {

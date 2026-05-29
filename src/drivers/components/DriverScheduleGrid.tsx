@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
-import { effectiveCoverage } from '../coverageTemplate'
+import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { analyzeCoverageHealth, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
@@ -753,6 +753,30 @@ export function DriverScheduleGrid() {
         const ptAtCap = ptSummary.filter((h) => h >= schedule.partTimeCap).length
         const ptUnder = ptSummary.filter((h) => h > 0 && h < schedule.partTimeCap).length
 
+        // Overtime tally — anyone over the legal 45h weekly max, plus
+        // sum of overtime hours for the week's payroll picture. Computed
+        // across BOTH FT and PT (the legal limit doesn't discriminate).
+        const allWeekHours = schedule.driverSchedules.map((ds) => ds.weeklyHours[wl] ?? 0)
+        const otDrivers = allWeekHours.filter((h) => h > LEGAL_WEEKLY_MAX_HOURS).length
+        const otHours = allWeekHours.reduce((sum, h) => sum + Math.max(0, h - LEGAL_WEEKLY_MAX_HOURS), 0)
+        // Daily overtime: count per-driver-days that exceed 9h
+        let dailyOtDays = 0
+        let dailyOtHours = 0
+        for (const ds of schedule.driverSchedules) {
+          for (const day of ds.days) {
+            if (day.isOff) continue
+            const dt = new Date(day.date + 'T12:00:00')
+            // Only count days in this week
+            if (schedule.dates.find((di) => di.date === day.date && di.weekLabel === wl)) {
+              if ((day.totalHours ?? 0) > LEGAL_DAILY_MAX_HOURS) {
+                dailyOtDays++
+                dailyOtHours += (day.totalHours ?? 0) - LEGAL_DAILY_MAX_HOURS
+              }
+            }
+            void dt
+          }
+        }
+
         // Filter pills by the active search query (if any)
         const filteredPills = trimmedSearch
           ? weekHoursSummary.filter(({ name }) => name.toLowerCase().includes(trimmedSearch))
@@ -780,6 +804,19 @@ export function DriverScheduleGrid() {
                     >
                       <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: weekendOffDriver.color }} />
                       {displayName(weekendOffDriver.name)}: weekend off
+                    </span>
+                  )}
+                  {/* Overtime tally — visible whenever any driver crosses 45h/wk or any
+                      shift goes past 9h. Lets ops see legal exposure for payroll. */}
+                  {(otDrivers > 0 || dailyOtDays > 0) && (
+                    <span
+                      className="flex items-center gap-1 rounded-full border border-purple-300 bg-purple-50 px-2.5 py-0.5 text-xs font-semibold text-purple-700"
+                      title={[
+                        otDrivers > 0 && `${otDrivers} driver${otDrivers === 1 ? '' : 's'} over 45h/wk → ${otHours.toFixed(1)}h weekly overtime`,
+                        dailyOtDays > 0 && `${dailyOtDays} driver-day${dailyOtDays === 1 ? '' : 's'} over 9h → ${dailyOtHours.toFixed(1)}h daily overtime`,
+                      ].filter(Boolean).join(' · ')}
+                    >
+                      ⚠ OT: {(otHours + dailyOtHours).toFixed(1)}h
                     </span>
                   )}
                 </div>
