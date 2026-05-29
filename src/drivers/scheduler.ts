@@ -979,17 +979,17 @@ export interface CoverageHealth {
  */
 /**
  * Per-slot OVER-coverage tolerance band — how much above target a slot can
- * be staffed before the algorithm refuses to add more. Tightened from
- * 15% to 5% (min 1 body) so that days like Thu/Fri stop being over-staffed
- * (which was leaving Wed structurally starved). Under-coverage has ZERO
- * tolerance per ops policy ("coverage targets are hard minimums") — see
- * `coverageStatus()` and `analyzeCoverageHealth()` for that.
+ * be staffed before the algorithm refuses to add more. Set to 15% (min 1
+ * body) per ops policy: it's better to over-staff a slot by a few bodies
+ * than to leave a dinner-peak slot 1-2 short. Tested at 5% (tighter) but
+ * that left structural dinner-peak gaps on large rosters; at 15% the
+ * algorithm has room to land patterns even when adjacent slots are
+ * already over.
  *
- * Small slots still get tight bands (target 10 → ±1, target 22 → ±1)
- * because of the min-1 floor. Heavy slots get a +5% ceiling (target 56 →
- * +3, target 39 → +2) so over-coverage on big slots is also limited.
+ * Under-coverage has ZERO tolerance per ops policy ("coverage targets
+ * are hard minimums") — see `coverageStatus()` and `analyzeCoverageHealth()`.
  */
-export const COVERAGE_GAP_TOLERANCE_PCT = 0.05
+export const COVERAGE_GAP_TOLERANCE_PCT = 0.15
 
 /** Integer tolerance for a given slot target. */
 export function coverageTolerance(required: number): number {
