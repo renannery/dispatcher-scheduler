@@ -280,16 +280,11 @@ export function generateDriverSchedule({
     const workedNightYesterday = (id: string) =>
       (lastSlotWorked[id][yesterday] ?? -1) >= NIGHT_SLOT_THRESHOLD
 
-    // Relax `minHoursPerDay` on the LAST day of the work-week (Wed) so
-    // drivers with leftover weekly cap (typically 4h) can still take a
-    // fill-in shift. Without this, setting min=5 silently starves Wed.
-    // The strict min still applies Thu-Tue.
-    const isLastWorkWeekDay = remainingDows.length === 1
-    // On the last work-week day (Wed), allow short orphan-filler shifts
-    // (down to 3h) so drivers with a 3h sliver of remaining cap can
-    // still get placed and hit their weekly target. Other days keep
-    // the user-set min (default 4).
-    const effectiveMin = isLastWorkWeekDay ? Math.min(minHoursPerDay, 3) : minHoursPerDay
+    // Per ops policy: every workday must be at least 4 hours. No
+    // 3h orphan-filler shortcuts, even on the last work-week day.
+    // Drivers with only a 3h sliver of remaining cap just leave the
+    // sliver unused — better than placing a too-short shift.
+    const effectiveMin = Math.max(4, minHoursPerDay)
 
     // Split into off / available
     const available: Driver[] = []
@@ -593,12 +588,11 @@ export function generateDriverSchedule({
       const dow = entry.dayOfWeek
       const wLabel = weekLabel(parseISO(dateStr))
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
-      // Phase 1 add-shift can use 3h orphan-filler patterns on ANY day
-      // when filling gaps (was: Wed only). On large rosters with many
-      // idle drivers, the dinner peak (6-8 PM) is structurally hard to
-      // close even with surplus capacity — a 3h "6 PM-9 PM" shift on a
-      // driver's off-day fills it without disrupting other slots.
-      const minShift = 3
+      // Per ops policy: every workday is at least 4 hours. No 3h
+      // orphan-filler shifts even when they'd help close peak gaps —
+      // ops rejected those because they were too short to be worth
+      // dispatching a driver for.
+      const minShift = 4
       if (remaining < minShift) continue
       if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
       if (d.isShopper) continue
@@ -1016,7 +1010,9 @@ export function generateDriverSchedule({
       .map(raw => raw.map(v => v === 1))
       .filter(p => {
         const h = slotHours(p)
-        return h >= 3 && h <= 5
+        // Per ops policy: 4h minimum shift. Phase 5 still keeps the
+        // upper bound narrow (≤5h) to minimize over-coverage damage.
+        return h >= 4 && h <= 5
       })
 
     // Try to place narrow shifts until shortfall stops shrinking.
@@ -1039,7 +1035,7 @@ export function generateDriverSchedule({
         if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
         const cap = bufferedCapOf(d)
         const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
-        if (remaining < 3) continue
+        if (remaining < 4) continue  // 4h-min policy
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
         if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
         // Night-rest with YESTERDAY (for morning-start patterns).
@@ -1174,7 +1170,7 @@ export function generateDriverSchedule({
       if (currentDays >= MAX_DAYS_PER_WEEK) continue
       const cap = bufferedCapOf(d)
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
-      if (remaining < 3) continue
+      if (remaining < 4) continue  // 4h-min policy
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
 
@@ -1182,13 +1178,16 @@ export function generateDriverSchedule({
       const cov = coverageActual[dateStr]
       const template = DRIVER_DAY_TEMPLATES[dow]
 
-      // Short (3-4h) patterns only — minimizes over-coverage damage.
+      // Short patterns only (4-5h) — minimizes over-coverage damage.
+      // 4h is the policy minimum; 5h ceiling keeps Phase 6 from
+      // ballooning into long shifts that should've come from the
+      // main pass.
       let bestPattern: boolean[] | null = null
       let bestScore = -Infinity
       for (const raw of template.shiftPatterns) {
         const p = raw.map(v => v === 1)
         const h = slotHours(p)
-        if (h < 3 || h > 4) continue
+        if (h < 4 || h > 5) continue
         if (h > remaining) continue
         if (blocks && p.some((on, idx) => on && blocks[idx])) continue
         // Night-rest with YESTERDAY (for morning-start patterns).
