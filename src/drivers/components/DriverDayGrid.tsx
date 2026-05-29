@@ -30,6 +30,18 @@ function weeklyHoursForDriver(ds: DriverSchedule, dateInWeek: string): number {
   return total
 }
 
+/** Count this driver's OFF days within the same work-week as `dateInWeek`.
+ *  Only counts days that fall inside the schedule period — partial weeks at
+ *  either end of the period naturally have fewer total days. */
+function offDaysForDriver(ds: DriverSchedule, dateInWeek: string): number {
+  const wk = workWeekKey(dateInWeek)
+  let off = 0
+  for (const day of ds.days) {
+    if (workWeekKey(day.date) === wk && day.isOff) off++
+  }
+  return off
+}
+
 interface Props {
   schedule: GeneratedDriverSchedule
   date: string
@@ -122,6 +134,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
           )}
           {visibleRows.map(({ ds, entry, isOff }, rowIdx) => {
             const weekH = weeklyHoursForDriver(ds, date)
+            const offDays = offDaysForDriver(ds, date)
             const cap = ds.driver.employmentType === 'full' ? fullTimeCap : partTimeCap
             const pctOfCap = cap > 0 ? weekH / cap : 0
             const isFirstShopper = rowIdx === firstShopperIdx
@@ -189,6 +202,20 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                         </HoverHint>
                       )
                     })()}
+                    {/* Days-off pill for the current work-week. Color hints:
+                          0 off → amber (no rest day this week — schedule risk)
+                          1 off → slate (normal)
+                          2+ off → blue (extra rest, often the weekend-off perk) */}
+                    <HoverHint label={`${offDays} day${offDays === 1 ? '' : 's'} off this work-week (Thu→Wed)`}>
+                      <span className={clsx(
+                        'rounded px-1.5 text-[9px] font-bold tabular-nums',
+                        offDays === 0 ? 'bg-amber-100 text-amber-700' :
+                        offDays === 1 ? 'bg-slate-100 text-slate-600' :
+                        'bg-blue-100 text-blue-700',
+                      )}>
+                        {offDays}d off
+                      </span>
+                    </HoverHint>
                     {/* Daily overtime badge — shown when the day's shift exceeds 9h legal max */}
                     {!isOff && entry && (entry.totalHours ?? 0) > LEGAL_DAILY_MAX_HOURS && (
                       <HoverHint label={`Daily overtime: ${entry.totalHours?.toFixed(1)}h (${(entry.totalHours! - LEGAL_DAILY_MAX_HOURS).toFixed(1)}h over the 9h legal max)`}>
