@@ -79,6 +79,13 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0 || shopperRequired[i] > 0,
   )
 
+  // Slots with driver coverage shortfall — used to tint the entire
+  // column red so ops can scan a day grid and spot where to add hours.
+  const shortSlots = new Set<number>()
+  for (const si of visibleSlotIndices) {
+    if (required[si] - actual[si] > 0) shortSlots.add(si)
+  }
+
   // Apply row filters: external search filter takes precedence over the local OFF toggle.
   // Sort: non-shoppers first, then shoppers (so they cluster at the bottom of the day grid
   // for easy verification of shopper coverage — matches the XLSX export grouping).
@@ -128,11 +135,18 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             {visibleSlotIndices.map((si) => (
               <th
                 key={si}
-                className="min-w-[48px] bg-slate-800 px-1 py-2 text-center font-medium text-slate-300 whitespace-nowrap"
-                title={DRIVER_SLOTS[si].label}
+                className={clsx(
+                  'min-w-[48px] px-1 py-2 text-center font-medium whitespace-nowrap',
+                  // Column header: red highlight when this slot is short
+                  // (driver coverage below target).
+                  shortSlots.has(si)
+                    ? 'bg-red-900 text-red-200'
+                    : 'bg-slate-800 text-slate-300',
+                )}
+                title={`${DRIVER_SLOTS[si].label}${shortSlots.has(si) ? ` — short by ${required[si] - actual[si]}` : ''}`}
               >
                 <div className="text-[10px]">{shortHour(DRIVER_SLOTS[si].label)}</div>
-                <div className="text-[9px] text-slate-500">1h</div>
+                <div className={clsx('text-[9px]', shortSlots.has(si) ? 'text-red-300' : 'text-slate-500')}>1h</div>
               </th>
             ))}
             <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
@@ -273,7 +287,14 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                   return (
                     <td
                       key={si}
-                      className="group cursor-pointer px-0.5 py-1"
+                      className={clsx(
+                        'group cursor-pointer px-0.5 py-1',
+                        // Red column tint when this slot is short on
+                        // driver coverage — makes it obvious where to
+                        // click to add hours. Skip on shopper rows to
+                        // keep their purple band visually coherent.
+                        shortSlots.has(si) && !isShopperRow && 'bg-red-50/70',
+                      )}
                       onClick={() => toggleDriverSlot(ds.driver.id, date, si)}
                       title={
                         blocked
@@ -343,7 +364,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
               const r = required[si]
               const status = coverageStatus(a, r)
               return (
-                <td key={si} className="px-0.5 py-1 text-center">
+                <td key={si} className={clsx('px-0.5 py-1 text-center', shortSlots.has(si) && 'bg-red-50/70')}>
                   <div
                     className={clsx(
                       'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
