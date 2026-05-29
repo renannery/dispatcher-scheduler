@@ -559,7 +559,12 @@ export function generateDriverSchedule({
       const dow = entry.dayOfWeek
       const wLabel = weekLabel(parseISO(dateStr))
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
-      const minShift = (dow === 3) ? 3 : minHoursPerDay  // Wed allows 3h orphan filler
+      // Phase 1 add-shift can use 3h orphan-filler patterns on ANY day
+      // when filling gaps (was: Wed only). On large rosters with many
+      // idle drivers, the dinner peak (6-8 PM) is structurally hard to
+      // close even with surplus capacity — a 3h "6 PM-9 PM" shift on a
+      // driver's off-day fills it without disrupting other slots.
+      const minShift = 3
       if (remaining < minShift) continue
       if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
       if (d.isShopper) continue
