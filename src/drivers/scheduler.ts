@@ -1294,6 +1294,94 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 7: TRIM SURPLUS — bring over-cap drivers back to user cap ────
+  // After Phases 1-6 some drivers run between user cap and the +10% buffer
+  // (e.g. cap=40 → 41-44h). When coverage is already over-staffed on the
+  // slots their shifts cover, those extra hours aren't BUYING anything —
+  // they just push payroll past the user's preferred cap. Phase 7 walks
+  // over-cap drivers and trims 1h at a time from start/end of shifts where
+  // the trimmed slot would stay AT OR ABOVE its coverage target (no new
+  // shortfall created).
+  //
+  // Matches user's manual workflow on real rosters:
+  //   D10: 90h → 81h by trimming early/late slots from 5 shifts
+  //   D7:  90h → 81h same pattern
+  //   Shakti Pandey: 89h → 81h
+  //   Etoye Barnes: 86h → 80h
+  //
+  // Constraints:
+  //   - never reduce a shift below 4h (policy minimum)
+  //   - never trim a slot whose coverage would drop below target (no
+  //     new shortfall)
+  //   - prefer trimming slots with the LARGEST current over-coverage
+  //     (least valuable hours)
+  //   - shoppers untouched (their coverage is a parallel pool)
+  for (const d of shuffledDrivers) {
+    if (d.isShopper) continue
+    const userCap = capOf(d)  // user-set cap, NOT buffered
+    for (const wLabel of Object.keys(weekHours[d.id])) {
+      let safety = 50
+      while (safety-- > 0) {
+        if ((weekHours[d.id][wLabel] ?? 0) <= userCap) break
+
+        // Search every shift in this work-week for the best trim candidate.
+        let bestEntry: DriverDayEntry | null = null
+        let bestSide: 'first' | 'last' | null = null
+        let bestSlotIdx = -1
+        let bestOver = -1
+        for (const entry of scheduleMap[d.id]) {
+          if (entry.isOff) continue
+          if (weekLabel(parseISO(entry.date)) !== wLabel) continue
+          const h = (entry.totalHours ?? entry.slots.filter(Boolean).length)
+          if (h <= 4) continue  // 4h-min policy: can't trim further
+          const required = effectiveCoverage(entry.dayOfWeek, coverageScale, coverageOverrides)
+          const cov = coverageActual[entry.date]
+          const first = entry.slots.findIndex(s => s)
+          let last = -1
+          for (let z = entry.slots.length - 1; z >= 0; z--) if (entry.slots[z]) { last = z; break }
+
+          // First-side trim: would the first slot stay AT or ABOVE target?
+          const fOver = cov[first] - required[first]
+          if (fOver >= 1) {
+            // Score by current over-coverage — trim the most-over slots first.
+            if (fOver > bestOver) {
+              bestOver = fOver
+              bestEntry = entry
+              bestSide = 'first'
+              bestSlotIdx = first
+            }
+          }
+          // Last-side trim: same check.
+          if (last !== first) {
+            const lOver = cov[last] - required[last]
+            if (lOver >= 1) {
+              if (lOver > bestOver) {
+                bestOver = lOver
+                bestEntry = entry
+                bestSide = 'last'
+                bestSlotIdx = last
+              }
+            }
+          }
+        }
+
+        if (!bestEntry || bestSlotIdx < 0) break  // nothing safe to trim
+
+        // Apply the trim.
+        bestEntry.slots[bestSlotIdx] = false
+        bestEntry.totalHours = (bestEntry.totalHours ?? 0) - 1
+        coverageActual[bestEntry.date][bestSlotIdx]--
+        weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) - 1
+        // Update lastSlotWorked if we trimmed the last slot.
+        if (bestSide === 'last') {
+          let newLast = -1
+          for (let z = bestEntry.slots.length - 1; z >= 0; z--) if (bestEntry.slots[z]) { newLast = z; break }
+          lastSlotWorked[d.id][bestEntry.date] = newLast
+        }
+      }
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
