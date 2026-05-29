@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { VersionFooter } from '@/components/VersionFooter'
 import { DriverSchedulerPage } from '@/drivers/DriverSchedulerPage'
 import { SchedulerPage } from '@/pages/SchedulerPage'
 import { TeamChooser } from '@/pages/TeamChooser'
@@ -18,7 +19,14 @@ export default function App() {
     else localStorage.removeItem(STORAGE_KEY)
   }, [team])
 
-  if (team === null) return <TeamChooser onPick={setTeam} />
-  if (team === 'drivers') return <DriverSchedulerPage onChangeTeam={() => setTeam(null)} />
-  return <SchedulerPage onChangeTeam={() => setTeam(null)} />
+  return (
+    <div className="flex min-h-screen flex-col">
+      <div className="flex-1">
+        {team === null && <TeamChooser onPick={setTeam} />}
+        {team === 'drivers' && <DriverSchedulerPage onChangeTeam={() => setTeam(null)} />}
+        {team === 'dispatchers' && <SchedulerPage onChangeTeam={() => setTeam(null)} />}
+      </div>
+      <VersionFooter />
+    </div>
+  )
 }
