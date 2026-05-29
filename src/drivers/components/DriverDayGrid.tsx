@@ -128,15 +128,29 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
       )}
       <table className="min-w-full border-separate border-spacing-0 text-xs">
         <thead>
+          {/*
+            Each <th> in the header row sticks to the top of the viewport
+            while the user scrolls down through the driver rows, so the
+            hour labels (8a, 9a, ...) stay visible no matter how far down
+            you scroll within a day. Once the entire day-table scrolls
+            past, the header scrolls away with it and the next day's
+            header takes over.
+
+            Z-index layering:
+              z-30 — corner cells that stick BOTH top AND left/right
+                     (must sit above both axes when scrolling)
+              z-20 — top-row header cells (sticky top only)
+              z-10 — leftmost / rightmost body cells (sticky left/right only)
+          */}
           <tr>
-            <th className="sticky left-0 z-10 min-w-[130px] bg-slate-800 px-3 py-2 text-left font-semibold text-white">
+            <th className="sticky left-0 top-0 z-30 min-w-[130px] bg-slate-800 px-3 py-2 text-left font-semibold text-white">
               {dayLabel}
             </th>
             {visibleSlotIndices.map((si) => (
               <th
                 key={si}
                 className={clsx(
-                  'min-w-[48px] px-1 py-2 text-center font-medium whitespace-nowrap',
+                  'sticky top-0 z-20 min-w-[48px] px-1 py-2 text-center font-medium whitespace-nowrap',
                   // Column header: red highlight when this slot is short
                   // (driver coverage below target).
                   shortSlots.has(si)
@@ -149,7 +163,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 <div className={clsx('text-[9px]', shortSlots.has(si) ? 'text-red-300' : 'text-slate-500')}>1h</div>
               </th>
             ))}
-            <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
+            <th className="sticky right-0 top-0 z-30 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
           </tr>
         </thead>
 
