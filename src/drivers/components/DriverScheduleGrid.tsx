@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, RefreshCw, Search, Shield, UserPlus, Users, X } from 'lucide-react'
 import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -102,6 +102,142 @@ function PdfMenu({ drivers, loading, onSelect }: PdfMenuProps) {
   )
 }
 
+// ─── Suggestions banner ─────────────────────────────────────────────────────
+//
+// Shown at the top of the schedule step when there's any weekly shortfall.
+// Lets ops bump the FT cap, daily max, or coverage scale right here and
+// regenerate, instead of having to walk back to the Period step.
+
+interface SuggestionsBannerProps {
+  shortfallHours: number
+  fullTimeCap: number
+  maxHoursPerDay: number
+  coverageScale: number
+  onApply: (next: { fullTimeCap: number; maxHoursPerDay: number; coverageScale: number }) => void
+}
+
+function SuggestionsBanner({ shortfallHours, fullTimeCap, maxHoursPerDay, coverageScale, onApply }: SuggestionsBannerProps) {
+  // Pending edits — the user dials these before applying.
+  const [cap, setCap] = useState(fullTimeCap)
+  const [maxH, setMaxH] = useState(maxHoursPerDay)
+  const [scale, setScale] = useState(coverageScale)
+  const dirty = cap !== fullTimeCap || maxH !== maxHoursPerDay || scale !== coverageScale
+
+  // Reset pending values when the underlying store changes (e.g. user
+  // navigates back to Period step and saves) so we don't show stale.
+  useEffect(() => { setCap(fullTimeCap) }, [fullTimeCap])
+  useEffect(() => { setMaxH(maxHoursPerDay) }, [maxHoursPerDay])
+  useEffect(() => { setScale(coverageScale) }, [coverageScale])
+
+  return (
+    <div className="rounded-2xl border border-blue-300 bg-blue-50 px-5 py-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <Lightbulb className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-blue-900">
+            Coverage is {Math.round(shortfallHours)} driver-hours short per week. Try one of these:
+          </div>
+          <p className="mt-1 text-xs text-blue-800/80">
+            Bump a knob, then click <span className="font-semibold">Apply &amp; regenerate</span>.
+            You can also{' '}
+            <button
+              type="button"
+              onClick={() => useDriverStore.getState().setStep('period')}
+              className="underline underline-offset-2 hover:text-blue-900"
+            >
+              go back to the Period step
+            </button>
+            {' '}for more controls.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <Knob
+              label="Weekly cap"
+              suffix="h"
+              value={cap}
+              setValue={setCap}
+              min={20}
+              max={60}
+              hint={cap > fullTimeCap ? `+${cap - fullTimeCap} h/wk` : cap < fullTimeCap ? `−${fullTimeCap - cap} h/wk` : null}
+            />
+            <Knob
+              label="Daily max"
+              suffix="h"
+              value={maxH}
+              setValue={setMaxH}
+              min={4}
+              max={11}
+              hint={maxH > maxHoursPerDay ? `+${maxH - maxHoursPerDay} h/day` : maxH < maxHoursPerDay ? `−${maxHoursPerDay - maxH} h/day` : null}
+            />
+            <Knob
+              label="Coverage scale"
+              suffix=""
+              value={scale}
+              setValue={setScale}
+              min={0.5}
+              max={1.5}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              hint={scale !== coverageScale ? `${Math.round((scale - coverageScale) * 100)}%` : null}
+            />
+            <button
+              type="button"
+              disabled={!dirty}
+              onClick={() => onApply({ fullTimeCap: cap, maxHoursPerDay: maxH, coverageScale: scale })}
+              className={clsx(
+                'flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition',
+                dirty
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'cursor-not-allowed bg-slate-200 text-slate-400',
+              )}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Apply &amp; regenerate
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface KnobProps {
+  label: string
+  suffix: string
+  value: number
+  setValue: (v: number) => void
+  min: number
+  max: number
+  step?: number
+  format?: (v: number) => string
+  hint?: string | null
+}
+function Knob({ label, suffix, value, setValue, min, max, step = 1, format, hint }: KnobProps) {
+  return (
+    <div className="flex flex-col">
+      <label className="text-[10px] font-semibold uppercase tracking-wide text-blue-700/70">{label}</label>
+      <div className="mt-0.5 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setValue(Math.max(min, +(value - step).toFixed(2)))}
+          className="h-7 w-7 rounded border border-blue-300 bg-white text-sm font-bold text-blue-700 hover:bg-blue-50"
+        >−</button>
+        <span className="min-w-[42px] rounded border border-blue-300 bg-white px-2 py-1 text-center text-sm font-bold tabular-nums text-slate-800">
+          {format ? format(value) : value}{suffix}
+        </span>
+        <button
+          type="button"
+          onClick={() => setValue(Math.min(max, +(value + step).toFixed(2)))}
+          className="h-7 w-7 rounded border border-blue-300 bg-white text-sm font-bold text-blue-700 hover:bg-blue-50"
+        >+</button>
+        {hint && (
+          <span className="ml-1 text-[10px] font-semibold text-blue-600">{hint}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function DriverScheduleGrid() {
   const {
     schedule,
@@ -119,6 +255,9 @@ export function DriverScheduleGrid() {
     weekendRotationOffset,
     setSchedule,
     setStep,
+    setFullTimeCap,
+    setMaxHoursPerDay,
+    setCoverageScale,
   } = useDriverStore()
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -166,6 +305,23 @@ export function DriverScheduleGrid() {
     setExpandedDates(new Set())
   }
 
+  // Apply edits from the suggestions banner and regenerate in one shot.
+  const handleApplyEdits = (next: { fullTimeCap: number; maxHoursPerDay: number; coverageScale: number }) => {
+    setFullTimeCap(next.fullTimeCap)
+    setMaxHoursPerDay(next.maxHoursPerDay)
+    setCoverageScale(next.coverageScale)
+    regenSeed.current++
+    const fresh = generateDriverSchedule({
+      drivers, startDate, endDate, timeOff,
+      fullTimeCap: next.fullTimeCap, partTimeCap,
+      coverageScale: next.coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay: next.maxHoursPerDay,
+      seed: weekendRotationOffset + regenSeed.current,
+    })
+    setSchedule(fresh)
+    setExpandedDates(new Set())
+  }
+
   const handleExportJson = () => {
     downloadSnapshot({
       version: SCHEMA_VERSION,
@@ -194,6 +350,18 @@ export function DriverScheduleGrid() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Inline suggestions banner — only when there's any shortfall.
+          Lets ops bump cap / max h-day / coverage scale and regenerate
+          without walking back to the Period step. */}
+      {health.weeklyShortfallHours > 0 && (
+        <SuggestionsBanner
+          shortfallHours={health.weeklyShortfallHours}
+          fullTimeCap={fullTimeCap}
+          maxHoursPerDay={maxHoursPerDay}
+          coverageScale={coverageScale}
+          onApply={handleApplyEdits}
+        />
+      )}
       {health.weeklyShortfallHours >= 20 && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
