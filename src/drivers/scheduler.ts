@@ -1397,6 +1397,108 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 8: PUSH UNDER-CAP — extend shifts of under-cap drivers ───────
+  // Snap10 diagnosis: 18 FT drivers at cap, 64 under cap. The under-cap
+  // drivers all had 6 × 6.5h shifts averaging 39h. Root cause: Phase 2
+  // extension ran BEFORE Phase 6 added their 6th day, so the newly-added
+  // 6th-day shifts never got the +1h treatment.
+  //
+  // Phase 8 mirrors Phase 7 in reverse — for every driver under their user
+  // cap with cap-room and coverage room, extend their shifts (+1h at start
+  // or end) until at user cap or no safe extension exists. Uses Phase 6's
+  // slot-status scoring so the new hours go to yellow slots first (still
+  // under +15% ceiling), pushing them into gray over-staff territory the
+  // user explicitly asked for.
+  const pushFillTol = (req: number) =>
+    req <= 0 ? 0 : Math.max(1, Math.round(req * 0.25))
+  const pushBusyTol = (req: number) =>
+    req <= 0 ? 0 : Math.max(2, Math.round(req * 0.50))
+  const yellowTol = (req: number) =>
+    req <= 0 ? 0 : Math.max(1, Math.round(req * 0.15))
+  for (const d of shuffledDrivers) {
+    if (d.isShopper) continue
+    const userCap = capOf(d)
+    for (const wLabel of Object.keys(weekHours[d.id])) {
+      let safety = 60
+      while (safety-- > 0) {
+        const remaining = userCap - (weekHours[d.id][wLabel] ?? 0)
+        if (remaining <= 0) break
+
+        // Walk every shift in this work-week, pick the (entry, slot) that
+        // maximizes slot-status score (yellow > at-target > gray).
+        let bestEntry: DriverDayEntry | null = null
+        let bestSlotIdx = -1
+        let bestScore = -Infinity
+        for (let idx = 0; idx < scheduleMap[d.id].length; idx++) {
+          const entry = scheduleMap[d.id][idx]
+          if (entry.isOff) continue
+          if (weekLabel(parseISO(entry.date)) !== wLabel) continue
+          const slots = entry.slots
+          const h = slots.filter(Boolean).length
+          if (h >= maxHoursPerDay + 1) continue       // soft daily max
+          if (h >= LEGAL_DAILY_MAX_HOURS) continue    // legal daily max
+          // Break rule (drivers 9h+, shoppers 8h+).
+          if (h + 1 >= breakRequiredAt(d) && !patternHasBreak(slots)) continue
+
+          const dow = entry.dayOfWeek
+          const isBusyDay = (BUSY_DAY_PRIORITY[dow] ?? 0) > 0
+          const tolFn = isBusyDay ? pushBusyTol : pushFillTol
+          const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+          const cov = coverageActual[entry.date]
+          const blocks = blockedBitmap(timeOff, d, entry.date, dow)
+          const first = slots.findIndex(s => s)
+          let last = -1
+          for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last = z; break }
+          const tries: number[] = []
+          if (first > 0) tries.push(first - 1)
+          if (last >= 0 && last < slots.length - 1) tries.push(last + 1)
+
+          for (const s of tries) {
+            if (required[s] <= 0) continue                    // outside ops hours
+            if (blocks && blocks[s]) continue                 // driver-blocked slot
+            if (cov[s] + 1 > required[s] + tolFn(required[s])) continue
+            // Night-rest with tomorrow if extending into closing.
+            if (s >= NIGHT_SLOT_THRESHOLD) {
+              const tomorrow = scheduleMap[d.id][idx + 1]
+              if (tomorrow && !tomorrow.isOff) {
+                const tFirst = tomorrow.slots.findIndex(x => x)
+                if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+              }
+            }
+            // Score by current coverage status (matches UI color buckets):
+            //   SHORT (red):    +100
+            //   OK (at target): +30
+            //   MILD (yellow):  +20
+            //   OVER (gray):    +1
+            // Yellow gets priority — that's the user's explicit goal.
+            const diff = cov[s] - required[s]
+            let slotScore: number
+            if (diff < 0) slotScore = 100
+            else if (diff === 0) slotScore = 30
+            else if (diff <= yellowTol(required[s])) slotScore = 20
+            else slotScore = 1
+            if (slotScore > bestScore) {
+              bestScore = slotScore
+              bestEntry = entry
+              bestSlotIdx = s
+            }
+          }
+        }
+
+        if (!bestEntry || bestSlotIdx < 0) break
+
+        // Apply the extension.
+        bestEntry.slots[bestSlotIdx] = true
+        bestEntry.totalHours = (bestEntry.totalHours ?? 0) + 1
+        coverageActual[bestEntry.date][bestSlotIdx]++
+        weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
+        if (bestSlotIdx > (lastSlotWorked[d.id][bestEntry.date] ?? -1)) {
+          lastSlotWorked[d.id][bestEntry.date] = bestSlotIdx
+        }
+      }
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
