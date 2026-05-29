@@ -228,7 +228,9 @@ export function generateDriverSchedule({
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
       const atCap = (weekHours[d.id][wLabel] ?? 0) >= capOf(d) - 0.5  // leave no room for even 1h
-      if (fullyBlocked || atCap) {
+      // Shoppers don't work Sundays (grocery store is closed).
+      const isShopperOnSunday = d.isShopper && dow === 0
+      if (fullyBlocked || atCap || isShopperOnSunday) {
         dayOff.push(d)
       } else {
         available.push(d)
@@ -459,7 +461,14 @@ export function generateDriverSchedule({
             date: dateStr, dayLabel, dayOfWeek: dow,
             slots: [...bestPattern], totalHours: h, isOff: false,
           })
-          for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) actualCov[s]++
+          // Shoppers belong to a separate operational pool (groceries) —
+          // their shifts get scheduled but DON'T count toward driver
+          // coverage targets. Without this, the algorithm would credit
+          // shopper hours against driver demand and under-staff for
+          // real driver work.
+          if (!d.isShopper) {
+            for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) actualCov[s]++
+          }
           assigned.add(d.id)
           placed = true
           break
@@ -533,7 +542,11 @@ export function generateDriverSchedule({
         for (const s of candidates) {
           if (required[s] <= 0) continue                       // outside ops hours
           if (blocks && blocks[s]) continue                    // driver-blocked slot
-          if (cov[s] + 1 > required[s] + coverageTolerance(required[s])) continue  // would exceed +15%
+          // For non-shoppers, the extension counts toward driver
+          // coverage — refuse if it'd push past the over-cap. For
+          // shoppers the extension doesn't affect cov[s] at all, so
+          // skip the check (their hour goes anywhere they had room).
+          if (!d.isShopper && cov[s] + 1 > required[s] + coverageTolerance(required[s])) continue
           // Night-rest: if extending into the morning of NEXT day would
           // conflict, skip. The night-rest rule applies to MORNING shifts
           // after a closing shift the day before — we check shifts we
@@ -558,7 +571,7 @@ export function generateDriverSchedule({
         // Apply the extension.
         slots[best] = true
         entry.totalHours = (entry.totalHours ?? 0) + 1
-        cov[best]++
+        if (!d.isShopper) cov[best]++  // shoppers don't count toward driver coverage
         weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
         if (best > (lastSlotWorked[d.id][dateStr] ?? -1)) {
           lastSlotWorked[d.id][dateStr] = best
