@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 
 import { effectiveCoverage } from '../coverageTemplate'
-import { analyzeCoverageHealth, coverageTolerance, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
+import { analyzeCoverageHealth, generateDriverSchedule, HEAVY_DAYS, hoursStatusBg, weekendOffDriverId } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
@@ -738,18 +738,18 @@ export function DriverScheduleGrid() {
               ).length
               const off = schedule.driverSchedules.length - working
               const actual = schedule.coverageActual[dateInfo.date] ?? []
-              // Use the EFFECTIVE coverage (scale + overrides). The count
-              // matches the per-slot red badges in the day grid: any slot
-              // short by at least 1 counts as a gap. Severe gaps (more than
-              // the per-slot 15% tolerance) get an extra emphasis tag so
-              // the user can tell "barely off" from "operationally short".
+              // Count slots + total bodies short. Per ops policy the
+              // coverage targets are hard minimums (no ±15% allowance),
+              // so every gap is a real gap — no "severe vs mild" split.
               const required = effectiveCoverage(dateInfo.dayOfWeek, coverageScale, coverageOverrides)
               let gapSlots = 0
-              let severeGaps = 0
+              let gapBodies = 0
               for (let i = 0; i < required.length; i++) {
                 const diff = required[i] - (actual[i] ?? 0)
-                if (diff > 0) gapSlots++
-                if (diff > coverageTolerance(required[i])) severeGaps++
+                if (diff > 0) {
+                  gapSlots++
+                  gapBodies += diff
+                }
               }
 
               return (
@@ -765,20 +765,10 @@ export function DriverScheduleGrid() {
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
                     {gapSlots > 0 && (
                       <span
-                        className={clsx(
-                          'rounded-full px-2 py-0.5 text-xs font-medium',
-                          severeGaps > 0
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-amber-100 text-amber-700',
-                        )}
-                        title={
-                          severeGaps > 0
-                            ? `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — ${severeGaps} severely (more than 15% under)`
-                            : `${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} short — all within ±15% ops tolerance`
-                        }
+                        className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700"
+                        title={`${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} below target (${gapBodies} driver-hour${gapBodies === 1 ? '' : 's'} short)`}
                       >
-                        ⚠ {gapSlots} coverage gap{gapSlots === 1 ? '' : 's'}
-                        {severeGaps > 0 && ` (${severeGaps} severe)`}
+                        ⚠ {gapSlots} gap{gapSlots === 1 ? '' : 's'} ({gapBodies}h short)
                       </span>
                     )}
                   </button>

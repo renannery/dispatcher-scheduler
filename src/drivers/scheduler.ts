@@ -571,12 +571,13 @@ export function analyzeCoverageHealth(
   const perDate = schedule.dates.map((di) => {
     const target = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
     const actual = schedule.coverageActual[di.date] ?? new Array(target.length).fill(0)
-    let shortfall = 0  // hours short BEYOND the ±15% per-slot tolerance — what ops actually feels
+    // ALL under-coverage counts (no tolerance subtraction). Per policy
+    // the coverage targets are a hard minimum — any gap is a real gap.
+    let shortfall = 0
     let overstaff = 0
     for (let s = 0; s < target.length; s++) {
       const diff = target[s] - (actual[s] ?? 0)
-      const tol = coverageTolerance(target[s])
-      if (diff > tol) shortfall += diff - tol
+      if (diff > 0) shortfall += diff
       else if (diff < 0) overstaff += -diff
     }
     return { date: di.date, dayLabel: di.dayLabel, shortfall, overstaff }
@@ -602,18 +603,26 @@ export type CoverageStatus = 'ok' | 'over' | 'mild' | 'short'
 
 /**
  * Color-codes how far a slot's actual coverage is from its target:
- *   - 'ok'    exactly at target (also when required = 0 and actual = 0)
- *   - 'mild'  within ±15% (per slot) — operationally acceptable (yellow)
- *   - 'short' more than 15% under target (red)
+ *   - 'ok'    at-or-above target with required > 0
+ *   - 'mild'  over target but within +15% (still ok-ish, soft yellow)
+ *   - 'short' ANY under-coverage (red — coverage targets are hard minimums)
  *   - 'over'  required = 0 but staffed (unusual — slate)
+ *
+ * The under-coverage tolerance was REMOVED per user policy:
+ *   "coverage targets proposed must be respected, we can't have less
+ *    drivers than the minimum."
+ * Over-coverage still gets a 15% "mild" band because being a bit over
+ * isn't a problem — only a waste.
  */
 export function coverageStatus(actual: number, required: number): CoverageStatus {
   if (required === 0) return actual > 0 ? 'over' : 'ok'
   const diff = required - actual
+  if (diff > 0) return 'short'  // any shortfall = severe per policy
   if (diff === 0) return 'ok'
+  // diff < 0 → over target
   const tol = coverageTolerance(required)
   if (Math.abs(diff) <= tol) return 'mild'
-  return diff > 0 ? 'short' : 'over'
+  return 'over'
 }
 
 export function hoursStatusColor(hours: number, cap: number): string {
