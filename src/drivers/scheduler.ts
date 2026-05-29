@@ -483,6 +483,90 @@ export function generateDriverSchedule({
     dayIndex++
   }
 
+  // ─── Cap-fill post-pass ──────────────────────────────────────────────────
+  // After the main per-day scheduling, some drivers still have unused
+  // weekly cap (e.g. 36/43h = 7h orphaned). The user's manual edits show
+  // ops would extend those drivers' existing shifts by 1h on either side
+  // (e.g. "11AM-7PM 7h → 10AM-7PM 8h") or "11AM-7PM 7h → 11AM-8PM 8h").
+  // This pass does the same automatically: for each (driver, day) with
+  // a scheduled shift and remaining weekly cap, try to extend by 1h at
+  // the start, then at the end. Validates:
+  //  - doesn't exceed maxHoursPerDay (the soft cap)
+  //  - doesn't break night-rest with the NEXT day's morning shift
+  //  - doesn't push any newly-covered slot beyond +15% over-cap
+  //  - the new slot is within operating hours (required > 0)
+  //  - the driver wasn't blocked off on that slot
+  for (const d of drivers) {
+    for (let i = 0; i < scheduleMap[d.id].length; i++) {
+      const entry = scheduleMap[d.id][i]
+      if (entry.isOff) continue
+      const dateStr = entry.date
+      const dow = entry.dayOfWeek
+      const wLabel = weekLabel(parseISO(dateStr))
+      const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+      const cov = coverageActual[dateStr]
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      const cap = capOf(d)
+
+      // Try extending up to 2 times (1h on each side, in priority order).
+      for (let pass = 0; pass < 2; pass++) {
+        const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+        if (remaining < 1) break
+
+        const slots = entry.slots
+        const currentHours = slots.filter(Boolean).length
+        if (currentHours >= maxHoursPerDay + 1) break  // already at soft max
+        if (currentHours >= LEGAL_DAILY_MAX_HOURS) break  // legal max
+
+        const first = slots.findIndex(s => s)
+        const last = (() => { for (let s = slots.length - 1; s >= 0; s--) if (slots[s]) return s; return -1 })()
+
+        // Candidate slots to add: one before, one after. Prefer the one
+        // that's MORE under-target (or short on coverage). If neither is
+        // valid, give up.
+        const candidates: number[] = []
+        if (first > 0) candidates.push(first - 1)
+        if (last >= 0 && last < slots.length - 1) candidates.push(last + 1)
+
+        let best: number | null = null
+        let bestShortfall = -1
+        for (const s of candidates) {
+          if (required[s] <= 0) continue                       // outside ops hours
+          if (blocks && blocks[s]) continue                    // driver-blocked slot
+          if (cov[s] + 1 > required[s] + coverageTolerance(required[s])) continue  // would exceed +15%
+          // Night-rest: if extending into the morning of NEXT day would
+          // conflict, skip. The night-rest rule applies to MORNING shifts
+          // after a closing shift the day before — we check shifts we
+          // EXTEND into closing only against tomorrow's start.
+          if (s >= NIGHT_SLOT_THRESHOLD) {
+            const tomorrow = scheduleMap[d.id][i + 1]
+            if (tomorrow && !tomorrow.isOff) {
+              const tFirst = tomorrow.slots.findIndex(x => x)
+              if (tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD) continue
+            }
+          }
+          // Pick the slot with the larger shortfall.
+          const slotShort = Math.max(0, required[s] - cov[s])
+          if (slotShort > bestShortfall) {
+            bestShortfall = slotShort
+            best = s
+          }
+        }
+
+        if (best === null) break
+
+        // Apply the extension.
+        slots[best] = true
+        entry.totalHours = (entry.totalHours ?? 0) + 1
+        cov[best]++
+        weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
+        if (best > (lastSlotWorked[d.id][dateStr] ?? -1)) {
+          lastSlotWorked[d.id][dateStr] = best
+        }
+      }
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
