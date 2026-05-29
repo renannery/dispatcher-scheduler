@@ -292,7 +292,14 @@ export function generateDriverSchedule({
         if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
         // Skip drivers whose designated off day is today — rotates off
         // days across the week so Wed isn't everyone's default off day.
-        if (designatedOffDow(d.id, wLabel) === dow) return false
+        // EXCEPT when the driver is significantly under their weekly
+        // cap (< 70%): in that case override the designated off so we
+        // can fill more of their hours and not strand cap. Without this
+        // override, drivers like Michelle (cap 43h, scheduled to 36h)
+        // sit idle on Wed despite open PM peak slots, because the off-
+        // day rotation blocks them.
+        const usedFraction = (weekHours[d.id][wLabel] ?? 0) / capOf(d)
+        if (designatedOffDow(d.id, wLabel) === dow && usedFraction >= 0.7) return false
         return true
       })
       if (candidates.length === 0) break
