@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText,
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
+import { HoverHint } from '@/components/HoverHint'
 
 import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
@@ -781,12 +782,22 @@ export function DriverScheduleGrid() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
                   <div className="text-xs text-slate-500">
-                    <span className="font-semibold text-emerald-600">{ftAtCap}</span> at cap ·
-                    <span className="ml-1 font-semibold text-amber-600">{ftUnder}</span> under ·
+                    <HoverHint label={`${ftAtCap} full-time driver${ftAtCap === 1 ? '' : 's'} hit the ${fullTimeCap}h weekly cap this week`}>
+                      <span className="font-semibold text-emerald-600">{ftAtCap}</span>
+                    </HoverHint>{' '}at cap ·
+                    <HoverHint label={`${ftUnder} full-time driver${ftUnder === 1 ? '' : 's'} worked this week but ended below the ${fullTimeCap}h cap — unused capacity available`}>
+                      <span className="ml-1 font-semibold text-amber-600">{ftUnder}</span>
+                    </HoverHint>{' '}under ·
                     {ftOff > 0 && (
-                      <><span className="ml-1 font-semibold text-slate-500">{ftOff}</span> off ·</>
+                      <>
+                        <HoverHint label={`${ftOff} full-time driver${ftOff === 1 ? '' : 's'} didn't get scheduled at all this week`}>
+                          <span className="ml-1 font-semibold text-slate-500">{ftOff}</span>
+                        </HoverHint>{' '}off ·
+                      </>
                     )}
-                    <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span> PT
+                    <HoverHint label={`${ptAtCap + ptUnder} part-time driver${(ptAtCap + ptUnder) === 1 ? '' : 's'} scheduled this week (${ptAtCap} at ${schedule.partTimeCap}h cap, ${ptUnder} under)`}>
+                      <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span>
+                    </HoverHint>{' '}PT
                   </div>
                   {/* Overtime tally — visible whenever any driver crosses 45h/wk or any
                       shift goes past 9h. Lets ops see legal exposure for payroll. */}
