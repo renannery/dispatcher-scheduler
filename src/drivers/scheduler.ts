@@ -939,6 +939,149 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 5 of cap-fill: NARROW GAP-FILLER (last resort) ───────────────
+  // After Phases 1-4, real-roster diagnostics show a residual pattern:
+  // a target slot (e.g. 7-8 PM) is still short by 1-2 bodies AND has plenty
+  // of headroom under its own +15% ceiling, BUT every pattern that covers
+  // it also touches an adjacent slot already AT the +15% ceiling — so the
+  // strict over-cap check rejects all candidates and the gap stays open
+  // even with 27 idle drivers having cap remaining.
+  //
+  // This pass is the escape valve. For each day with residual shortfall:
+  //   1. Walk off-day drivers (who didn't take a shift today) with cap
+  //      remaining and < 6 days worked this week.
+  //   2. Try patterns that cover AT LEAST ONE shortfall slot.
+  //   3. Accept if the net SHORTFALL REDUCTION > 0 — even if the pattern
+  //      pushes a non-shortfall slot past +15%, the absolute hard cap
+  //      here is +30% (so we never silently double-staff).
+  //   4. Prefer SHORTER patterns (3-5h) to minimize over-coverage damage.
+  //
+  // This phase is intentionally narrow — it only fires when the strict
+  // phases have given up, and only for drivers who're sitting idle.
+  const narrowFillTolerance = (req: number) => req <= 0 ? 0 : Math.max(1, Math.round(req * 0.30))
+  for (let dayIdx = 0; dayIdx < allDates.length; dayIdx++) {
+    const date = allDates[dayIdx]
+    const dateStr = format(date, 'yyyy-MM-dd')
+    const dow = date.getDay()
+    const wLabel = weekLabel(date)
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    const template = DRIVER_DAY_TEMPLATES[dow]
+
+    // Compute current shortfall — bail if day is fully covered.
+    const shortfallSlots = new Set<number>()
+    for (let s = 0; s < required.length; s++) {
+      if (required[s] - cov[s] > 0) shortfallSlots.add(s)
+    }
+    if (shortfallSlots.size === 0) continue
+
+    // Limit narrow-fill patterns to 3-5h to minimize over-coverage damage.
+    const narrowPatterns = template.shiftPatterns
+      .map(raw => raw.map(v => v === 1))
+      .filter(p => {
+        const h = slotHours(p)
+        return h >= 3 && h <= 5
+      })
+
+    // Try to place narrow shifts until shortfall stops shrinking.
+    let safety = 50
+    while (safety-- > 0) {
+      // Recompute shortfall each iteration.
+      let totalShort = 0
+      for (let s = 0; s < required.length; s++) totalShort += Math.max(0, required[s] - cov[s])
+      if (totalShort === 0) break
+
+      let bestDriver: Driver | null = null
+      let bestPattern: boolean[] | null = null
+      let bestReduction = 0
+
+      for (const d of drivers) {
+        if (d.isShopper) continue  // shoppers tracked separately
+        // Only place on a driver's OFF day (don't disrupt existing shifts).
+        const entry = scheduleMap[d.id][dayIdx]
+        if (!entry || !entry.isOff) continue
+        if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) continue
+        const cap = bufferedCapOf(d)
+        const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+        if (remaining < 3) continue
+        const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+        if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
+        // Night-rest with YESTERDAY (for morning-start patterns).
+        const yest = scheduleMap[d.id][dayIdx - 1]
+        const yestLastClose = (() => {
+          if (!yest || yest.isOff) return false
+          let yLast = -1
+          for (let z = yest.slots.length - 1; z >= 0; z--) if (yest.slots[z]) { yLast = z; break }
+          return yLast >= NIGHT_SLOT_THRESHOLD
+        })()
+        // Night-rest with TOMORROW (for closing patterns).
+        const tomorrow = scheduleMap[d.id][dayIdx + 1]
+        const tomorrowMorningStart = (() => {
+          if (!tomorrow || tomorrow.isOff) return false
+          const tFirst = tomorrow.slots.findIndex(x => x)
+          return tFirst >= 0 && tFirst <= MORNING_SLOT_THRESHOLD
+        })()
+
+        for (const p of narrowPatterns) {
+          const h = slotHours(p)
+          if (h > remaining) continue
+          if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
+          if (blocks && p.some((on, i) => on && blocks[i])) continue
+          if (firstActive(p) <= MORNING_SLOT_THRESHOLD && yestLastClose) continue
+          if (lastActive(p) >= NIGHT_SLOT_THRESHOLD && tomorrowMorningStart) continue
+
+          // Check that the pattern actually fills a shortfall slot.
+          let touchesShortfall = false
+          for (let s = 0; s < p.length; s++) {
+            if (p[s] && shortfallSlots.has(s)) { touchesShortfall = true; break }
+          }
+          if (!touchesShortfall) continue
+
+          // Compute hard +30% absolute ceiling — never silently double-staff.
+          let exceedsAbsolute = false
+          let reduction = 0
+          for (let s = 0; s < p.length; s++) {
+            if (!p[s]) continue
+            if (cov[s] + 1 > required[s] + narrowFillTolerance(required[s])) {
+              exceedsAbsolute = true
+              break
+            }
+            if (required[s] - cov[s] > 0) reduction++
+          }
+          if (exceedsAbsolute) continue
+          if (reduction === 0) continue
+
+          // Prefer SHORTER patterns at equal reduction (less over-coverage damage).
+          // Score: reduction × 100 - hours.
+          const score = reduction * 100 - h
+          if (score > bestReduction) {
+            bestReduction = score
+            bestDriver = d
+            bestPattern = p
+          }
+        }
+      }
+
+      if (!bestDriver || !bestPattern) break
+
+      // Apply: replace OFF entry with the new shift.
+      const entry = scheduleMap[bestDriver.id][dayIdx]
+      const h = slotHours(bestPattern)
+      entry.isOff = false
+      entry.slots = [...bestPattern]
+      entry.totalHours = h
+      weekHours[bestDriver.id][wLabel] = (weekHours[bestDriver.id][wLabel] ?? 0) + h
+      daysWorked[bestDriver.id][wLabel] = (daysWorked[bestDriver.id][wLabel] ?? 0) + 1
+      for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+      lastSlotWorked[bestDriver.id][dateStr] = lastActive(bestPattern)
+      // Recompute shortfall set for next iteration.
+      shortfallSlots.clear()
+      for (let s = 0; s < required.length; s++) {
+        if (required[s] - cov[s] > 0) shortfallSlots.add(s)
+      }
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
