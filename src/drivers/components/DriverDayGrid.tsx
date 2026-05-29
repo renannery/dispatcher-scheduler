@@ -173,6 +173,85 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             ))}
             <th className="sticky right-0 top-0 z-30 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
           </tr>
+          {/*
+            Second sticky row: per-slot coverage pills. Sticks at `top-11`
+            (44px) so it sits directly under the hour header row when
+            scrolling. Same data as the footer Coverage row — duplicated
+            here so ops can read coverage status at any scroll depth
+            without flipping back to the bottom of the day. Footer row
+            stays as the canonical "end of day" reference.
+          */}
+          <tr>
+            <th className="sticky left-0 top-11 z-30 min-w-[130px] bg-slate-100 px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              Coverage
+            </th>
+            {visibleSlotIndices.map((si) => {
+              const a = actual[si]
+              const r = required[si]
+              const status = coverageStatus(a, r)
+              return (
+                <th key={si} className={clsx(
+                  'sticky top-11 z-20 px-0.5 py-1 bg-slate-100 text-center',
+                  shortSlots.has(si) && 'bg-red-50/70',
+                )}>
+                  <div
+                    className={clsx(
+                      'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
+                      status === 'ok'    && 'bg-emerald-100 text-emerald-700',
+                      status === 'mild'  && 'bg-amber-100 text-amber-700',
+                      status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
+                      status === 'over'  && 'bg-slate-200 text-slate-500',
+                    )}
+                    title={`Actual: ${a} | Required: ${r}`}
+                  >
+                    {a}
+                    {r > 0 && <span className="ml-0.5 opacity-50">/{r}</span>}
+                  </div>
+                </th>
+              )
+            })}
+            <th className="sticky right-0 top-11 z-30 min-w-[60px] bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
+              {actual.reduce((s, a) => s + a, 0)}h
+            </th>
+          </tr>
+          {/* Sticky shopper coverage row — only when this day has any
+              shopper activity. Same alignment under the driver coverage
+              row. Sticks below the previous row at top-[68px] (44+24). */}
+          {hasShoppers && (
+            <tr>
+              <th className="sticky left-0 top-[68px] z-30 min-w-[130px] bg-purple-50 px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-purple-600">
+                Shoppers
+              </th>
+              {visibleSlotIndices.map((si) => {
+                const sa = shopperCov[si]
+                const sr = shopperRequired[si]
+                const tone =
+                  sr === 0 && sa === 0 ? 'bg-slate-50 text-slate-300' :
+                  sa >= sr             ? 'bg-purple-100 text-purple-700' :
+                                         'bg-purple-50 text-purple-500 ring-1 ring-purple-300'
+                return (
+                  <th key={si} className="sticky top-[68px] z-20 bg-purple-50 px-0.5 py-1 text-center font-normal">
+                    <div
+                      className={clsx(
+                        'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
+                        tone,
+                      )}
+                      title={`Shoppers: ${sa} actual / ${sr} target`}
+                    >
+                      {sa === 0 && sr === 0 ? '·' : sa}
+                      {sr > 0 && <span className="ml-0.5 opacity-50">/{sr}</span>}
+                    </div>
+                  </th>
+                )
+              })}
+              <th className="sticky right-0 top-[68px] z-30 min-w-[60px] bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
+                {shopperCov.reduce((s, a) => s + a, 0)}
+                {shopperRequired.some(v => v > 0) && (
+                  <span className="opacity-50">/{shopperRequired.reduce((s, a) => s + a, 0)}</span>
+                )}h
+              </th>
+            </tr>
+          )}
         </thead>
 
         <tbody>
