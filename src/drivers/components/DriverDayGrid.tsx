@@ -111,7 +111,15 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
   const firstShopperIdx = visibleRows.findIndex((r) => r.ds.driver.isShopper)
 
   return (
-    <div className="overflow-x-auto">
+    // No overflow-x-auto here on purpose: setting overflow-x to auto
+    // silently coerces overflow-y to auto per CSS spec, which makes this
+    // div a vertical scroll container and breaks `position: sticky` on
+    // the thead row (the sticky has no viewport to scroll against).
+    //
+    // Page-level horizontal scrolling kicks in on narrow viewports if the
+    // table is wider than the page — fine for the typical ~15-column
+    // schedule on desktop browsers.
+    <div>
       {/* Toggle for hidden OFF rows (only when there are any and no external filter) */}
       {hiddenOffCount > 0 && (
         <div className="flex items-center justify-end px-4 py-1.5 text-[11px] text-slate-400">
