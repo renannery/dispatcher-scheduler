@@ -606,12 +606,18 @@ export interface CoverageHealth {
  * so multi-week imports don't artificially inflate the gap.
  */
 /**
- * Per-slot coverage tolerance band (15% of the target, min 1). A slot is
- * inside its tolerance when |actual − required| ≤ coverageTolerance(target).
- * Small slots get tight bands (target 10 → ±2), heavy slots get loose ones
- * (target 56 → ±8) — matches ops policy "we can be flex ±15%".
+ * Per-slot OVER-coverage tolerance band — how much above target a slot can
+ * be staffed before the algorithm refuses to add more. Tightened from
+ * 15% to 5% (min 1 body) so that days like Thu/Fri stop being over-staffed
+ * (which was leaving Wed structurally starved). Under-coverage has ZERO
+ * tolerance per ops policy ("coverage targets are hard minimums") — see
+ * `coverageStatus()` and `analyzeCoverageHealth()` for that.
+ *
+ * Small slots still get tight bands (target 10 → ±1, target 22 → ±1)
+ * because of the min-1 floor. Heavy slots get a +5% ceiling (target 56 →
+ * +3, target 39 → +2) so over-coverage on big slots is also limited.
  */
-export const COVERAGE_GAP_TOLERANCE_PCT = 0.15
+export const COVERAGE_GAP_TOLERANCE_PCT = 0.05
 
 /** Integer tolerance for a given slot target. */
 export function coverageTolerance(required: number): number {
