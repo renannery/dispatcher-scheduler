@@ -62,8 +62,19 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
   const actual = schedule.coverageActual[date] ?? DRIVER_SLOTS.map(() => 0)
   const [showOff, setShowOff] = useState(false)
 
+  // Per-slot shopper count — shoppers don't count toward driver
+  // coverage but ops still want to see who's on for grocery work.
+  const shopperCov = DRIVER_SLOTS.map(() => 0)
+  for (const ds of schedule.driverSchedules) {
+    if (!ds.driver.isShopper) continue
+    const e = ds.days.find((d) => d.date === date)
+    if (!e || e.isOff) continue
+    e.slots.forEach((on, i) => { if (on) shopperCov[i]++ })
+  }
+  const hasShoppers = shopperCov.some((v) => v > 0)
+
   const visibleSlotIndices = DRIVER_SLOTS.map((_, i) => i).filter(
-    (i) => required[i] > 0 || actual[i] > 0,
+    (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0,
   )
 
   // Apply row filters: external search filter takes precedence over the local OFF toggle.
@@ -332,6 +343,39 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
               {actual.reduce((s, a) => s + a, 0)}h
             </td>
           </tr>
+
+          {/* Separate row for shoppers — they're a distinct operational
+              pool (groceries) and don't count toward driver coverage,
+              so ops needs a separate count to verify the day's shopper
+              presence. Hidden when there are zero shopper hours on the day. */}
+          {hasShoppers && (
+            <tr className="border-t border-slate-200">
+              <td className="sticky left-0 bg-purple-50 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-purple-600">
+                Shoppers
+              </td>
+              {visibleSlotIndices.map((si) => {
+                const sa = shopperCov[si]
+                return (
+                  <td key={si} className="px-0.5 py-1 text-center">
+                    <div
+                      className={clsx(
+                        'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
+                        sa > 0
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'bg-slate-50 text-slate-300',
+                      )}
+                      title={`${sa} shopper${sa === 1 ? '' : 's'} on this slot`}
+                    >
+                      {sa > 0 ? sa : '·'}
+                    </div>
+                  </td>
+                )
+              })}
+              <td className="sticky right-0 bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
+                {shopperCov.reduce((s, a) => s + a, 0)}h
+              </td>
+            </tr>
+          )}
         </tfoot>
       </table>
     </div>
