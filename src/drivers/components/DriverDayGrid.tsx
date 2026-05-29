@@ -303,11 +303,24 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
                   {isOff ? (
                     <span className="text-slate-400">—</span>
-                  ) : (
-                    <span className="font-semibold text-slate-700">
-                      {entry?.totalHours?.toFixed(0)}h
-                    </span>
-                  )}
+                  ) : (() => {
+                    const h = entry?.totalHours ?? 0
+                    // Highlight the legal-cap boundary: at exactly 9h
+                    // (legal daily max) → yellow pill so ops sees it's
+                    // pushing the line. Over 9h → red pill = real
+                    // overtime, needs payroll attention.
+                    const tone =
+                      h > LEGAL_DAILY_MAX_HOURS
+                        ? 'bg-red-100 text-red-700 ring-1 ring-red-400'
+                      : h === LEGAL_DAILY_MAX_HOURS
+                        ? 'bg-amber-100 text-amber-700'
+                      : 'text-slate-700'
+                    return (
+                      <span className={clsx('font-semibold tabular-nums rounded px-1.5', tone)}>
+                        {h.toFixed(0)}h
+                      </span>
+                    )
+                  })()}
                 </td>
               </tr>
             )
