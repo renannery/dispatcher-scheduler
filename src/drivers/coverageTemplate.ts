@@ -97,6 +97,18 @@ const WEEKDAY_PATTERNS: number[][] = [
   [0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0],  // 8h:  11 AM – 3 PM + 5 PM – 9 PM  (2h break)
   [0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0],  // 10h: 9 AM – 2 PM  + 4 PM – 9 PM  (2h break)
   [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0],  // 8h:  12 PM – 4 PM + 6 PM – 10 PM (2h break)
+  // ─── Long-break "peak-to-peak" splits (3-4h break) ──────────────────────
+  // A driver doing one of these covers BOTH lunch and dinner peaks alone,
+  // which is structurally the only way to fully cover Wed (lunch + dinner
+  // both short, demand at 2.5x of morning openers). The 3-4h break is
+  // tougher on the driver, so the algorithm should only pick these when
+  // gaps need them — the length penalty (preferred 7h) keeps the rate
+  // low, and the slot priority bonus only kicks in when the covered
+  // slots are short.
+  [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0],  // 8h:  9 AM – 1 PM + 5 PM – 9 PM   (4h break)
+  [0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0],  // 8h:  10 AM – 2 PM + 6 PM – 10 PM (4h break)
+  [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0],  // 9h:  9 AM – 1 PM + 5 PM – 10 PM  (4h break)
+  [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0],  // 9h:  9 AM – 2 PM + 6 PM – 10 PM  (4h break)
   // ─── Short shifts (4-6h, full day coverage) ─────────────────────────────
   // Used when the demand-weighted dailyCap restricts longer shifts (early in
   // the work-week) or when drivers have a small remaining weekly budget
