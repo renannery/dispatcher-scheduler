@@ -1137,27 +1137,54 @@ export function generateDriverSchedule({
   // Phase 5's gap-filling. The hard absolute cap is +30% (matches Phase 5)
   // so spread fairness wins over coverage strictness, but never blows past
   // double-staffing.
+  // Standard spread tolerance is +25%, but on BUSY days (Fri/Sat/Sun/Thu)
+  // ops wants visibly over-staffed coverage — loosen the per-slot ceiling
+  // to +50% so 4-5h patterns can land on busy days even when adjacent
+  // slots are already at the +25% standard ceiling. Without this, peak
+  // slots like Sat 6-7 PM stay at-target because every pattern covering
+  // them also touches a saturated 5 PM / 8 PM slot.
   const spreadFillTol = (req: number) => req <= 0 ? 0 : Math.max(1, Math.round(req * 0.25))
-  // Per-day demand sum, used to sort each driver's off-days busiest-first
-  // when picking which off-day to spread onto. Without this Phase 6 just
-  // grabs the chronologically-first off-day, missing the user's surplus-
-  // capacity goal: "with 89 drivers Friday peaks should easily be in gray
-  // (over-staffed)." Loading busy days first uses the extra bodies where
-  // they have the most value.
+  const busySpreadFillTol = (req: number) => req <= 0 ? 0 : Math.max(2, Math.round(req * 0.50))
+  // Ops-defined busy-day priority. Sorting off-days by this DESC means
+  // surplus drivers land on Fri/Sat/Sun/Thu before Mon/Tue/Wed, so the
+  // busy days end up visibly over-staffed (gray "over" status) instead
+  // of barely-at-target.
+  //
+  // User: "Our busy days are Thu/Fri/Sat/Sun. In order: 1 Friday, 2
+  // Saturday, 3 Sunday, 4 Thursday. We can prioritize these days to
+  // have more people than the coverage target."
+  //
+  // Within a priority tier, fall back to total template demand so
+  // higher-demand days still win ties. Mon/Tue/Wed get priority 0
+  // and are filled last (and rarely, since busy days absorb most
+  // surplus first).
+  const BUSY_DAY_PRIORITY: Record<number, number> = {
+    5: 100,  // Friday  — busiest
+    6:  80,  // Saturday
+    0:  60,  // Sunday
+    4:  40,  // Thursday
+    1:   0,  // Mon
+    2:   0,  // Tue
+    3:   0,  // Wed
+  }
   const dayDemand = new Map<string, number>()
+  const dayPriority = new Map<string, number>()
   for (const date of allDates) {
     const dow = date.getDay()
     const sum = effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0)
-    dayDemand.set(format(date, 'yyyy-MM-dd'), sum)
+    const dateStr = format(date, 'yyyy-MM-dd')
+    dayDemand.set(dateStr, sum)
+    // Composite: explicit ops priority (×1000) + raw demand for tie-break.
+    dayPriority.set(dateStr, BUSY_DAY_PRIORITY[dow] * 1000 + sum)
   }
   for (const d of shuffledDrivers) {
     if (d.isShopper) continue  // shoppers already work all 6 non-Sundays
-    // Walk this driver's off-days BUSIEST-FIRST so spare capacity lands
-    // on Fri/Sat before Tue/Wed.
+    // Walk this driver's off-days in OPS-PRIORITY order so spare capacity
+    // lands on busy days (Fri/Sat/Sun/Thu) first.
     const offEntryIndexes = scheduleMap[d.id]
-      .map((e, idx) => ({ idx, demand: e.isOff ? (dayDemand.get(e.date) ?? 0) : -1 }))
-      .filter(x => x.demand >= 0)
-      .sort((a, b) => b.demand - a.demand)
+      .map((e, idx) => ({ idx, priority: e.isOff ? (dayPriority.get(e.date) ?? 0) : -1 }))
+      .filter(x => x.priority >= 0)
+      .sort((a, b) => b.priority - a.priority)
       .map(x => x.idx)
     for (const i of offEntryIndexes) {
       const entry = scheduleMap[d.id][i]
@@ -1166,8 +1193,15 @@ export function generateDriverSchedule({
       const dow = entry.dayOfWeek
       const wLabel = weekLabel(parseISO(dateStr))
       const currentDays = daysWorked[d.id][wLabel] ?? 0
-      if (currentDays >= SPREAD_TARGET_DAYS) continue
       if (currentDays >= MAX_DAYS_PER_WEEK) continue
+      // Standard cap: 5 days. EXCEPTION: allow a 6th day if it's a busy
+      // day (Fri/Sat/Sun/Thu, priority > 0). Per user request, busy days
+      // should run "more people than the coverage target" — letting
+      // already-5-day drivers pick up a 4-5h Fri/Sat shift pushes those
+      // days' peak slots into "over" (gray) status.
+      const isBusyDay = (BUSY_DAY_PRIORITY[dow] ?? 0) > 0
+      const dayLimit = isBusyDay ? MAX_DAYS_PER_WEEK : SPREAD_TARGET_DAYS
+      if (currentDays >= dayLimit) continue
       const cap = bufferedCapOf(d)
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
       if (remaining < 4) continue  // 4h-min policy
@@ -1209,9 +1243,13 @@ export function generateDriverSchedule({
         }
         let exceeds = false
         let helps = 0
+        // Busy days get the looser +50% ceiling so peak slots (which are
+        // sandwiched between already-saturated 5 PM / 8 PM slots) can
+        // still be filled.
+        const tolFn = isBusyDay ? busySpreadFillTol : spreadFillTol
         for (let s = 0; s < p.length; s++) {
           if (!p[s]) continue
-          if (cov[s] + 1 > required[s] + spreadFillTol(required[s])) { exceeds = true; break }
+          if (cov[s] + 1 > required[s] + tolFn(required[s])) { exceeds = true; break }
           if (required[s] - cov[s] > 0) helps++
         }
         if (exceeds) continue
