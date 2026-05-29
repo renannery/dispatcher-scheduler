@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
-import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE } from '../coverageTemplate'
+import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE } from '../coverageTemplate'
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
@@ -215,10 +215,12 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                           amber  = close to cap (≥92%)
                           slate  = normal */}
                     {(() => {
-                      const isLegalOT = weekH > LEGAL_WEEKLY_MAX_HOURS
+                      // Per-type legal weekly max: FT 45h, PT 30h.
+                      const legalMax = ds.driver.employmentType === 'full' ? LEGAL_WEEKLY_MAX_HOURS : LEGAL_PT_WEEKLY_MAX_HOURS
+                      const isLegalOT = weekH > legalMax
                       const isOverCap = pctOfCap >= 1.0 && !isLegalOT
                       const tooltip = isLegalOT
-                        ? `Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h — ${(weekH - LEGAL_WEEKLY_MAX_HOURS).toFixed(1)}h WEEKLY OVERTIME (legal max ${LEGAL_WEEKLY_MAX_HOURS}h)`
+                        ? `Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h — ${(weekH - legalMax).toFixed(1)}h WEEKLY OVERTIME (legal max ${legalMax}h for ${ds.driver.employmentType === 'full' ? 'FT' : 'PT'})`
                         : `Week of ${workWeekKey(date)}: ${weekH.toFixed(1)}h / ${cap}h cap`
                       return (
                         <HoverHint label={tooltip}>

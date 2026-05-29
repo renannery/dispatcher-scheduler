@@ -231,7 +231,13 @@ export const DEFAULT_FULL_TIME_CAP = 45
 // the soft-overflow logic — so an op-driven schedule never silently pushes
 // a driver into 10h+ daily overtime.
 export const LEGAL_DAILY_MAX_HOURS = 9
+// Legal pre-overtime WEEKLY ceiling, per employment type:
+//   - Full-time: 45h
+//   - Part-time: 30h
+// Used as the clamp for the soft buffer above the user-set cap so PT
+// drivers can't silently be pushed past their type's legal max.
 export const LEGAL_WEEKLY_MAX_HOURS = 45
+export const LEGAL_PT_WEEKLY_MAX_HOURS = 30
 
 // Overtime policy — applied only as a LAST RESORT when normal cap-fill
 // can't meet coverage demand. The algorithm picks the top X% of FT

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { HoverHint } from '@/components/HoverHint'
 
-import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
@@ -745,12 +745,19 @@ export function DriverScheduleGrid() {
         const ptAtCap = ptSummary.filter((h) => h >= schedule.partTimeCap).length
         const ptUnder = ptSummary.filter((h) => h > 0 && h < schedule.partTimeCap).length
 
-        // Overtime tally — anyone over the legal 45h weekly max, plus
-        // sum of overtime hours for the week's payroll picture. Computed
-        // across BOTH FT and PT (the legal limit doesn't discriminate).
-        const allWeekHours = schedule.driverSchedules.map((ds) => ds.weeklyHours[wl] ?? 0)
-        const otDrivers = allWeekHours.filter((h) => h > LEGAL_WEEKLY_MAX_HOURS).length
-        const otHours = allWeekHours.reduce((sum, h) => sum + Math.max(0, h - LEGAL_WEEKLY_MAX_HOURS), 0)
+        // Overtime tally — over the legal weekly max for that driver's
+        // employment type (FT 45h, PT 30h). Computed across both pools
+        // for the week's payroll picture.
+        let otDrivers = 0
+        let otHours = 0
+        for (const ds of schedule.driverSchedules) {
+          const h = ds.weeklyHours[wl] ?? 0
+          const max = ds.driver.employmentType === 'full' ? LEGAL_WEEKLY_MAX_HOURS : LEGAL_PT_WEEKLY_MAX_HOURS
+          if (h > max) {
+            otDrivers++
+            otHours += h - max
+          }
+        }
         // Daily overtime: count per-driver-days that exceed 9h
         let dailyOtDays = 0
         let dailyOtHours = 0

@@ -4,6 +4,7 @@ import {
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   LEGAL_DAILY_MAX_HOURS,
+  LEGAL_PT_WEEKLY_MAX_HOURS,
   LEGAL_WEEKLY_MAX_HOURS,
   MAX_HOURS_PER_DAY,
   OT_DAILY_BONUS,
@@ -147,15 +148,19 @@ export function generateDriverSchedule({
   const coverageActual: Record<string, number[]> = {}
 
   const capOf = (d: Driver) => (d.employmentType === 'full' ? fullTimeCap : partTimeCap)
+  // Legal pre-OT weekly max for the driver's employment type:
+  //   FT → 45h, PT → 30h
+  const legalWeeklyMaxOf = (d: Driver) =>
+    d.employmentType === 'full' ? LEGAL_WEEKLY_MAX_HOURS : LEGAL_PT_WEEKLY_MAX_HOURS
   // Soft buffer over the user-set cap (+10% by default). Used in
   // cap-fill phases so a few drivers can stretch past their target
   // cap to fill coverage gaps, but clamped at the legal pre-OT
-  // weekly max so this never silently triggers legal overtime. The
-  // main scheduling pass + length penalty keep most drivers at their
-  // target cap; only when shortfall remains does the buffer get used.
+  // weekly max FOR THAT EMPLOYMENT TYPE — so a PT with user cap=28
+  // can stretch to 30 (PT legal max), and an FT with cap=43 can
+  // stretch to 45 (FT legal max). Never silently triggers legal OT.
   const bufferedCapOf = (d: Driver) => Math.min(
     Math.round(capOf(d) * (1 + USER_CAP_BUFFER_PCT)),
-    LEGAL_WEEKLY_MAX_HOURS,
+    legalWeeklyMaxOf(d),
   )
 
   // Per-driver per-week day count. Used to enforce the "1 day off" rule —
