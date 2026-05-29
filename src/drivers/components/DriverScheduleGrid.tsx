@@ -414,6 +414,15 @@ export function DriverScheduleGrid() {
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [quickAddOpen, setQuickAddOpen] = useState(false)
+  // Simulation state — when set, shows a comparison row in the hiring
+  // banner: "Adding N drivers would close the gap to Yh." Cleared
+  // whenever the underlying schedule changes (regenerate, add driver,
+  // apply suggestion).
+  const [simResult, setSimResult] = useState<null | {
+    addedCount: number
+    shortfallBefore: number
+    shortfallAfter: number
+  }>(null)
 
   const trimmedSearch = search.trim().toLowerCase()
   const matchedDriverIds = useMemo(() => {
@@ -454,6 +463,7 @@ export function DriverScheduleGrid() {
     })
     setSchedule(fresh)
     setExpandedDates(new Set())
+    setSimResult(null)
   }
 
   // Add a new driver, then regenerate so they immediately appear in
@@ -473,6 +483,33 @@ export function DriverScheduleGrid() {
     })
     setSchedule(fresh)
     setExpandedDates(new Set())
+    setSimResult(null)
+  }
+
+  // Run a hypothetical schedule with N placeholder FT drivers tacked
+  // onto the roster, then report the shortfall before/after WITHOUT
+  // mutating the real schedule or roster. Lets ops sanity-check the
+  // hiring recommendation before committing.
+  const handleSimulateHires = (n: number) => {
+    const placeholders = Array.from({ length: n }, (_, i) => ({
+      id: `__sim_${Date.now()}_${i}`,
+      name: `New hire ${i + 1}`,
+      color: '#94a3b8',
+      employmentType: 'full' as const,
+    }))
+    const simSchedule = generateDriverSchedule({
+      drivers: [...drivers, ...placeholders],
+      startDate, endDate, timeOff,
+      fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay,
+      seed: weekendRotationOffset,
+    })
+    const simHealth = analyzeCoverageHealth(simSchedule, coverageScale, coverageOverrides)
+    setSimResult({
+      addedCount: n,
+      shortfallBefore: health.weeklyShortfallHours,
+      shortfallAfter: simHealth.weeklyShortfallHours,
+    })
   }
 
   // Apply edits from the suggestions banner and regenerate in one shot.
@@ -490,6 +527,7 @@ export function DriverScheduleGrid() {
     })
     setSchedule(fresh)
     setExpandedDates(new Set())
+    setSimResult(null)
   }
 
   const handleExportJson = () => {
@@ -548,6 +586,14 @@ export function DriverScheduleGrid() {
                 Hire {health.recommendedAdditionalDrivers} more full-time driver
                 {health.recommendedAdditionalDrivers === 1 ? '' : 's'}
               </span>
+              <button
+                type="button"
+                onClick={() => handleSimulateHires(health.recommendedAdditionalDrivers)}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-400 bg-white px-2.5 py-0.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
+              >
+                Simulate with {health.recommendedAdditionalDrivers} new hire
+                {health.recommendedAdditionalDrivers === 1 ? '' : 's'}
+              </button>
             </div>
             <p className="mt-1 text-xs text-amber-800/80">
               Assumes each new full-timer realistically contributes ~35h/week after night-rest, weekend rotation, and time-off.
@@ -561,6 +607,54 @@ export function DriverScheduleGrid() {
               .
               {' '}Use the <span className="font-semibold">+ Add driver</span> button above to add bodies, or relax targets via Coverage scale.
             </p>
+
+            {/* Simulation result — appears after the user clicks
+                "Simulate with N new hires". Shows the projected impact
+                on weekly shortfall WITHOUT mutating the real schedule. */}
+            {simResult && (
+              <div className="mt-3 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs text-amber-900">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">
+                    Simulation: + {simResult.addedCount} FT driver{simResult.addedCount === 1 ? '' : 's'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSimResult(null)}
+                    className="rounded p-0.5 text-amber-600 hover:bg-amber-50"
+                    title="Dismiss simulation"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+                <div className="mt-1 flex flex-wrap items-baseline gap-x-3">
+                  <span>
+                    Before: <span className="font-bold tabular-nums">{Math.round(simResult.shortfallBefore)}h/wk short</span>
+                  </span>
+                  <span className="text-amber-500">→</span>
+                  <span>
+                    After: <span className={clsx(
+                      'font-bold tabular-nums',
+                      simResult.shortfallAfter <= 0 ? 'text-emerald-700' : 'text-amber-900',
+                    )}>
+                      {Math.round(simResult.shortfallAfter)}h/wk short
+                    </span>
+                  </span>
+                  {simResult.shortfallAfter <= 0 ? (
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                      ✓ Coverage met
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                      Still {Math.round(simResult.shortfallAfter)}h short — try more hires
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-[11px] text-amber-700/80">
+                  Hypothetical only — your schedule is unchanged. Use{' '}
+                  <span className="font-semibold">+ Add driver</span> above to actually add a body and regenerate.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
