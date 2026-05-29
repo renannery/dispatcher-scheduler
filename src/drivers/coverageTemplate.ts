@@ -166,17 +166,20 @@ const WEEKEND_PATTERNS: number[][] = [
   [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 7h:  8 AM – 3 PM
 ]
 
-// ─── Required coverage — 5-week average of actual operations ──────────────
-// Apr 30 – Jun 3 2026 (5 weeks of historical schedules). Replaces the
-// original single-week May 21–27 snapshot. Weekly total ~2486h, with Wed
-// being the slowest day (312h) and Fri the busiest (419h).
-const COV_THU = [0, 10, 16, 25, 30, 30, 19, 17, 19, 28, 42, 42, 27, 16, 6]
-const COV_FRI = [0, 10, 20, 29, 37, 37, 26, 23, 26, 39, 56, 56, 36, 18, 6]
-const COV_SAT = [6, 13, 18, 22, 29, 28, 23, 22, 27, 45, 56, 56, 33, 18, 6]
+// ─── Required coverage — 5-week DRIVER-ONLY average ───────────────────────
+// Apr 30 – Jun 3 2026 (5 weeks of historical schedules). Re-derived with
+// shoppers (Annie, Eliraiza, Kishan, Noli) EXCLUDED, because shoppers
+// belong to a separate operational pool (groceries) and were inflating
+// the prior version's targets. Sunday is unchanged — shoppers don't work
+// Sundays (grocery store closed). Weekly total: ~2298h (was 2486h with
+// shoppers — the 188h reduction = 4 shoppers × ~47h).
+const COV_THU = [0,  9, 14, 23, 28, 28, 16, 15, 16, 24, 38, 39, 25, 16, 6]
+const COV_FRI = [0,  9, 18, 26, 34, 34, 23, 21, 23, 36, 52, 52, 34, 18, 6]
+const COV_SAT = [6, 12, 16, 19, 26, 25, 21, 19, 25, 41, 52, 52, 31, 18, 6]
 const COV_SUN = [7, 11, 17, 23, 29, 24, 26, 21, 25, 39, 51, 51, 30, 17, 7]
-const COV_MON = [0, 10, 16, 22, 31, 31, 21, 21, 20, 23, 43, 43, 33, 13, 6]
-const COV_TUE = [0,  9, 16, 24, 31, 31, 20, 19, 18, 24, 39, 39, 25, 14, 6]
-const COV_WED = [0, 10, 14, 22, 29, 30, 21, 19, 19, 24, 38, 39, 27, 14, 6]
+const COV_MON = [0,  9, 15, 20, 29, 29, 19, 19, 17, 19, 40, 40, 31, 12, 6]
+const COV_TUE = [0,  8, 14, 22, 28, 28, 18, 17, 15, 20, 35, 35, 23, 14, 6]
+const COV_WED = [0,  9, 12, 20, 27, 27, 18, 17, 17, 20, 34, 35, 24, 14, 6]
 
 export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
   0: { dayOfWeek: 0, dayName: 'Sunday',    slots: DRIVER_SLOTS, requiredCoverage: COV_SUN, shiftPatterns: WEEKEND_PATTERNS },
