@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
-import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE } from '../coverageTemplate'
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
@@ -71,10 +71,12 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     if (!e || e.isOff) continue
     e.slots.forEach((on, i) => { if (on) shopperCov[i]++ })
   }
-  const hasShoppers = shopperCov.some((v) => v > 0)
+  // Shopper coverage TARGETS from 5-week historical (excluding Sun).
+  const shopperRequired = SHOPPER_COVERAGE[dayOfWeek] ?? DRIVER_SLOTS.map(() => 0)
+  const hasShoppers = shopperCov.some((v) => v > 0) || shopperRequired.some((v) => v > 0)
 
   const visibleSlotIndices = DRIVER_SLOTS.map((_, i) => i).filter(
-    (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0,
+    (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0 || shopperRequired[i] > 0,
   )
 
   // Apply row filters: external search filter takes precedence over the local OFF toggle.
@@ -355,24 +357,33 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
               </td>
               {visibleSlotIndices.map((si) => {
                 const sa = shopperCov[si]
+                const sr = shopperRequired[si]
+                // Color: purple-strong when at/above target, purple-light
+                // when under target, slate-dim if neither demand nor staff.
+                const tone =
+                  sr === 0 && sa === 0 ? 'bg-slate-50 text-slate-300' :
+                  sa >= sr             ? 'bg-purple-100 text-purple-700' :
+                                         'bg-purple-50 text-purple-500 ring-1 ring-purple-300'
                 return (
                   <td key={si} className="px-0.5 py-1 text-center">
                     <div
                       className={clsx(
                         'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
-                        sa > 0
-                          ? 'bg-purple-100 text-purple-700'
-                          : 'bg-slate-50 text-slate-300',
+                        tone,
                       )}
-                      title={`${sa} shopper${sa === 1 ? '' : 's'} on this slot`}
+                      title={`Shoppers: ${sa} actual / ${sr} target`}
                     >
-                      {sa > 0 ? sa : '·'}
+                      {sa === 0 && sr === 0 ? '·' : sa}
+                      {sr > 0 && <span className="ml-0.5 opacity-50">/{sr}</span>}
                     </div>
                   </td>
                 )
               })}
               <td className="sticky right-0 bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
-                {shopperCov.reduce((s, a) => s + a, 0)}h
+                {shopperCov.reduce((s, a) => s + a, 0)}
+                {shopperRequired.some(v => v > 0) && (
+                  <span className="opacity-50">/{shopperRequired.reduce((s, a) => s + a, 0)}</span>
+                )}h
               </td>
             </tr>
           )}

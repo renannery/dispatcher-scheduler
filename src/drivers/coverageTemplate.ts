@@ -181,6 +181,24 @@ const COV_MON = [0,  9, 15, 20, 29, 29, 19, 19, 17, 19, 40, 40, 31, 12, 6]
 const COV_TUE = [0,  8, 14, 22, 28, 28, 18, 17, 15, 20, 35, 35, 23, 14, 6]
 const COV_WED = [0,  9, 12, 20, 27, 27, 18, 17, 17, 20, 34, 35, 24, 14, 6]
 
+// ─── Shopper coverage targets (separate pool, groceries) ─────────────────
+// 5-week historical average of shopper-only hours per slot, from the same
+// XLSX source. Sunday is 0 — shoppers don't work Sundays. Shown as a
+// SECOND row in the day-grid footer so ops can verify shopper presence
+// independently from driver coverage.
+const SHOP_COV_THU = [0, 1, 2, 2, 2, 2, 3, 2, 3, 4, 4, 4, 2, 0, 0]
+const SHOP_COV_FRI = [0, 1, 2, 3, 3, 3, 3, 2, 3, 3, 4, 4, 2, 0, 0]
+const SHOP_COV_SAT = [0, 1, 2, 3, 3, 3, 2, 3, 2, 4, 4, 4, 2, 0, 0]
+const SHOP_COV_SUN = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+const SHOP_COV_MON = [0, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 3, 2, 1, 0]
+const SHOP_COV_TUE = [0, 1, 2, 2, 3, 3, 2, 2, 3, 4, 4, 4, 2, 0, 0]
+const SHOP_COV_WED = [0, 1, 2, 2, 2, 3, 3, 2, 2, 4, 4, 4, 3, 0, 0]
+
+export const SHOPPER_COVERAGE: Record<number, number[]> = {
+  0: SHOP_COV_SUN, 1: SHOP_COV_MON, 2: SHOP_COV_TUE, 3: SHOP_COV_WED,
+  4: SHOP_COV_THU, 5: SHOP_COV_FRI, 6: SHOP_COV_SAT,
+}
+
 export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
   0: { dayOfWeek: 0, dayName: 'Sunday',    slots: DRIVER_SLOTS, requiredCoverage: COV_SUN, shiftPatterns: WEEKEND_PATTERNS },
   1: { dayOfWeek: 1, dayName: 'Monday',    slots: DRIVER_SLOTS, requiredCoverage: COV_MON, shiftPatterns: WEEKDAY_PATTERNS },
