@@ -387,9 +387,23 @@ export function generateDriverSchedule({
         // The quadratic length penalty below makes overflow rare
         // (e.g. with max=8, going to 9h costs 6000 score, only worth
         // it when the extra hour hits a critically short slot).
-        const perDayTarget = Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK)
+        //
+        // SPREAD-ACROSS-6-DAYS: instead of `ceil(cap/6)` which leaves a
+        // 3h sliver at the end of the week (5×8h=40h, 3h<min=4h → off
+        // on day 6 → 2 days off total), divide the driver's REMAINING
+        // hours by the REMAINING work-week days. This makes the per-day
+        // target shrink as the week progresses, so a cap=43 driver does
+        // ~7h shifts early and an 8h shift at the end, getting their
+        // 6th day fitted in. Without this, 57% of driver-weeks defaulted
+        // to 2 days off.
+        const daysAlreadyWorkedThisWeek = daysWorked[d.id][wLabel] ?? 0
+        const workDaysLeft = Math.max(1, MAX_DAYS_PER_WEEK - daysAlreadyWorkedThisWeek)
+        const calendarDaysLeft = Math.max(1, remainingDows.length)  // includes today
+        const spreadDays = Math.min(workDaysLeft, calendarDaysLeft)
+        const spreadTarget = Math.ceil(remaining / spreadDays)
+        const perDayTarget = Math.min(Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK), spreadTarget)
         const softMax = Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS, MAX_HOURS_PER_DAY)
-        const dailyCap = Math.min(remaining, softMax)
+        const dailyCap = Math.min(remaining, softMax, Math.max(effectiveMin, spreadTarget))
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
