@@ -230,10 +230,13 @@ export const DRIVER_DAY_TEMPLATES: Record<number, DriverDayTemplate> = {
 // further clamped by this; if you want shifts longer than 11h, raise this AND
 // add a corresponding pattern (a 12h shift with no pattern available won't help).
 export const MAX_HOURS_PER_DAY = 11
-export const DEFAULT_PART_TIME_CAP = 30
-// Legal pre-overtime weekly cap for full-timers: 45h. Hours beyond this
-// are weekly overtime per labor law.
-export const DEFAULT_FULL_TIME_CAP = 45
+// Ops-preferred default caps (Ops sets these explicitly per the user;
+// they sit below the legal max so the +10% buffer can absorb a few
+// over-cap hours without crossing into legal weekly overtime).
+//   FT default: 42h (legal max 45h)
+//   PT default: 28h (legal max 30h)
+export const DEFAULT_PART_TIME_CAP = 28
+export const DEFAULT_FULL_TIME_CAP = 42
 
 // Legal pre-overtime daily ceiling: 9h. Used both as the default value of
 // the Period step's `maxHoursPerDay` knob AND as the absolute clamp for

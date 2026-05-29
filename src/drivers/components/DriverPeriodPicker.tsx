@@ -196,7 +196,7 @@ export function DriverPeriodPicker() {
               max={60}
               step={1}
               value={fullTimeCap}
-              onChange={(e) => setFullTimeCap(Math.max(20, Math.min(60, Number(e.target.value) || 40)))}
+              onChange={(e) => setFullTimeCap(Math.max(20, Math.min(60, Number(e.target.value) || 42)))}
               className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
             />
           </div>
@@ -210,13 +210,13 @@ export function DriverPeriodPicker() {
               max={40}
               step={1}
               value={partTimeCap}
-              onChange={(e) => setPartTimeCap(Math.max(5, Math.min(40, Number(e.target.value) || 30)))}
+              onChange={(e) => setPartTimeCap(Math.max(5, Math.min(40, Number(e.target.value) || 28)))}
               className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
             />
           </div>
         </div>
         <p className="-mt-3 text-xs text-slate-400">
-          Defaults: 40h full-time, 30h part-time.
+          Defaults: 42h full-time, 28h part-time.
         </p>
 
         <div className="flex flex-col gap-1.5">
