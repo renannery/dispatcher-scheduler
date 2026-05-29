@@ -236,6 +236,29 @@ export function generateDriverSchedule({
     iterationDates.push(...sorted)
   }
 
+  // Deterministically shuffled driver order, used as the rotation base.
+  // The simple `(dayIndex % drivers.length)` rotation only cycles through
+  // 14 indices (one per iteration day) — on rosters bigger than 14, drivers
+  // beyond that slice NEVER get "first pick" and end up systematically
+  // bottom-of-queue. Real-roster data on 88-driver snapshots showed A-C
+  // drivers averaging 78-82h/2wk vs D+ averaging 65h — purely a position-in-
+  // array bias from alphabetical CSV imports.
+  //
+  // Shuffling once at the start (seeded so Regenerate is reproducible)
+  // breaks the bias: the rotation now walks a randomized order, so
+  // "first pick" is spread fairly across the whole pool.
+  function fnv1a(str: string): number {
+    let h = 2166136261
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i)
+      h = Math.imul(h, 16777619)
+    }
+    return h >>> 0
+  }
+  const shuffledDrivers = [...drivers].sort((a, b) =>
+    fnv1a(a.id + ':' + seed) - fnv1a(b.id + ':' + seed)
+  )
+
   // Seed shifts the rotation starting point so each Regenerate yields a
   // different driver order — without it, the algorithm is deterministic and
   // Regenerate appears to do nothing.
@@ -347,11 +370,20 @@ export function generateDriverSchedule({
       const shopperSlotPriority = computePriority(shopperRequired, shopperShortfall)
 
       // Eligible drivers: not yet assigned today, under cap, night-rest OK for morning shifts.
-      // Rotate the base order by `dayIndex` so different drivers get "first pick"
-      // on different days when their weekly hours are tied — prevents the
-      // alphabetically-first driver from systematically losing hours.
-      const offset = drivers.length > 0 ? dayIndex % drivers.length : 0
-      const rotated = [...drivers.slice(offset), ...drivers.slice(0, offset)]
+      // Rotate the SHUFFLED order by `dayIndex * stride` so each day's
+      // "first pick" lands at a different EVENLY-SPACED point in the pool,
+      // not adjacent. With contiguous `dayIndex % len` rotation, dayIndex
+      // only reaches 14 distinct positions over a 2-week schedule — on
+      // rosters of 88 drivers, that left positions 14+ stuck at the bottom
+      // of every queue. Stride-based rotation (stride ≈ len / 14) walks
+      // through 14 widely-separated positions so each driver-section gets
+      // their turn at "first pick" once over the schedule horizon.
+      // Combined with the seeded shuffle above this eliminates the residual
+      // "drivers at top of array win" bias.
+      const len = shuffledDrivers.length
+      const stride = len > 0 ? Math.max(1, Math.ceil(len / 14)) : 1
+      const offset = len > 0 ? (dayIndex * stride) % len : 0
+      const rotated = [...shuffledDrivers.slice(offset), ...shuffledDrivers.slice(0, offset)]
       const candidates = rotated.filter((d) => {
         if (!available.includes(d) || assigned.has(d.id)) return false
         if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
@@ -545,7 +577,9 @@ export function generateDriverSchedule({
   // max (e.g. 5×8h → 5×9h = 45h cap), eating the leftover that could
   // have funded a 6th day. Adding-then-extending gives us 6 days at
   // ~7-8h each (more fair) instead of 5 days at max.
-  for (const d of drivers) {
+  // Iterates shuffledDrivers so cap-fill doesn't reintroduce alphabetical
+  // bias by always processing A-named drivers first.
+  for (const d of shuffledDrivers) {
     if (d.isShopper) continue  // shoppers always work 6 days already
     // Phase 1 add-shift also uses the BUFFERED cap so drivers can
     // pick up a new short shift on an off-day even when slightly past
@@ -642,7 +676,9 @@ export function generateDriverSchedule({
   //  - doesn't push any newly-covered slot beyond +15% over-cap
   //  - the new slot is within operating hours (required > 0)
   //  - the driver wasn't blocked off on that slot
-  for (const d of drivers) {
+  // Iterates shuffledDrivers so the extend pass doesn't favor early-
+  // alphabet drivers when distributing the leftover +1h hours.
+  for (const d of shuffledDrivers) {
     for (let i = 0; i < scheduleMap[d.id].length; i++) {
       const entry = scheduleMap[d.id][i]
       if (entry.isOff) continue
@@ -1106,11 +1142,30 @@ export function generateDriverSchedule({
   // so spread fairness wins over coverage strictness, but never blows past
   // double-staffing.
   const spreadFillTol = (req: number) => req <= 0 ? 0 : Math.max(1, Math.round(req * 0.25))
-  for (const d of drivers) {
+  // Per-day demand sum, used to sort each driver's off-days busiest-first
+  // when picking which off-day to spread onto. Without this Phase 6 just
+  // grabs the chronologically-first off-day, missing the user's surplus-
+  // capacity goal: "with 89 drivers Friday peaks should easily be in gray
+  // (over-staffed)." Loading busy days first uses the extra bodies where
+  // they have the most value.
+  const dayDemand = new Map<string, number>()
+  for (const date of allDates) {
+    const dow = date.getDay()
+    const sum = effectiveCoverage(dow, coverageScale, coverageOverrides).reduce((a, b) => a + b, 0)
+    dayDemand.set(format(date, 'yyyy-MM-dd'), sum)
+  }
+  for (const d of shuffledDrivers) {
     if (d.isShopper) continue  // shoppers already work all 6 non-Sundays
-    for (let i = 0; i < scheduleMap[d.id].length; i++) {
+    // Walk this driver's off-days BUSIEST-FIRST so spare capacity lands
+    // on Fri/Sat before Tue/Wed.
+    const offEntryIndexes = scheduleMap[d.id]
+      .map((e, idx) => ({ idx, demand: e.isOff ? (dayDemand.get(e.date) ?? 0) : -1 }))
+      .filter(x => x.demand >= 0)
+      .sort((a, b) => b.demand - a.demand)
+      .map(x => x.idx)
+    for (const i of offEntryIndexes) {
       const entry = scheduleMap[d.id][i]
-      if (!entry.isOff) continue
+      if (!entry.isOff) continue  // may have been filled by an earlier iteration
       const dateStr = entry.date
       const dow = entry.dayOfWeek
       const wLabel = weekLabel(parseISO(dateStr))
