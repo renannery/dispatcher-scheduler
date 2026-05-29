@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText,
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 
 import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
@@ -404,6 +405,7 @@ export function DriverScheduleGrid() {
     weekendRotationOffset,
     setSchedule,
     setStep,
+    setDateRange,
     setFullTimeCap,
     setMaxHoursPerDay,
     setCoverageScale,
@@ -510,6 +512,24 @@ export function DriverScheduleGrid() {
       shortfallBefore: health.weeklyShortfallHours,
       shortfallAfter: simHealth.weeklyShortfallHours,
     })
+  }
+
+  // Inline date-range edit + regenerate from the Schedule header. Lets
+  // ops shift the schedule window (e.g. "actually start next Monday")
+  // without walking back to the Period step.
+  const handleDateRangeChange = (s: string, e: string) => {
+    setDateRange(s, e)
+    if (!s || !e || e < s) return
+    regenSeed.current++
+    const fresh = generateDriverSchedule({
+      drivers, startDate: s, endDate: e, timeOff,
+      fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay,
+      seed: weekendRotationOffset + regenSeed.current,
+    })
+    setSchedule(fresh)
+    setExpandedDates(new Set())
+    setSimResult(null)
   }
 
   // Apply edits from the suggestions banner and regenerate in one shot.
@@ -659,12 +679,21 @@ export function DriverScheduleGrid() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        <div className="text-sm text-slate-500">
-          <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
-          <span className="ml-1 font-semibold text-slate-700">{schedule.dates.length}</span> days ·
-          full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
-          part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
+      <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        <div className="flex flex-col gap-2">
+          <DateRangePicker
+            startDate={startDate}
+            endDate={endDate}
+            onChange={handleDateRangeChange}
+            label="Schedule period"
+            compact
+            showStats
+          />
+          <div className="text-xs text-slate-500">
+            <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
+            full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
+            part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
+          </div>
         </div>
         <div className="flex gap-2">
           <button

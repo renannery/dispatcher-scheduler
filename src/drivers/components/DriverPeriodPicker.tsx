@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 import { parseSnapshot, type DriverSnapshotData } from '@/utils/snapshot'
@@ -80,7 +81,6 @@ export function DriverPeriodPicker() {
   const [absenceFormOpen, setAbsenceFormOpen] = useState<Set<string>>(new Set())
 
   const totalDays = differenceInDays(parseISO(endDate), parseISO(startDate)) + 1
-  const totalWeeks = Math.ceil(totalDays / 7)
   const isValid = startDate && endDate && endDate >= startDate && totalDays >= 7
 
   const handleGenerate = () => {
@@ -178,28 +178,12 @@ export function DriverPeriodPicker() {
 
       {/* Date range */}
       <div className="flex flex-col gap-5">
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-slate-600">Schedule starts on</label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => {
-              const s = e.target.value
-              setDateRange(s, endDate < s ? s : endDate)
-            }}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-slate-600">Schedule ends on</label>
-          <input
-            type="date"
-            value={endDate}
-            min={startDate}
-            onChange={(e) => setDateRange(startDate, e.target.value)}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-          />
-        </div>
+        <DateRangePicker
+          startDate={startDate}
+          endDate={endDate}
+          onChange={setDateRange}
+          label="Schedule period"
+        />
 
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
@@ -287,27 +271,8 @@ export function DriverPeriodPicker() {
       </div>
 
       {isValid && (
-        <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-4 text-center">
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <div className="text-2xl font-bold text-blue-700">{totalDays}</div>
-              <div className="text-xs text-blue-500">days</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-blue-700">{totalWeeks}</div>
-              <div className="text-xs text-blue-500">week{totalWeeks !== 1 ? 's' : ''}</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-blue-700">≤{fullTimeCap}h</div>
-              <div className="text-xs text-blue-500">full-time</div>
-            </div>
-          </div>
-          <p className="mt-3 text-xs text-blue-600">
-            {format(parseISO(startDate), 'MMM d, yyyy')} → {format(parseISO(endDate), 'MMM d, yyyy')}
-          </p>
-          <p className="mt-1 text-xs text-blue-500">
-            Mon–Fri: 9 AM – 11 PM · Sat–Sun: 8 AM – 11 PM · work week Thu → Wed
-          </p>
+        <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-3 text-center text-xs text-blue-600">
+          Mon–Fri: 9 AM – 11 PM · Sat–Sun: 8 AM – 11 PM · work week Thu → Wed
         </div>
       )}
 

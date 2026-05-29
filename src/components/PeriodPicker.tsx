@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 import { SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
@@ -143,30 +144,12 @@ export function PeriodPicker() {
       </div>
 
       {/* Date range */}
-      <div className="flex flex-col gap-5">
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-slate-600">Schedule starts on</label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => {
-              const s = e.target.value
-              setDateRange(s, endDate < s ? s : endDate)
-            }}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-slate-600">Schedule ends on</label>
-          <input
-            type="date"
-            value={endDate}
-            min={startDate}
-            onChange={(e) => setDateRange(startDate, e.target.value)}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-          />
-        </div>
-      </div>
+      <DateRangePicker
+        startDate={startDate}
+        endDate={endDate}
+        onChange={setDateRange}
+        label="Schedule period"
+      />
 
       {/* Period summary */}
       {isValid && (
