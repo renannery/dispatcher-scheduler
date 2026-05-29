@@ -77,7 +77,6 @@ export function RecurringBlocksEditor({ blocks, slots, accentColor, onToggle, on
     },
   ]
 
-  const dayHasAnyBlock = (dow: number) => dowBlocked(dow) > 0
   const dayFullyBlocked = (dow: number) => dowBlocked(dow) === N
 
   const toggleWholeDay = (dow: number) => {
@@ -123,19 +122,41 @@ export function RecurringBlocksEditor({ blocks, slots, accentColor, onToggle, on
                 </th>
               ))}
               <th className="px-2 py-1 text-right font-medium text-slate-400">Σ</th>
-              {onSetAll && <th className="px-1 py-1 text-right font-medium text-slate-400" />}
             </tr>
           </thead>
           <tbody>
             {DOW_LABELS.map((dowName, dow) => (
               <tr key={dow}>
-                <td className="sticky left-0 z-10 bg-slate-50/50 px-1.5 py-0.5 pr-2 text-left font-semibold text-slate-600">
-                  <span className="flex items-center gap-1">
-                    {accentColor && (
-                      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accentColor }} />
-                    )}
-                    {dowName}
-                  </span>
+                <td className="sticky left-0 z-10 bg-slate-50/50 px-1.5 py-0.5 pr-2 text-left">
+                  {onSetAll ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleWholeDay(dow)}
+                      title={
+                        dayFullyBlocked(dow)
+                          ? `Click ${dowName} to mark the whole day AVAILABLE`
+                          : `Click ${dowName} to block the whole day (driver unavailable)`
+                      }
+                      className={clsx(
+                        'flex items-center gap-1 rounded px-1 py-0.5 font-semibold transition',
+                        dayFullyBlocked(dow)
+                          ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                          : 'text-slate-600 hover:bg-slate-200',
+                      )}
+                    >
+                      {accentColor && (
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accentColor }} />
+                      )}
+                      {dowName}
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-1 px-1 py-0.5 font-semibold text-slate-600">
+                      {accentColor && (
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accentColor }} />
+                      )}
+                      {dowName}
+                    </span>
+                  )}
                 </td>
                 {slots.map((s, si) => {
                   const blocked = isBlocked(dow, si)
@@ -159,30 +180,15 @@ export function RecurringBlocksEditor({ blocks, slots, accentColor, onToggle, on
                 <td className="px-2 py-0.5 text-right text-slate-500">
                   {dowBlocked(dow) > 0 ? `${dowBlocked(dow)}h` : '—'}
                 </td>
-                {onSetAll && (
-                  <td className="px-1 py-0.5 text-right">
-                    <button
-                      type="button"
-                      onClick={() => toggleWholeDay(dow)}
-                      title={dayFullyBlocked(dow) ? `Make ${dowName} fully available` : `Block all of ${dowName}`}
-                      className={clsx(
-                        'rounded border px-1 py-0.5 text-[9px] font-semibold transition',
-                        dayHasAnyBlock(dow)
-                          ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100'
-                          : 'border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50',
-                      )}
-                    >
-                      {dayFullyBlocked(dow) ? 'free' : 'block'}
-                    </button>
-                  </td>
-                )}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <p className="mt-2 text-[10px] text-slate-400">
-        Red cells = driver unavailable. White cells = available. Recurring weekly availability —
+        Red cells = driver unavailable. White cells = available. Click the
+        <span className="font-semibold text-slate-500"> day name</span> (Mon, Tue, …) to
+        block or unblock the whole day at once. Recurring weekly availability —
         applies to every week the auto-scheduler runs.
       </p>
     </div>
