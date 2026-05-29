@@ -687,11 +687,29 @@ export function generateDriverSchedule({
     for (let s = 0; s < required.length; s++) shortfall += Math.max(0, required[s] - cov[s])
     if (shortfall === 0) continue
 
-    // Build OT-eligible pool for THIS week: top OT_FLEET_PCT FT drivers
-    // by current weekly hours (most-utilized = most-willing to take OT).
-    const candidates = [...ftDrivers]
-      .sort((a, b) => (weekHours[b.id][wLabel] ?? 0) - (weekHours[a.id][wLabel] ?? 0))
-      .slice(0, otBudget)
+    // Build OT-eligible pool for THIS week. Two layers of fairness:
+    //   1. STRIDE-SELECT 5 drivers spread across the alphabet (not
+    //      5 alphabetically-adjacent ones). For a 53-FT fleet and
+    //      budget=5, stride=10 → pick indexes [0,10,20,30,40].
+    //   2. ROTATE the start offset per week so different drivers get
+    //      picked each week. Offset advances by 1 each week so over
+    //      `stride` weeks every driver has been visited once.
+    // Without this, ties on weekHours broke alphabetically and the
+    // A-named drivers always got OT.
+    const weekIdx = weekIndexByLabel.get(wLabel) ?? 0
+    const fleetSize = ftDrivers.length
+    const stride = fleetSize > 0 ? Math.max(1, Math.floor(fleetSize / otBudget)) : 1
+    const startOffset = fleetSize > 0 ? (weekIdx + seed) % fleetSize : 0
+    const candidates: Driver[] = []
+    const seen = new Set<string>()
+    for (let i = 0; i < otBudget && i < fleetSize; i++) {
+      const idx = (startOffset + i * stride) % fleetSize
+      const d = ftDrivers[idx]
+      if (!seen.has(d.id)) {
+        candidates.push(d)
+        seen.add(d.id)
+      }
+    }
 
     for (const d of candidates) {
       // Per-driver OT hours used so far this week.
