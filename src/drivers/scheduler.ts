@@ -5,6 +5,7 @@ import {
   DRIVER_SLOTS,
   LEGAL_DAILY_MAX_HOURS,
   MAX_HOURS_PER_DAY,
+  SHOPPER_COVERAGE,
   effectiveCoverage,
 } from './coverageTemplate'
 import type {
@@ -242,6 +243,8 @@ export function generateDriverSchedule({
       .filter((p) => slotHours(p) <= MAX_HOURS_PER_DAY)
 
     const actualCov = new Array(DRIVER_SLOTS.length).fill(0)
+    const shopperCov = new Array(DRIVER_SLOTS.length).fill(0)
+    const shopperRequired = SHOPPER_COVERAGE[dow] ?? new Array(DRIVER_SLOTS.length).fill(0)
     const assigned = new Set<string>()
 
     // Iteratively pick the most-loaded slot still under-covered, then assign
@@ -273,19 +276,23 @@ export function generateDriverSchedule({
       // trigger — yet losing pattern selection to over-covered PM
       // slots. The new tier nudges drivers earlier without trampling
       // PM peak coverage entirely.
-      const slotPriority: number[] = []
-      for (let s = 0; s < required.length; s++) {
-        if (shortfall[s] > 0 && required[s] > 0) {
-          const ratio = shortfall[s] / required[s]
-          let priority = Math.max(shortfall[s] * 5, ratio * 50)
+      function computePriority(req: number[], shrt: number[]): number[] {
+        return req.map((r, s) => {
+          if (shrt[s] <= 0 || r <= 0) return 0
+          const ratio = shrt[s] / r
+          let priority = Math.max(shrt[s] * 5, ratio * 50)
           if (ratio >= 0.8) priority *= 5
           else if (ratio >= 0.5) priority *= 3
           else if (ratio >= 0.25) priority *= 2
-          slotPriority[s] = priority
-        } else {
-          slotPriority[s] = 0
-        }
+          return priority
+        })
       }
+      const slotPriority = computePriority(required, shortfall)
+      // Parallel shopper shortfall/priority — shoppers are scored
+      // against SHOPPER demand (groceries), not driver demand.
+      const shopperShortfall = shopperRequired.map((r, s) =>
+        Math.max(0, r - shopperCov[s]))
+      const shopperSlotPriority = computePriority(shopperRequired, shopperShortfall)
 
       // Eligible drivers: not yet assigned today, under cap, night-rest OK for morning shifts.
       // Rotate the base order by `dayIndex` so different drivers get "first pick"
@@ -298,14 +305,17 @@ export function generateDriverSchedule({
         if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK) return false
         // Skip drivers whose designated off day is today — rotates off
         // days across the week so Wed isn't everyone's default off day.
-        // EXCEPT in two cases (designated off is OVERRIDDEN):
+        // EXCEPT in three cases (designated off is OVERRIDDEN):
+        //   0. The driver is a SHOPPER — their only off day is Sunday
+        //      (handled elsewhere), so they always work Mon-Sat. Skip
+        //      the rotation filter entirely for them.
         //   1. The day still has ANY coverage shortfall — pulling the
         //      driver in helps fill gaps. This is the dominant fix for
         //      Wed, where the demand-weighted pool puts 25% of drivers
         //      off but Wed's actual demand (312h) still needs them.
         //   2. The driver is significantly under their weekly cap
         //      (< 70%) — let them use their hours rather than strand cap.
-        if (designatedOffDow(d.id, wLabel) === dow) {
+        if (!d.isShopper && designatedOffDow(d.id, wLabel) === dow) {
           const usedFraction = (weekHours[d.id][wLabel] ?? 0) / capOf(d)
           const shouldOverride = totalShort > 0 || usedFraction < 0.7
           if (!shouldOverride) return false
@@ -381,15 +391,19 @@ export function generateDriverSchedule({
           if (firstActive(p) <= MORNING_SLOT_THRESHOLD && workedNightYesterday(d.id)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue  // pattern conflicts with blocked slot
 
-          // Hard over-coverage cap: refuse any pattern that would push a
-          // slot beyond target + coverageTolerance(target). Tried
-          // relaxing this for patterns that also fill shortfall, but
-          // benchmarking showed it INCREASED severe gaps (relaxed runs:
-          // 130 → 198 severe) because freed-up dirty patterns out-scored
-          // cleaner gap-only ones. The cap stays as a hard constraint.
+          // Score shoppers against SHOPPER demand, others against driver
+          // demand. This is the single key change: shopper shifts now
+          // get picked to fill GROCERY coverage, not driver coverage.
+          const myReq = d.isShopper ? shopperRequired : required
+          const myCov = d.isShopper ? shopperCov : actualCov
+          const myShort = d.isShopper ? shopperShortfall : shortfall
+          const myPriority = d.isShopper ? shopperSlotPriority : slotPriority
+
+          // Hard over-coverage cap: refuse any pattern that would push
+          // this pool's slot beyond target + tolerance.
           let exceedsLimit = false
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && actualCov[s] + 1 > required[s] + coverageTolerance(required[s])) {
+            if (p[s] && myCov[s] + 1 > myReq[s] + coverageTolerance(myReq[s])) {
               exceedsLimit = true
               break
             }
@@ -397,37 +411,20 @@ export function generateDriverSchedule({
           if (exceedsLimit) continue
 
           // Score = base contribution + most-starved-slot priority boost.
-          //
-          // Base: shortfall × 10 (absolute demand) + 50 × shortfall/target
-          // (relative urgency). Pure absolute scoring picks "10 AM-4 PM"
-          // over "9 AM-3 PM" because mid-day demand outweighs morning, so
-          // a per-slot priority boost is added separately below.
-          //
-          // Over-covered slots are PENALIZED (not just zero-rewarded).
-          // For each unit a slot is already strictly OVER target, the
-          // pattern loses 700 points per unit. AT-target slots get a
-          // small +1 "spare capacity" reward so drivers with remaining
-          // weekly cap can still pick up shifts on already-covered
-          // days (otherwise full-timers strand 10h+ unused on slow
-          // days like Tue/Wed → end up with 2 days off).
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
-            if (shortfall[s] > 0) {
-              const t = required[s] || shortfall[s]
-              score += shortfall[s] * 10 + (shortfall[s] / t) * 50
+            if (myShort[s] > 0) {
+              const t = myReq[s] || myShort[s]
+              score += myShort[s] * 10 + (myShort[s] / t) * 50
             } else {
-              const overage = actualCov[s] - required[s]
-              if (overage > 0) score -= overage * 700  // already over → discourage piling on
-              else score += 1                          // exactly at target → small spare-fill bonus
+              const overage = myCov[s] - myReq[s]
+              if (overage > 0) score -= overage * 700
+              else score += 1
             }
           }
-          // Priority boost = sum of (slot priority × 20) for slots the
-          // pattern covers. Multiple critical slots stack, so a pattern
-          // hitting Sat 6 PM AND 7 PM scores much higher than one hitting
-          // only one of them.
           for (let s = 0; s < p.length; s++) {
-            if (p[s] && slotPriority[s] > 0) score += slotPriority[s] * 20
+            if (p[s] && myPriority[s] > 0) score += myPriority[s] * 20
           }
           // Soft length preference: pay a *quadratic* penalty for each
           // hour above `perDayTarget - 1` (7h for the default cap=45).
@@ -461,14 +458,11 @@ export function generateDriverSchedule({
             date: dateStr, dayLabel, dayOfWeek: dow,
             slots: [...bestPattern], totalHours: h, isOff: false,
           })
-          // Shoppers belong to a separate operational pool (groceries) —
-          // their shifts get scheduled but DON'T count toward driver
-          // coverage targets. Without this, the algorithm would credit
-          // shopper hours against driver demand and under-staff for
-          // real driver work.
-          if (!d.isShopper) {
-            for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) actualCov[s]++
-          }
+          // Increment the right pool's coverage based on driver type.
+          // Drivers contribute to actualCov (driver demand); shoppers
+          // contribute to shopperCov (groceries demand).
+          const targetCov = d.isShopper ? shopperCov : actualCov
+          for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) targetCov[s]++
           assigned.add(d.id)
           placed = true
           break
