@@ -49,11 +49,12 @@ function patternHasBreak(p: boolean[]): boolean {
 }
 
 /** Minimum shift length above which a break (≥1h) is required.
- *   Drivers: 9h+ (legal max daily; standard restaurant ops)
- *   Shoppers: 8h+ (stricter — they're on their feet pushing carts;
- *     ops policy is no continuous 8h grocery runs without a break) */
-function breakRequiredAt(d: Driver): number {
-  return d.isShopper ? 8 : 9
+ *  Legal/ops rule: ANY 8h+ shift must include at least one hour of
+ *  break. Applies to drivers and shoppers uniformly — the previous
+ *  9h-driver / 8h-shopper split was relaxed too far on the driver
+ *  side; ops escalated it to 8h-for-all. */
+function breakRequiredAt(_d: Driver): number {
+  return 8
 }
 
 function weekLabel(date: Date): string {
@@ -845,17 +846,11 @@ export function generateDriverSchedule({
         const currentHours = entry.totalHours ?? 0
         if (currentHours >= LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS) continue
         const slots = entry.slots
-        // Ops rule: 9h+ shifts MUST include a break. If extending would
-        // make this a 9h-continuous shift, skip — OT bonus has to wait
-        // until another driver's shift can take the extra hour.
-        if (currentHours + 1 >= 9) {
-          let hasBreak = false
-          const f0 = slots.findIndex(s => s)
-          let l0 = -1
-          for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { l0 = z; break }
-          for (let i = f0 + 1; i < l0; i++) if (!slots[i]) { hasBreak = true; break }
-          if (!hasBreak) continue
-        }
+        // Ops rule: 8h+ shifts MUST include a break (uniform for drivers
+        // and shoppers). If extending into OT would push a still-continuous
+        // shift past 8h, skip — OT bonus waits for another driver whose
+        // shift can absorb the extra hour.
+        if (currentHours + 1 >= breakRequiredAt(d) && !patternHasBreak(slots)) continue
         const first = slots.findIndex(s => s)
         let last = -1
         for (let z = slots.length - 1; z >= 0; z--) if (slots[z]) { last = z; break }

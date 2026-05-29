@@ -74,7 +74,10 @@ const WEEKDAY_PATTERNS: number[][] = [
   // to 10 AM starts even when there's a 9 AM coverage gap, because the
   // existing 9 AM patterns are either 4-6h (too short to absorb their
   // cap) or 9-11h (penalized by the length quadratic).
-  [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],  // 8h:  9 AM – 5 PM (continuous, covers morning gap)
+  // LEGACY: 8h continuous 9 AM – 5 PM filtered out at runtime by the
+  // 8h-must-have-break rule. Replaced effectively by the 9 AM – 6 PM
+  // with-break variant below.
+  // [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],  // 8h:  9 AM – 5 PM (continuous)
   [0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],  // 7h:  9 AM – 4 PM (continuous, lighter morning)
   [0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0],  // 8h:  9 AM – 6 PM (1h lunch break)
   [0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0],  // 8h:  11 AM – 9 PM
@@ -89,8 +92,13 @@ const WEEKDAY_PATTERNS: number[][] = [
   // 12-9 PM and 1-10 PM continuous 9h with break versions.
   [0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0],  // 9h:  12 PM – 10 PM (1h break 4-5 PM)
   [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1],  // 9h:  1 PM – 11 PM (1h break 5-6 PM)
-  [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],  // 8h:  12 PM – 8 PM (continuous — 8h OK without break)
-  [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 8h:  1 PM – 9 PM (continuous)
+  // LEGACY: these two continuous 8h patterns stay in the pool but are
+  // filtered out at runtime by the 8h-must-have-break rule (see
+  // breakRequiredAt in scheduler.ts). They're kept as commented-out
+  // documentation so future ops changes can re-enable them if the rule
+  // ever relaxes.
+  // [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],  // 8h:  12 PM – 8 PM (continuous)
+  // [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 8h:  1 PM – 9 PM (continuous)
   // Mid-afternoon
   [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0],  // 7h:  12 PM – 9 PM
   [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 7h:  2 PM – 9 PM
