@@ -7,6 +7,8 @@ import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 
 import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
+
 import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
 import { shuffleDriverSchedules } from '../shuffler'
 import { useDriverStore } from '../store'
@@ -420,6 +422,36 @@ export function DriverScheduleGrid() {
   // stack lengths instead — those re-render the component when toggle hits.
   const undoCount = useDriverStore((s) => s.scheduleUndoStack.length)
   const redoCount = useDriverStore((s) => s.scheduleRedoStack.length)
+
+  // Per-minute tick that drives the current-time indicator. Each tick
+  // bumps a state value so `caymanNow()` is re-read on the next render
+  // and any visible <NowLine /> re-positions. Aligning the first
+  // interval to the next wall-clock minute boundary makes the line jump
+  // exactly when the minute changes (not e.g. 47s late).
+  const [nowTick, setNowTick] = useState(0)
+  useEffect(() => {
+    const now = new Date()
+    const msToNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
+    let interval: number | undefined
+    const firstTimer = window.setTimeout(() => {
+      setNowTick((t) => t + 1)
+      interval = window.setInterval(() => setNowTick((t) => t + 1), 60_000)
+    }, msToNextMinute)
+    return () => {
+      window.clearTimeout(firstTimer)
+      if (interval !== undefined) window.clearInterval(interval)
+    }
+  }, [])
+  // Read on every render. nowTick is in deps even though we don't use
+  // its value — its only purpose is forcing this re-render each minute.
+  void nowTick
+  const now = caymanNow()
+  // Ops opens 8 AM, closes 11 PM. Outside that range → no line shown
+  // (caller passes undefined props to DriverDayGrid).
+  const nowSlotIdx = (now.hours >= 8 && now.hours < 23) ? now.hours - 8 : -1
+  const nowMinuteFrac = now.minutes / 60
+  const nowDateISO = now.dateISO
+  const nowLabel = `NOW · ${caymanTimeLabel()}`
   const canUndo = undoCount > 0
   const canRedo = redoCount > 0
 
@@ -1096,6 +1128,14 @@ export function DriverScheduleGrid() {
                       {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                     </span>
                     <span className="min-w-[140px] text-sm font-semibold text-slate-800">{dateInfo.dayLabel}</span>
+                    {dateInfo.date === nowDateISO && (
+                      <span
+                        className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
+                        title={`Today (${nowLabel}, Cayman local time). Expand this row to see the live time indicator on the grid.`}
+                      >
+                        {nowSlotIdx >= 0 ? nowLabel : 'TODAY · CLOSED'}
+                      </span>
+                    )}
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
                     {gapSlots > 0 && (
                       <span
@@ -1115,6 +1155,25 @@ export function DriverScheduleGrid() {
                         dayLabel={dateInfo.dayLabel}
                         dayOfWeek={dateInfo.dayOfWeek}
                         driverIdFilter={matchedDriverIds}
+                        // Only the day-card matching today's Cayman date
+                        // AND only when we're inside ops hours gets the
+                        // now-line. Every other card sees undefined →
+                        // NowLine doesn't mount.
+                        nowSlotIdx={
+                          dateInfo.date === nowDateISO && nowSlotIdx >= 0
+                            ? nowSlotIdx
+                            : undefined
+                        }
+                        nowMinuteFrac={
+                          dateInfo.date === nowDateISO && nowSlotIdx >= 0
+                            ? nowMinuteFrac
+                            : undefined
+                        }
+                        nowLabel={
+                          dateInfo.date === nowDateISO && nowSlotIdx >= 0
+                            ? nowLabel
+                            : undefined
+                        }
                       />
                     </div>
                   )}

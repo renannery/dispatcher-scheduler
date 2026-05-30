@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useState, useMemo } from 'react'
+import { useRef, useState, useMemo } from 'react'
 
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
@@ -8,6 +8,7 @@ import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEE
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
+import { NowLine } from './NowLine'
 import { displayName, shortHour } from '../utils'
 
 // Work-week boundary: Thu (dow=4) starts a new week. Returns the
@@ -49,15 +50,27 @@ interface Props {
   dayOfWeek: number
   /** When set, only drivers with these ids appear (overrides showOff toggle). */
   driverIdFilter?: Set<string> | null
+  /** When set, draws a vertical "current time" line at this slot+frac.
+   *  Only the parent (DriverScheduleGrid) decides if today is in range
+   *  and within ops hours; this component just renders the line when
+   *  the props are present. */
+  nowSlotIdx?: number
+  nowMinuteFrac?: number
+  nowLabel?: string
 }
 
-export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter }: Props) {
+export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel }: Props) {
   const toggleDriverSlot = useDriverStore((s) => s.toggleDriverSlot)
   const timeOff = useDriverStore((s) => s.timeOff)
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
   const fullTimeCap = useDriverStore((s) => s.fullTimeCap)
   const partTimeCap = useDriverStore((s) => s.partTimeCap)
   const template = DRIVER_DAY_TEMPLATES[dayOfWeek]
+  // Ref to the inner <table> so the NowLine can measure column positions
+  // via DOM rather than guessing from CSS. The table sits inside the
+  // `position: relative` wrapper so the line's `left` is anchored
+  // correctly.
+  const tableRef = useRef<HTMLTableElement | null>(null)
   const required = template?.requiredCoverage ?? DRIVER_SLOTS.map(() => 0)
   const actual = schedule.coverageActual[date] ?? DRIVER_SLOTS.map(() => 0)
   const [showOff, setShowOff] = useState(false)
@@ -123,7 +136,11 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     // Page-level horizontal scrolling kicks in on narrow viewports if the
     // table is wider than the page — fine for the typical ~15-column
     // schedule on desktop browsers.
-    <div>
+    //
+    // `position: relative` so the NowLine (rendered as an absolutely-
+    // positioned child) anchors to this wrapper's coordinate system,
+    // not the document body.
+    <div className="relative">
       {/* Toggle for hidden OFF rows (only when there are any and no external filter) */}
       {hiddenOffCount > 0 && (
         <div className="flex items-center justify-end px-4 py-1.5 text-[11px] text-slate-400">
@@ -138,7 +155,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
           </button>
         </div>
       )}
-      <table className="min-w-full border-separate border-spacing-0 text-xs">
+      <table ref={tableRef} className="min-w-full border-separate border-spacing-0 text-xs">
         <thead>
           {/*
             Each <th> in the header row sticks to the top of the viewport
@@ -161,6 +178,7 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
             {visibleSlotIndices.map((si) => (
               <th
                 key={si}
+                data-slot={si}
                 className={clsx(
                   'sticky top-0 z-20 min-w-[48px] px-1 py-2 text-center font-medium whitespace-nowrap',
                   // Column header: red highlight when this slot is short
@@ -546,6 +564,18 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
           )}
         </tfoot>
       </table>
+      {/* Current-time indicator — only rendered when the parent
+          decided today falls within ops hours and this is today's
+          column. Anchors via tableRef, repositions itself when the
+          minute label changes or the table resizes. */}
+      {nowSlotIdx !== undefined && nowMinuteFrac !== undefined && nowLabel && (
+        <NowLine
+          tableRef={tableRef}
+          slotIdx={nowSlotIdx}
+          minuteFrac={nowMinuteFrac}
+          label={nowLabel}
+        />
+      )}
     </div>
   )
 }
