@@ -242,22 +242,23 @@ function Knob({ label, suffix, value, setValue, min, max, step = 1, format, hint
   )
 }
 
-// ─── Headcount-limited banner ────────────────────────────────────────────────
+// ─── Per-week headcount-limited banner ───────────────────────────────────────
 //
-// Shown when the scheduler couldn't reach the 40% coverage floor on one or
-// more priority slots even after all redistribution phases. Distinct from
-// the "Coverage is X hours short" suggestions banner: those are
-// distribution problems the optimizer might fix by tweaking knobs. This
-// banner is for slots where adding bodies is the only way out.
+// Shown inside each week card when the scheduler couldn't reach the 40%
+// coverage floor on one or more priority slots for THAT week, even after
+// all redistribution phases. Per-week so admins see the bad days right
+// above the day rows for those days, not as one giant top-of-page list
+// for multi-week schedules.
 //
-// Lists each affected slot (day + time + best achievable vs target) and
-// surfaces a rough driver-hours-needed estimate so ops can size the hire.
+// Distinct from the "Coverage is X hours short" suggestions banner: those
+// are distribution problems the optimizer might fix by tweaking knobs.
+// This banner is for slots where adding bodies is the only way out.
 
-interface HeadcountLimitedBannerProps {
+interface WeekHeadcountBannerProps {
   slots: import('../types').HeadcountLimitedSlot[]
 }
 
-function HeadcountLimitedBanner({ slots }: HeadcountLimitedBannerProps) {
+function WeekHeadcountBanner({ slots }: WeekHeadcountBannerProps) {
   if (slots.length === 0) return null
   // Group by date so the listing reads "Wed: 10 PM (2/5), 7 PM (21/36)"
   // instead of a flat per-slot dump.
@@ -275,25 +276,22 @@ function HeadcountLimitedBanner({ slots }: HeadcountLimitedBannerProps) {
   const approxDrivers = Math.max(maxDeficit, Math.ceil(totalHoursShort / 5))
 
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-red-300 bg-red-50 px-5 py-4 shadow-sm">
-      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
-      <div className="flex-1 text-sm text-red-900">
+    <div className="mx-5 mt-3 flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+      <div className="flex-1 text-xs text-red-900">
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-semibold">
-            {slots.length} slot{slots.length === 1 ? '' : 's'} can't reach the 40% coverage floor — current
-            headcount is too low here.
+            {slots.length} slot{slots.length === 1 ? '' : 's'} below the 40% floor — headcount is short here.
           </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold">
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold">
             <UserPlus className="h-3 w-3" />
             ~{approxDrivers} more driver{approxDrivers === 1 ? '' : 's'} needed
           </span>
+          <span className="text-[11px] text-red-700/80 tabular-nums">
+            ({totalHoursShort} driver-hour{totalHoursShort === 1 ? '' : 's'} short)
+          </span>
         </div>
-        <p className="mt-1 text-xs text-red-800/80">
-          The optimizer redistributed every available hour but still couldn't lift these slots — adding bodies is
-          the only fix. Distinct from the yellow/amber gaps above (those are distribution issues the suggestions
-          banner can address).
-        </p>
-        <div className="mt-3 grid gap-1.5 text-xs">
+        <div className="mt-2 grid gap-1">
           {[...byDate.entries()].map(([date, daySlots]) => (
             <div key={date} className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-semibold">{daySlots[0].dayLabel}:</span>
@@ -312,10 +310,6 @@ function HeadcountLimitedBanner({ slots }: HeadcountLimitedBannerProps) {
             </div>
           ))}
         </div>
-        <p className="mt-2 text-[11px] text-red-700/80 tabular-nums">
-          Total: <span className="font-bold">{totalHoursShort} driver-hours</span> short of the floor across{' '}
-          {slots.length} slot{slots.length === 1 ? '' : 's'}.
-        </p>
       </div>
     </div>
   )
@@ -768,12 +762,6 @@ export function DriverScheduleGrid() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Headcount-limited banner — sits ABOVE the suggestions banner
-          because it surfaces a different class of problem: slots the
-          optimizer literally cannot fix without more bodies, vs. the
-          suggestions banner's "you might fix this by bumping a knob".
-          Hidden when no priority floor slot fell below 40%. */}
-      <HeadcountLimitedBanner slots={schedule.headcountLimitedSlots ?? []} />
       {/* Inline suggestions banner — only when there's any shortfall.
           Lets ops bump cap / max h-day / coverage scale and regenerate
           without walking back to the Period step. */}
@@ -1196,6 +1184,14 @@ export function DriverScheduleGrid() {
                 </div>
               )}
             </div>
+
+            {/* Per-week headcount-limited banner — only renders when the
+                40% floor couldn't be held on at least one priority slot in
+                THIS week. Tucks just under the week header so the bad
+                days are right above their day rows. */}
+            <WeekHeadcountBanner
+              slots={(schedule.headcountLimitedSlots ?? []).filter((s) => weekDateSet.has(s.date))}
+            />
 
             {weekDates.map((dateInfo) => {
               const isExpanded = expandedDates.has(dateInfo.date)
