@@ -315,6 +315,121 @@ function WeekHeadcountBanner({ slots }: WeekHeadcountBannerProps) {
   )
 }
 
+// ─── Drill-down driver list modal ─────────────────────────────────────────────
+//
+// Opens when ops clicks any of the week-header counts (at cap, under,
+// FT off, PT count, or the 1d/2d/3d/4d+ off pills). Lists the actual
+// drivers in that bucket so ops can spot who's driving the number
+// without scrolling the full pill list.
+
+interface DrillDownRow {
+  id: string
+  name: string
+  employmentType: 'full' | 'part'
+  isShopper: boolean
+  hours: number
+  cap: number
+  daysWorked: number
+  daysOff: number
+}
+
+interface DriverDrillDownModalProps {
+  open: boolean
+  onClose: () => void
+  title: string
+  subtitle?: string
+  rows: DrillDownRow[]
+}
+
+function DriverDrillDownModal({ open, onClose, title, subtitle, rows }: DriverDrillDownModalProps) {
+  if (!open) return null
+  // Sort by hours descending so the biggest-impact drivers (most hours
+  // for "at cap" / fewest for "off") read first. Stable sort preserves
+  // original roster order on equal hours.
+  const sorted = [...rows].sort((a, b) => b.hours - a.hours)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[80vh] w-full max-w-md flex-col rounded-2xl bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-slate-800">{title}</h3>
+            {subtitle && (
+              <p className="mt-0.5 truncate text-xs text-slate-500">{subtitle}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          {sorted.length === 0 ? (
+            <p className="py-6 text-center text-sm text-slate-400">No drivers match.</p>
+          ) : (
+            <ul className="flex flex-col divide-y divide-slate-100">
+              {sorted.map((r) => {
+                const pct = r.cap > 0 ? Math.round((r.hours / r.cap) * 100) : 0
+                return (
+                  <li key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate font-semibold text-slate-800">{displayName(r.name)}</span>
+                        <span
+                          className={clsx(
+                            'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                            r.isShopper
+                              ? 'bg-purple-100 text-purple-700'
+                              : r.employmentType === 'full'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : 'bg-blue-100 text-blue-700',
+                          )}
+                          title={r.isShopper ? 'Shopper' : r.employmentType === 'full' ? 'Full-time' : 'Part-time'}
+                        >
+                          {r.isShopper ? 'shopper' : r.employmentType === 'full' ? 'FT' : 'PT'}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        {r.daysWorked} day{r.daysWorked === 1 ? '' : 's'} worked · {r.daysOff} day{r.daysOff === 1 ? '' : 's'} off
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right tabular-nums">
+                      <div
+                        className={clsx(
+                          'rounded-full border px-2 py-0.5 text-xs font-semibold',
+                          hoursStatusBg(r.hours, r.cap),
+                        )}
+                      >
+                        {r.hours}h / {r.cap}h
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-400">{pct}%</div>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="border-t border-slate-100 px-5 py-2 text-xs text-slate-500">
+          {sorted.length} driver{sorted.length === 1 ? '' : 's'} in this bucket
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Quick-add driver modal ──────────────────────────────────────────────────
 //
 // One-shot form for adding a single driver from the schedule step. After
@@ -571,6 +686,12 @@ export function DriverScheduleGrid() {
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [quickAddOpen, setQuickAddOpen] = useState(false)
+  // Drill-down modal state — set when ops clicks one of the week-header
+  // counts (at cap, under, FT off, PT, or any of the 1d/2d/3d/4d+ off
+  // pills). Cleared by close. Two fields: `wl` (which week) and `kind`
+  // (which bucket inside that week).
+  type DrillKind = 'ftAtCap' | 'ftUnder' | 'ftOff' | 'pt' | '1d' | '2d' | '3d' | '4d+'
+  const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
   // Simulation state — when set, shows a comparison row in the hiring
   // banner: "Adding N drivers would close the gap to Yh." Cleared
   // whenever the underlying schedule changes (regenerate, add driver,
@@ -1055,21 +1176,45 @@ export function DriverScheduleGrid() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
                   <div className="text-xs text-slate-500">
-                    <HoverHint label={`${ftAtCap} full-time driver${ftAtCap === 1 ? '' : 's'} hit the ${fullTimeCap}h weekly cap this week`}>
-                      <span className="font-semibold text-emerald-600">{ftAtCap}</span>
+                    <HoverHint label={`Click to see the ${ftAtCap} full-time driver${ftAtCap === 1 ? '' : 's'} that hit the ${fullTimeCap}h weekly cap`}>
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: 'ftAtCap' })}
+                        className="font-semibold text-emerald-600 hover:underline"
+                      >
+                        {ftAtCap}
+                      </button>
                     </HoverHint>{' '}at cap ·
-                    <HoverHint label={`${ftUnder} full-time driver${ftUnder === 1 ? '' : 's'} worked this week but ended below the ${fullTimeCap}h cap — unused capacity available`}>
-                      <span className="ml-1 font-semibold text-amber-600">{ftUnder}</span>
+                    <HoverHint label={`Click to see the ${ftUnder} full-time driver${ftUnder === 1 ? '' : 's'} below the ${fullTimeCap}h cap — unused capacity available`}>
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: 'ftUnder' })}
+                        className="ml-1 font-semibold text-amber-600 hover:underline"
+                      >
+                        {ftUnder}
+                      </button>
                     </HoverHint>{' '}under ·
                     {ftOff > 0 && (
                       <>
-                        <HoverHint label={`${ftOff} full-time driver${ftOff === 1 ? '' : 's'} didn't get scheduled at all this week`}>
-                          <span className="ml-1 font-semibold text-slate-500">{ftOff}</span>
+                        <HoverHint label={`Click to see the ${ftOff} full-time driver${ftOff === 1 ? '' : 's'} that didn't get scheduled this week`}>
+                          <button
+                            type="button"
+                            onClick={() => setDrillDown({ wl, kind: 'ftOff' })}
+                            className="ml-1 font-semibold text-slate-500 hover:underline"
+                          >
+                            {ftOff}
+                          </button>
                         </HoverHint>{' '}off ·
                       </>
                     )}
-                    <HoverHint label={`${ptAtCap + ptUnder} part-time driver${(ptAtCap + ptUnder) === 1 ? '' : 's'} scheduled this week (${ptAtCap} at ${schedule.partTimeCap}h cap, ${ptUnder} under)`}>
-                      <span className="ml-1 font-semibold text-blue-600">{ptAtCap + ptUnder}</span>
+                    <HoverHint label={`Click to see the ${ptAtCap + ptUnder} part-time driver${(ptAtCap + ptUnder) === 1 ? '' : 's'} scheduled this week (${ptAtCap} at ${schedule.partTimeCap}h cap, ${ptUnder} under)`}>
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: 'pt' })}
+                        className="ml-1 font-semibold text-blue-600 hover:underline"
+                      >
+                        {ptAtCap + ptUnder}
+                      </button>
                     </HoverHint>{' '}PT
                   </div>
                   {/* Days-off distribution pills — fairness at a glance.
@@ -1079,35 +1224,51 @@ export function DriverScheduleGrid() {
                       utilization is visually obvious. */}
                   <div className="flex items-center gap-1 text-xs">
                     {dayOffBuckets['1d'] > 0 && (
-                      <HoverHint label={`${dayOffBuckets['1d']} driver${dayOffBuckets['1d'] === 1 ? '' : 's'} worked 6 days this week (1 day off)`}>
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700">
+                      <HoverHint label={`Click to see the ${dayOffBuckets['1d']} driver${dayOffBuckets['1d'] === 1 ? '' : 's'} that worked 6 days this week (1 day off)`}>
+                        <button
+                          type="button"
+                          onClick={() => setDrillDown({ wl, kind: '1d' })}
+                          className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700 hover:bg-emerald-200"
+                        >
                           {dayOffBuckets['1d']}
                           <span className="text-[10px] font-normal opacity-80">1d off</span>
-                        </span>
+                        </button>
                       </HoverHint>
                     )}
                     {dayOffBuckets['2d'] > 0 && (
-                      <HoverHint label={`${dayOffBuckets['2d']} driver${dayOffBuckets['2d'] === 1 ? '' : 's'} worked 5 days this week (2 days off)`}>
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+                      <HoverHint label={`Click to see the ${dayOffBuckets['2d']} driver${dayOffBuckets['2d'] === 1 ? '' : 's'} that worked 5 days this week (2 days off)`}>
+                        <button
+                          type="button"
+                          onClick={() => setDrillDown({ wl, kind: '2d' })}
+                          className="inline-flex items-center gap-0.5 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700 hover:bg-slate-200"
+                        >
                           {dayOffBuckets['2d']}
                           <span className="text-[10px] font-normal opacity-80">2d off</span>
-                        </span>
+                        </button>
                       </HoverHint>
                     )}
                     {dayOffBuckets['3d'] > 0 && (
-                      <HoverHint label={`${dayOffBuckets['3d']} driver${dayOffBuckets['3d'] === 1 ? '' : 's'} worked 4 days this week (3 days off) — under-utilized`}>
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700">
+                      <HoverHint label={`Click to see the ${dayOffBuckets['3d']} driver${dayOffBuckets['3d'] === 1 ? '' : 's'} that worked 4 days this week (3 days off) — under-utilized`}>
+                        <button
+                          type="button"
+                          onClick={() => setDrillDown({ wl, kind: '3d' })}
+                          className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700 hover:bg-amber-200"
+                        >
                           {dayOffBuckets['3d']}
                           <span className="text-[10px] font-normal opacity-80">3d off</span>
-                        </span>
+                        </button>
                       </HoverHint>
                     )}
                     {dayOffBuckets['4d+'] > 0 && (
-                      <HoverHint label={`${dayOffBuckets['4d+']} driver${dayOffBuckets['4d+'] === 1 ? '' : 's'} worked 3 or fewer days this week (4+ days off) — heavily under-utilized`}>
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700">
+                      <HoverHint label={`Click to see the ${dayOffBuckets['4d+']} driver${dayOffBuckets['4d+'] === 1 ? '' : 's'} that worked 3 or fewer days this week (4+ days off) — heavily under-utilized`}>
+                        <button
+                          type="button"
+                          onClick={() => setDrillDown({ wl, kind: '4d+' })}
+                          className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700 hover:bg-red-200"
+                        >
                           {dayOffBuckets['4d+']}
                           <span className="text-[10px] font-normal opacity-80">4+d off</span>
-                        </span>
+                        </button>
                       </HoverHint>
                     )}
                   </div>
@@ -1324,6 +1485,79 @@ export function DriverScheduleGrid() {
         onClose={() => setQuickAddOpen(false)}
         onSubmit={handleQuickAdd}
       />
+
+      {/* Drill-down modal — content computed from `drillDown` against the
+          selected week's data. Closed state = null. Single instance at
+          the bottom so we don't render 8 modals per week card. */}
+      {(() => {
+        if (!drillDown) return null
+        const { wl, kind } = drillDown
+        const weekDateSet = new Set(
+          schedule.dates.filter((d) => d.weekLabel === wl).map((d) => d.date),
+        )
+        // Build the candidate row set: every driver scheduled this week
+        // (or considered for it — FT off=0h drivers count too). Per-driver
+        // metrics computed once, then filtered by `kind` below.
+        const allRows: DrillDownRow[] = schedule.driverSchedules.map((ds) => {
+          const hours = ds.weeklyHours[wl] ?? 0
+          const isShopper = !!ds.driver.isShopper
+          const cap = ds.driver.employmentType === 'full' ? fullTimeCap : schedule.partTimeCap
+          let daysWorked = 0
+          for (const e of ds.days) {
+            if (!weekDateSet.has(e.date)) continue
+            if (!e.isOff) daysWorked++
+          }
+          const daysOff = 7 - daysWorked
+          return {
+            id: ds.driver.id,
+            name: ds.driver.name,
+            employmentType: ds.driver.employmentType,
+            isShopper,
+            hours,
+            cap,
+            daysWorked,
+            daysOff,
+          }
+        })
+        // Filter to the requested bucket. The day-off buckets exclude
+        // shoppers (they always work 6 non-Sundays — never the variable
+        // ones ops cares about) AND exclude 0-day drivers (those are
+        // "off all week", a separate bucket entirely).
+        let rows: DrillDownRow[] = []
+        let title = ''
+        let subtitle: string | undefined = wl
+        if (kind === 'ftAtCap') {
+          rows = allRows.filter((r) => r.employmentType === 'full' && !r.isShopper && r.hours >= fullTimeCap)
+          title = `Full-time drivers at ${fullTimeCap}h cap`
+        } else if (kind === 'ftUnder') {
+          rows = allRows.filter((r) => r.employmentType === 'full' && !r.isShopper && r.hours > 0 && r.hours < fullTimeCap)
+          title = `Full-time drivers under ${fullTimeCap}h cap`
+          subtitle = `${wl} · unused capacity`
+        } else if (kind === 'ftOff') {
+          rows = allRows.filter((r) => r.employmentType === 'full' && !r.isShopper && r.hours === 0)
+          title = 'Full-time drivers fully off this week'
+        } else if (kind === 'pt') {
+          rows = allRows.filter((r) => r.employmentType === 'part')
+          title = `Part-time drivers (${schedule.partTimeCap}h cap)`
+        } else {
+          // Day-off buckets: 1d/2d/3d/4d+, excluding shoppers and 0-day drivers.
+          const wantedOff = (n: number) =>
+            kind === '4d+' ? n >= 4 : kind === '3d' ? n === 3 : kind === '2d' ? n === 2 : n === 1
+          rows = allRows.filter((r) => !r.isShopper && r.daysWorked > 0 && wantedOff(r.daysOff))
+          const label = kind === '4d+' ? '4+ days off' : `${kind === '1d' ? '1' : kind === '2d' ? '2' : '3'} day${kind === '1d' ? '' : 's'} off`
+          title = `Drivers with ${label}`
+          subtitle = `${wl} · ${kind === '1d' ? '6 days worked' : kind === '2d' ? '5 days worked' : kind === '3d' ? '4 days worked' : '3 or fewer days worked'}`
+        }
+        return (
+          <DriverDrillDownModal
+            open={true}
+            onClose={() => setDrillDown(null)}
+            title={title}
+            subtitle={subtitle}
+            rows={rows}
+          />
+        )
+      })()}
     </div>
   )
 }
