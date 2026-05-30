@@ -13,6 +13,7 @@ import {
   OT_WEEKLY_BONUS,
   SHOPPER_COVERAGE,
   USER_CAP_BUFFER_PCT,
+  WEEKEND_SPLIT_PATTERN,
   effectiveCoverage,
   isFloorSlot,
   isProtectedOpeningSlot,
@@ -1680,6 +1681,148 @@ export function generateDriverSchedule({
         }
         void prevLast  // closer count is recomputed on demand, no manual track
       }
+    }
+  }
+
+  // ─── Phase 8.5: WEEKEND SPLIT-SHIFT FALLBACK ────────────────────────
+  //
+  // Sat/Sun ONLY. Conservative dual-peak filler: when a weekend day
+  // has BOTH a morning slot shortfall AND an evening slot shortfall,
+  // assign the 10h split pattern (08:00-13:00 + 16:00-21:00, 3h
+  // midday break) to one off-day driver per shortfall pair. One
+  // driver covers both peaks instead of needing two separate hires.
+  //
+  // Strictly last-resort:
+  //   - Pattern lives in coverageTemplate.WEEKEND_SPLIT_PATTERN, NOT
+  //     in WEEKEND_PATTERNS. Main pass, spread, push never see it.
+  //   - Number of splits per day = min(morningShort, eveningShort).
+  //     If only one peak is short, NO splits happen — a regular
+  //     half-shift from Phase 6/8 would already have fixed it.
+  //   - Loop exits as soon as the cap is hit.
+  //
+  // Uses standard helpers (rest, cap, blocks, break, days-worked) so
+  // every legality check matches Phase 6/8. The 3h break exceeds the
+  // 2h "policy max" baked into the regular pool, but that policy is
+  // enforced only by NOT putting 3h-break patterns in the pool —
+  // this phase is the documented opt-in path.
+  //
+  // Manual 14:00-break variants (per user spec) are NOT generated
+  // here, but admin slot-toggles in the day grid let ops produce
+  // any custom split without restriction.
+  const WEEKEND_DOWS = new Set([6, 0])  // Sat=6, Sun=0
+  const SPLIT_MORNING_SLOTS = WEEKEND_SPLIT_PATTERN
+    .map((v, i) => (v === 1 && i < 6 ? i : -1))
+    .filter((i) => i >= 0)
+  const SPLIT_EVENING_SLOTS = WEEKEND_SPLIT_PATTERN
+    .map((v, i) => (v === 1 && i >= 6 ? i : -1))
+    .filter((i) => i >= 0)
+  const SPLIT_HOURS = WEEKEND_SPLIT_PATTERN.filter((v) => v === 1).length
+  const SPLIT_FIRST = WEEKEND_SPLIT_PATTERN.findIndex((v) => v === 1)
+  const SPLIT_LAST = (() => {
+    for (let z = WEEKEND_SPLIT_PATTERN.length - 1; z >= 0; z--) {
+      if (WEEKEND_SPLIT_PATTERN[z] === 1) return z
+    }
+    return -1
+  })()
+
+  for (const di of allDates) {
+    const dow = di.getDay()
+    if (!WEEKEND_DOWS.has(dow)) continue
+    const dateStr = format(di, 'yyyy-MM-dd')
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    if (!cov) continue
+
+    // How short is each half relative to target — clamped at 0. The
+    // "max shortfall in the half" is what matters because the split
+    // adds 1 body to EVERY slot in that half. If morning has slots
+    // [0:0, 1:short by 2, 2:short by 3], the half's effective deficit
+    // is 3 — and adding one split-driver covers all of those slots
+    // simultaneously (reduces all shortfalls by 1 each).
+    const morningShort = SPLIT_MORNING_SLOTS
+      .map((s) => Math.max(0, required[s] - (cov[s] ?? 0)))
+      .reduce((a, b) => Math.max(a, b), 0)
+    const eveningShort = SPLIT_EVENING_SLOTS
+      .map((s) => Math.max(0, required[s] - (cov[s] ?? 0)))
+      .reduce((a, b) => Math.max(a, b), 0)
+    let splitsNeeded = Math.min(morningShort, eveningShort)
+    if (splitsNeeded <= 0) continue   // single-peak gap → not our problem
+
+    for (const d of shuffledDrivers) {
+      if (splitsNeeded <= 0) break
+      if (d.isShopper) continue                   // shopper pool — separate
+      const entry = scheduleMap[d.id].find((e) => e.date === dateStr)
+      if (!entry) continue
+      // Only convert an OFF day OR a short morning-only shift that
+      // ends ≤ slot 4 (12 PM). Anything later already covers the
+      // split's morning half — converting it would just shuffle hours.
+      if (!entry.isOff) {
+        if (lastActive(entry.slots) > 4) continue
+      }
+
+      const wLabel = weekLabel(parseISO(dateStr))
+      const cap = bufferedCapOf(d)
+      // Net hours change: remove existing shift's paid hours (if any),
+      // add the 10h split.
+      const existingH = entry.isOff ? 0 : (entry.totalHours ?? 0)
+      const newWeeklyTotal = (weekHours[d.id][wLabel] ?? 0) - existingH + SPLIT_HOURS
+      if (newWeeklyTotal > cap) continue
+
+      // Day-count check. Converting an OFF day to a split adds 1
+      // day worked; converting an existing short shift to a split
+      // doesn't change the count.
+      const wouldAddDay = entry.isOff
+      const daysAfter = (daysWorked[d.id][wLabel] ?? 0) + (wouldAddDay ? 1 : 0)
+      if (daysAfter > MAX_DAYS_PER_WEEK) continue
+
+      // Block check — none of the split's active slots can be
+      // blocked for this driver on this date.
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks) {
+        let conflict = false
+        for (let s = 0; s < WEEKEND_SPLIT_PATTERN.length; s++) {
+          if (WEEKEND_SPLIT_PATTERN[s] === 1 && blocks[s]) { conflict = true; break }
+        }
+        if (conflict) continue
+      }
+
+      // 12h rest checks against neighbors. Yesterday's last slot
+      // must give 12h+ rest before this driver starts at slot 0
+      // (08:00). Tomorrow's first slot must give 12h+ rest after
+      // this driver ends at slot 12 (21:00).
+      const idx = scheduleMap[d.id].indexOf(entry)
+      const yest = idx > 0 ? scheduleMap[d.id][idx - 1] : null
+      if (yest && !yest.isOff) {
+        const yLast = lastActive(yest.slots)
+        if (violatesMinRest(yLast, SPLIT_FIRST)) continue
+      }
+      const tomorrow = idx + 1 < scheduleMap[d.id].length ? scheduleMap[d.id][idx + 1] : null
+      if (tomorrow && !tomorrow.isOff) {
+        const tFirst = tomorrow.slots.findIndex((s) => s)
+        if (tFirst >= 0 && violatesMinRest(SPLIT_LAST, tFirst)) continue
+      }
+
+      // Apply the split. Replace the day's slots wholesale with
+      // WEEKEND_SPLIT_PATTERN, update weekly hours / days-worked /
+      // lastSlotWorked, then bump coverageActual on every newly-
+      // active slot (and decrement on any slot that the OLD entry
+      // had but the new split doesn't — only morning-only shifts
+      // can hit this case, and only on slots 1-4).
+      const oldSlots = [...entry.slots]
+      const newSlots = WEEKEND_SPLIT_PATTERN.map((v) => v === 1)
+      entry.isOff = false
+      entry.slots = newSlots
+      entry.totalHours = SPLIT_HOURS
+      weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) - existingH + SPLIT_HOURS
+      if (wouldAddDay) {
+        daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
+      }
+      lastSlotWorked[d.id][dateStr] = SPLIT_LAST
+      for (let s = 0; s < newSlots.length; s++) {
+        if (newSlots[s] && !oldSlots[s]) cov[s] = (cov[s] ?? 0) + 1
+        else if (!newSlots[s] && oldSlots[s]) cov[s] = Math.max(0, (cov[s] ?? 0) - 1)
+      }
+      splitsNeeded--
     }
   }
 

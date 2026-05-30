@@ -176,6 +176,26 @@ const WEEKEND_PATTERNS: number[][] = [
   [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],  // 7h:  8 AM – 3 PM
 ]
 
+// ─── Weekend split-shift fallback ───────────────────────────────────────
+// Single 10h pattern with a 3h midday break:
+//   08:00 – 13:00 (5h)  + break 13:00 – 16:00  + 16:00 – 21:00 (5h)
+// EXCEPTION to the standard "max 2h break" rule — allowed ONLY for this
+// pattern, ONLY on Sat/Sun, and ONLY via the dedicated phase that uses
+// it as a last-resort dual-peak fallback. Not included in
+// WEEKEND_PATTERNS — the main pass, spread, and push phases never see
+// it. The scheduler explicitly invokes it from the Phase-8.5 weekend
+// split-shift filler, which caps usage at the minimum number of drivers
+// needed to close BOTH a morning shortfall AND an evening shortfall on
+// the same day.
+//
+// Manual overrides (e.g. ops keeping a few drivers on until 14:00
+// before breaking) are NOT auto-generated, but also NOT blocked —
+// the day-grid slot toggle bypasses this pool entirely.
+export const WEEKEND_SPLIT_PATTERN: number[] = [
+//8a 9a 10a 11a 12p 1p 2p 3p 4p 5p 6p 7p 8p 9p 10p
+  1, 1, 1, 1, 1,  0, 0, 0, 1, 1, 1, 1, 1, 0, 0,
+]
+
 // ─── Required coverage — 5-week DRIVER-ONLY average ───────────────────────
 // Apr 30 – May 6 2026 single high-coverage reference week (57 drivers
 // in operation that week — a snapshot from when the roster was larger
