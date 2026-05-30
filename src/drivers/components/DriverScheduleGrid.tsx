@@ -451,7 +451,22 @@ export function DriverScheduleGrid() {
   const nowSlotIdx = (now.hours >= 8 && now.hours < 23) ? now.hours - 8 : -1
   const nowMinuteFrac = now.minutes / 60
   const nowDateISO = now.dateISO
-  const nowLabel = `NOW · ${caymanTimeLabel()}`
+  // Live coverage at the current slot — actual driver count + per-slot
+  // target — so the NOW pill reads e.g. "NOW · 14:32 · 23/25" and
+  // fleet admins see at a glance whether they're at target right now.
+  // Skips shoppers (they live in a separate pool — coverageActual
+  // is already shopper-excluded by the scheduler).
+  const nowCounts = (() => {
+    if (!schedule || nowSlotIdx < 0) return null
+    const actual = schedule.coverageActual[nowDateISO]?.[nowSlotIdx] ?? 0
+    const todayDate = schedule.dates.find((d) => d.date === nowDateISO)
+    const target = todayDate
+      ? effectiveCoverage(todayDate.dayOfWeek, coverageScale, coverageOverrides)[nowSlotIdx] ?? 0
+      : 0
+    return { actual, target }
+  })()
+  const nowCountsLabel = nowCounts ? ` · ${nowCounts.actual}/${nowCounts.target}` : ''
+  const nowLabel = `NOW · ${caymanTimeLabel()}${nowCountsLabel}`
   const canUndo = undoCount > 0
   const canRedo = redoCount > 0
 
@@ -1130,8 +1145,20 @@ export function DriverScheduleGrid() {
                     <span className="min-w-[140px] text-sm font-semibold text-slate-800">{dateInfo.dayLabel}</span>
                     {dateInfo.date === nowDateISO && (
                       <span
-                        className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
-                        title={`Today (${nowLabel}, Cayman local time). Expand this row to see the live time indicator on the grid.`}
+                        className={clsx(
+                          'rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm',
+                          // Red tint when the current slot is below target so
+                          // a coverage gap right NOW jumps out before the
+                          // admin even expands the row.
+                          nowCounts && nowCounts.actual < nowCounts.target
+                            ? 'bg-red-600'
+                            : 'bg-blue-600',
+                        )}
+                        title={
+                          nowSlotIdx >= 0 && nowCounts
+                            ? `Cayman local time. Right now: ${nowCounts.actual} driver${nowCounts.actual === 1 ? '' : 's'} working this slot vs target of ${nowCounts.target}${nowCounts.actual < nowCounts.target ? ` (short by ${nowCounts.target - nowCounts.actual})` : nowCounts.actual > nowCounts.target ? ` (+${nowCounts.actual - nowCounts.target} over)` : ' (at target)'}. Expand this row to see the live time-indicator line.`
+                            : 'Today (Cayman local time). Operation is closed right now.'
+                        }
                       >
                         {nowSlotIdx >= 0 ? nowLabel : 'TODAY · CLOSED'}
                       </span>
