@@ -517,6 +517,24 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
     }
     return persisted as Partial<DriverSchedulerStore>
   },
+  // Snap stale persisted date ranges back to the next Thursday→Wednesday
+  // cycle on hydration so the picker always opens on a sensible work
+  // week instead of last month's. Only fires when the persisted endDate
+  // has already passed — in-progress schedules (endDate today or later)
+  // are left alone so ops doesn't lose context mid-cycle. Also clears
+  // the persisted `schedule` in that case since it's now for a window
+  // that no longer matches the picker — saves the user a confusing
+  // "why does the schedule still show last week" moment.
+  onRehydrateStorage: () => (state) => {
+    if (!state) return
+    const today = new Date().toISOString().slice(0, 10)
+    if (state.endDate && state.endDate < today) {
+      const start = nextThursday()
+      state.startDate = start
+      state.endDate = addDays(start, 6)
+      state.schedule = null
+    }
+  },
   // Auto-save the full working set so refresh / browser close doesn't
   // nuke in-flight edits. Excludes the undo/redo stacks (they balloon
   // localStorage on long sessions and aren't useful after refresh
