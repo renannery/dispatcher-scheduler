@@ -4,7 +4,7 @@ import { useRef, useState, useMemo } from 'react'
 import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
-import { DRIVER_DAY_TEMPLATES, DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE } from '../coverageTemplate'
+import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE, effectiveCoverage } from '../coverageTemplate'
 import { coverageStatus } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
@@ -65,13 +65,23 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
   const fullTimeCap = useDriverStore((s) => s.fullTimeCap)
   const partTimeCap = useDriverStore((s) => s.partTimeCap)
-  const template = DRIVER_DAY_TEMPLATES[dayOfWeek]
+  // Pull coverage scale + overrides so `required` reflects what ops
+  // actually configured. Reading raw `template.requiredCoverage` would
+  // ignore both the per-day overrides AND the scale knob — leading to
+  // a confusing UX where the per-day pill said "no gaps" (because it
+  // used scaled targets) while the expanded grid still tinted red
+  // cells against the unscaled baseline.
+  const coverageScale = useDriverStore((s) => s.coverageScale)
+  const coverageOverrides = useDriverStore((s) => s.coverageOverrides)
   // Ref to the inner <table> so the NowLine can measure column positions
   // via DOM rather than guessing from CSS. The table sits inside the
   // `position: relative` wrapper so the line's `left` is anchored
   // correctly.
   const tableRef = useRef<HTMLTableElement | null>(null)
-  const required = template?.requiredCoverage ?? DRIVER_SLOTS.map(() => 0)
+  const required = useMemo(
+    () => effectiveCoverage(dayOfWeek, coverageScale, coverageOverrides),
+    [dayOfWeek, coverageScale, coverageOverrides],
+  )
   const actual = schedule.coverageActual[date] ?? DRIVER_SLOTS.map(() => 0)
   const [showOff, setShowOff] = useState(false)
 
