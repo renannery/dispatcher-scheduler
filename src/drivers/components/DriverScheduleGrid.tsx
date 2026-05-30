@@ -315,6 +315,90 @@ function WeekHeadcountBanner({ slots }: WeekHeadcountBannerProps) {
   )
 }
 
+// ─── Inline coverage-scale adjuster (schedule step) ──────────────────────────
+//
+// Lightweight wrapper around the same coverage-scale control exposed in
+// the Period step and the Suggestions banner. Lives in the schedule
+// step's header strip so ops can tweak target demand and regenerate
+// without bouncing back to Period. Apply button only enabled when the
+// pending value differs from the current store value — avoids accidental
+// regenerations from a stray click.
+
+interface CoverageScaleAdjusterProps {
+  coverageScale: number
+  onApply: (nextScale: number) => void
+}
+
+function CoverageScaleAdjuster({ coverageScale, onApply }: CoverageScaleAdjusterProps) {
+  const [scale, setScale] = useState(coverageScale)
+  // Reset pending value when the underlying store value changes (e.g. a
+  // regenerate happened from elsewhere, the suggestions banner applied,
+  // or the user went back to Period).
+  useEffect(() => { setScale(coverageScale) }, [coverageScale])
+  const dirty = scale !== coverageScale
+  const deltaPct = Math.round((scale - 1) * 100)
+  const step = 0.05
+  const min = 0.5
+  const max = 1.5
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="font-semibold uppercase tracking-wide text-slate-500">Coverage</span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setScale((s) => Math.max(min, +(s - step).toFixed(2)))}
+          className="h-6 w-6 rounded border border-slate-300 bg-white text-sm font-bold text-slate-700 hover:bg-slate-50"
+          aria-label="Decrease coverage scale"
+        >−</button>
+        <span className="min-w-[44px] rounded border border-slate-300 bg-white px-2 py-0.5 text-center text-xs font-bold tabular-nums text-slate-800">
+          {scale.toFixed(2)}×
+        </span>
+        <button
+          type="button"
+          onClick={() => setScale((s) => Math.min(max, +(s + step).toFixed(2)))}
+          className="h-6 w-6 rounded border border-slate-300 bg-white text-sm font-bold text-slate-700 hover:bg-slate-50"
+          aria-label="Increase coverage scale"
+        >+</button>
+      </div>
+      <span
+        className={clsx(
+          'tabular-nums text-[11px]',
+          deltaPct > 0 ? 'text-emerald-700' : deltaPct < 0 ? 'text-amber-700' : 'text-slate-400',
+        )}
+        title={
+          deltaPct === 0
+            ? 'Baseline coverage targets (no scale applied)'
+            : deltaPct > 0
+              ? `Targets scaled UP by ${deltaPct}% — more bodies needed in every slot`
+              : `Targets scaled DOWN by ${Math.abs(deltaPct)}% — fewer bodies needed in every slot`
+        }
+      >
+        {deltaPct > 0 ? `+${deltaPct}%` : `${deltaPct}%`}
+      </span>
+      {dirty && (
+        <button
+          type="button"
+          onClick={() => onApply(scale)}
+          className="flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm transition hover:bg-blue-700"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Apply
+        </button>
+      )}
+      {dirty && (
+        <button
+          type="button"
+          onClick={() => setScale(coverageScale)}
+          className="text-[11px] font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+        >
+          reset
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Drill-down driver list modal ─────────────────────────────────────────────
 //
 // Opens when ops clicks any of the week-header counts (at cap, under,
@@ -999,6 +1083,16 @@ export function DriverScheduleGrid() {
             full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
             part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
           </div>
+          {/* Inline coverage-scale knob — same control as Period step, also
+              available in the suggestions banner. Surfaced here so ops can
+              tweak coverage demand and regenerate without leaving the
+              schedule view. Apply button only enabled when scale ≠ current. */}
+          <CoverageScaleAdjuster
+            coverageScale={coverageScale}
+            onApply={(nextScale) =>
+              handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale: nextScale })
+            }
+          />
         </div>
         <div className="flex gap-2">
           {/* Undo / Redo — only enabled when there's something on the stack.
