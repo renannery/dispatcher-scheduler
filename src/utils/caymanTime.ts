@@ -45,8 +45,11 @@ export function caymanNow(now: Date = new Date()): CaymanNow {
   }
 }
 
-/** "14:32" — Cayman local time, 24h format. Cheap to call every minute. */
+/** "2:32 PM" — Cayman local time, 12h am/pm format. Midnight renders as
+ *  "12:00 AM", noon as "12:00 PM". Cheap to call every minute. */
 export function caymanTimeLabel(now: Date = new Date()): string {
   const c = caymanNow(now)
-  return `${String(c.hours).padStart(2, '0')}:${String(c.minutes).padStart(2, '0')}`
+  const period = c.hours >= 12 ? 'PM' : 'AM'
+  const h12 = c.hours % 12 === 0 ? 12 : c.hours % 12
+  return `${h12}:${String(c.minutes).padStart(2, '0')} ${period}`
 }
