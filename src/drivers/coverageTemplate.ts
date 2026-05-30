@@ -309,6 +309,51 @@ export function isProtectedOpeningSlot(_dow: number, slot: number): boolean {
  *  shortfall) instead of red (real gap). */
 export const LOW_PRIORITY_WEIGHT = 0.5
 
+// ─── Hard 40% coverage floor (tight-week safety net) ─────────────────────
+// No floor slot may drop below 40% of its target — i.e. never tolerate a
+// shortfall worse than 60%. Distinct from FLOOR_SLOTS (which says "this
+// slot must meet target" — a soft preference) and from PROTECTED_OPENING_SLOTS
+// (the 8-10 AM window the main pass actively fights for). The 40% floor is
+// the HARD bottom: even when total demand exceeds capacity, the optimizer
+// must spread the shortfall so every floor slot stays >= 40%, taking the
+// hit from the deprioritized 15:00-16:00 window instead.
+//
+// Picked at 40% per ops: Wed 22:00 came in at 2/5 (40%) and Wed 19:00 at
+// 21/36 (58%) on a recent tight week. Both were judged "near-collapse"
+// service quality — anything worse needed to be prevented.
+export const COVERAGE_FLOOR_RATIO = 0.40
+
+/** Minimum coverage a slot may run at, given its target. 0 when target is 0.
+ *  Rounded UP so a slot with target 5 floors at 2 (40%), not 2 (40%) vs.
+ *  1.6 floor. ceil avoids the optimizer happily landing at "just under". */
+export function floorCoverageFor(target: number): number {
+  if (target <= 0) return 0
+  return Math.ceil(target * COVERAGE_FLOOR_RATIO)
+}
+
+/** Afternoon "donor" slots — 3 PM (15:00) and 4 PM (16:00). When total
+ *  capacity is short, the floor enforcer takes the shortfall here FIRST
+ *  per ops policy ("take the shortfall from the lowest-priority slots
+ *  first, the deprioritized 15:00–16:00 window"). The 40% floor does NOT
+ *  apply to these slots — they can collapse to 0% if it means lifting
+ *  the opening / lunch / dinner / closing slots back to floor.
+ *
+ *  10 PM (slot 14) carries weight 0.5 on most days too, but the user
+ *  explicitly cited Wed 22:00 = 2/5 as the kind of collapse the floor
+ *  is meant to PREVENT — so it stays IN the protected set, not a donor. */
+export const DONOR_SLOTS: number[] = [7, 8]
+
+/** Slots that the 40% hard floor protects. Every FLOOR slot EXCEPT the
+ *  afternoon donor window (3-4 PM). This is the protected set ops cited:
+ *  opening hours (8-10 AM), late-morning ramp (11 AM), lunch/dinner peaks
+ *  (12-2 PM, 5-9 PM), and the closing window (10 PM). All of those must
+ *  stay >= 40% of their target even when capacity is too short to meet
+ *  every target. */
+export function isFloorPrioritySlot(dow: number, slot: number): boolean {
+  if (!isFloorSlot(dow, slot)) return false
+  return !DONOR_SLOTS.includes(slot)
+}
+
 // ─── Shopper coverage targets (separate pool, groceries) ─────────────────
 // From the Apr 30 – May 6 2026 reference week (same source as the driver
 // targets above). Sunday is 0 — shoppers don't work Sundays. Shown as a

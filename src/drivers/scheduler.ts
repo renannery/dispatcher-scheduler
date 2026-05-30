@@ -1,6 +1,7 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
+  DONOR_SLOTS,
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
   LEGAL_DAILY_MAX_HOURS,
@@ -15,6 +16,8 @@ import {
   USER_CAP_BUFFER_PCT,
   WEEKEND_SPLIT_PATTERN,
   effectiveCoverage,
+  floorCoverageFor,
+  isFloorPrioritySlot,
   isFloorSlot,
   isProtectedOpeningSlot,
   slotPriorityWeight,
@@ -1471,6 +1474,175 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 6.5: TIGHT-WEEK 2nd day-off elimination ──────────────────────
+  // When ANY floor slot in a work-week is below target, drivers should
+  // not idle a 2nd day off — their hours can help close the gap. Phase 6
+  // already eliminates 3+ days off, but only when a 4-5h pattern fits
+  // under the standard +25%/+50% over-coverage ceiling. In tight weeks,
+  // those ceilings are exactly what's stopping drivers from being placed
+  // (every pattern hits an over-target slot). Phase 6.5 walks 2-day-off
+  // drivers in tight weeks and assigns them a short shift with a relaxed
+  // ceiling — patterns may push adjacent slots past the standard
+  // tolerance as long as the pattern lands at least one body on a
+  // currently-short slot.
+  //
+  // Hard rules preserved: weekly cap (buffered), 6-day max, 4h-min shift,
+  // 12h rest, time-off blocks, break rule, closer cap. Only the soft
+  // over-coverage ceiling is relaxed.
+  //
+  // Skipped entirely on weeks that are NOT tight (every floor slot >= target)
+  // — those drivers KEEP their 2-day weekend per ops policy.
+  const weekIsTight = (wLabel: string): boolean => {
+    for (const di of allDates) {
+      if (weekLabel(di) !== wLabel) continue
+      const dateStr = format(di, 'yyyy-MM-dd')
+      const dow = di.getDay()
+      const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+      const cov = coverageActual[dateStr]
+      if (!cov) continue
+      for (let s = 0; s < required.length; s++) {
+        if (!isFloorSlot(dow, s)) continue
+        if (required[s] > (cov[s] ?? 0)) return true
+      }
+    }
+    return false
+  }
+  // Cache so we don't re-scan the whole week for every driver.
+  const tightWeekCache = new Map<string, boolean>()
+  const isTight = (wLabel: string): boolean => {
+    if (!tightWeekCache.has(wLabel)) tightWeekCache.set(wLabel, weekIsTight(wLabel))
+    return tightWeekCache.get(wLabel)!
+  }
+  // Per-slot ceiling for Phase 6.5: tighter than spread's +50% on adjacent
+  // slots but loose enough that "every pattern touches a saturated slot"
+  // (the symptom Phase 6 stalls on) gets unstuck. +75% on the cushion
+  // slots, with the constraint that the pattern MUST hit at least one
+  // currently-short slot to actually help.
+  const tightFillTol = (req: number) =>
+    req <= 0 ? 0 : Math.max(2, Math.round(req * 0.75))
+  for (const d of shuffledDrivers) {
+    if (d.isShopper) continue
+    // Walk weeks the driver has rosters in. daysWorked entries are keyed
+    // by weekLabel, so the union of those keys is all the weeks the driver
+    // touches.
+    for (const wLabel of Object.keys(daysWorked[d.id])) {
+      if (!isTight(wLabel)) continue
+      const currentDays = daysWorked[d.id][wLabel] ?? 0
+      // < 5 days worked == >= 2 days off. == 5 means 1 day off (OK).
+      if (currentDays >= MAX_DAYS_PER_WEEK - 1) continue
+
+      // Walk this driver's off-days in the tight week, sorted by total
+      // shortfall on that date (highest deficit first) so the new shift
+      // lands where it helps most.
+      const offEntryIndexes = scheduleMap[d.id]
+        .map((e, idx) => {
+          if (!e.isOff) return { idx, deficit: -1 }
+          if (weekLabel(parseISO(e.date)) !== wLabel) return { idx, deficit: -1 }
+          const dow = e.dayOfWeek
+          const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+          const cov = coverageActual[e.date] ?? []
+          let deficit = 0
+          for (let s = 0; s < required.length; s++) {
+            const d2 = required[s] - (cov[s] ?? 0)
+            if (d2 > 0 && isFloorSlot(dow, s)) deficit += d2
+          }
+          return { idx, deficit }
+        })
+        .filter(x => x.deficit > 0)
+        .sort((a, b) => b.deficit - a.deficit)
+        .map(x => x.idx)
+
+      for (const i of offEntryIndexes) {
+        const entry = scheduleMap[d.id][i]
+        if (!entry.isOff) continue
+        // Re-check days worked — earlier iteration may have moved us to 5.
+        if ((daysWorked[d.id][wLabel] ?? 0) >= MAX_DAYS_PER_WEEK - 1) break
+
+        const dateStr = entry.date
+        const dow = entry.dayOfWeek
+        const cap = bufferedCapOf(d)
+        const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+        if (remaining < 4) break  // out of capacity in this week
+        const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+        if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
+
+        const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+        const cov = coverageActual[dateStr]
+        const template = DRIVER_DAY_TEMPLATES[dow]
+
+        // 4-6h patterns — wider than Phase 6's 4-5h since this is the
+        // emergency lever, not the routine spread.
+        let bestPattern: boolean[] | null = null
+        let bestScore = -Infinity
+        for (const raw of template.shiftPatterns) {
+          const p = raw.map(v => v === 1)
+          const h = slotHours(p)
+          if (h < 4 || h > 6) continue
+          if (h > remaining) continue
+          if (blocks && p.some((on, idx) => on && blocks[idx])) continue
+          {
+            const yest = scheduleMap[d.id][i - 1]
+            if (yest && !yest.isOff && violatesMinRest(lastActive(yest.slots), firstActive(p))) continue
+          }
+          {
+            const tomorrow = scheduleMap[d.id][i + 1]
+            if (tomorrow && !tomorrow.isOff) {
+              const tFirst = tomorrow.slots.findIndex(x => x)
+              if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
+            }
+          }
+          if (lastActive(p) >= CLOSER_END_THRESHOLD
+              && dayHasMorningOpening(dow)
+              && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
+
+          // RELAXED ceiling. Pattern must (a) hit at least one
+          // currently-short FLOOR slot to actually help, and (b) stay
+          // within the relaxed +75% ceiling on every slot it touches.
+          let exceeds = false
+          let helpsShort = false
+          let slotScore = 0
+          for (let s = 0; s < p.length; s++) {
+            if (!p[s]) continue
+            if (cov[s] + 1 > required[s] + tightFillTol(required[s])) { exceeds = true; break }
+            const w = slotPriorityWeight(dow, s)
+            const diff = cov[s] - required[s]
+            if (diff < 0 && isFloorSlot(dow, s)) { helpsShort = true }
+            let raw: number
+            if (diff < 0) raw = 200          // short — what we're after
+            else if (diff === 0) raw = 30
+            else raw = 1                     // over-target — discouraged
+            slotScore += raw * w
+          }
+          if (exceeds || !helpsShort) continue
+          const score = slotScore - h        // prefer shorter among equals
+          if (score > bestScore) {
+            bestScore = score
+            bestPattern = p
+          }
+        }
+        if (!bestPattern) continue
+
+        // Apply.
+        const h = slotHours(bestPattern)
+        entry.isOff = false
+        entry.slots = [...bestPattern]
+        entry.totalHours = h
+        weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+        daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
+        for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+        lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
+        // Tight-week cache may flip stale now that we placed a shift.
+        // Cheap to re-query later; just invalidate this week.
+        tightWeekCache.delete(wLabel)
+        // Only fill ONE additional day per loop iteration so the cache
+        // recomputes between placements. The outer driver loop will
+        // pick this driver up again on the next pass if the week is
+        // still tight AND they still have <5 days.
+        break
+      }
+    }
+  }
+
   // ─── Phase 7: TRIM SURPLUS — bring over-cap drivers back to user cap ────
   // After Phases 1-6 some drivers run between user cap and the +10% buffer
   // (e.g. cap=40 → 41-44h). When coverage is already over-staffed on the
@@ -1921,6 +2093,312 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 10: 40% COVERAGE FLOOR enforcement ───────────────────────────
+  // Hard rule: no priority floor slot (opening 8-11 AM, lunch/dinner peaks,
+  // closing 10 PM — every floor slot EXCEPT the 3-4 PM donor window) may
+  // finish below 40% of its target. Concretely: a slot with target 5 must
+  // close >= 2; a slot with target 36 must close >= 15.
+  //
+  // Three strategies, applied in order to the deepest-deficit floor slot
+  // first (the slot that's furthest below 40%):
+  //   (A) Aggressive shift extension — extend an adjacent shift (back OR
+  //       forward) onto the violation slot, bypassing every soft over-
+  //       coverage ceiling. Hard rules (cap, daily max, 12h rest, blocks,
+  //       break) still enforced.
+  //   (B) Aggressive off-day shift add — place a 4-5h shift on an off-day
+  //       driver that includes the violation slot, same hard-rule
+  //       enforcement, no over-coverage ceiling.
+  //   (C) Cross-day swap from donor slots — find a driver who's working a
+  //       donor slot (3 PM or 4 PM) on some date in the same week and CAN
+  //       legally extend onto the violation slot. Remove their donor hour
+  //       there, add an hour at the violation. Keeps weekly hours flat.
+  //
+  // Anything still below 40% after (A)+(B)+(C) is reported as
+  // headcount-limited in the banner.
+  const FLOOR_DAILY_HOUR_MAX = Math.min(
+    maxHoursPerDay + 1,
+    LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS,
+    MAX_HOURS_PER_DAY,
+  )
+  // Try (A) — adjacent extension — on a single (date, slot). Returns true
+  // if it placed at least one driver. Loops drivers in shuffle order so
+  // the load distributes across the roster.
+  const tryAdjacentExtend = (dateStr: string, dow: number, slot: number): boolean => {
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    for (const d of shuffledDrivers) {
+      if (d.isShopper && dow === 0) continue
+      if (d.isShopper) continue   // shopper coverage is a parallel pool
+      const idx = scheduleMap[d.id].findIndex((e) => e.date === dateStr)
+      if (idx < 0) continue
+      const entry = scheduleMap[d.id][idx]
+      if (entry.isOff) continue                // off-day path = strategy (B)
+      if (entry.slots[slot]) continue          // already covering slot
+      const first = entry.slots.findIndex((s) => s)
+      let last = -1
+      for (let z = entry.slots.length - 1; z >= 0; z--) if (entry.slots[z]) { last = z; break }
+      // Only extend if the violation slot is directly adjacent — slot
+      // gaps would break the contiguous-shift invariant.
+      if (slot !== first - 1 && slot !== last + 1) continue
+      const wLabel = weekLabel(parseISO(dateStr))
+      const cap = bufferedCapOf(d)
+      if ((weekHours[d.id][wLabel] ?? 0) + 1 > cap) continue
+      const newHours = (entry.totalHours ?? 0) + 1
+      if (newHours > FLOOR_DAILY_HOUR_MAX) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks && blocks[slot]) continue
+      // Break rule: extension makes shift 8h+, must already have a break.
+      if (newHours >= breakRequiredAt(d) && !patternHasBreak(entry.slots)) continue
+      // 12h rest: backward extension shrinks rest with yesterday;
+      // forward extension shrinks rest with tomorrow.
+      if (slot < first) {
+        const yest = scheduleMap[d.id][idx - 1]
+        if (yest && !yest.isOff) {
+          const yLast = lastActive(yest.slots)
+          if (violatesMinRest(yLast, slot)) continue
+        }
+      } else {
+        const tomorrow = scheduleMap[d.id][idx + 1]
+        if (tomorrow && !tomorrow.isOff) {
+          const tFirst = tomorrow.slots.findIndex((s) => s)
+          if (tFirst >= 0 && violatesMinRest(slot, tFirst)) continue
+        }
+      }
+      // Closer-cap: forward extension past CLOSER_END_THRESHOLD.
+      if (slot >= CLOSER_END_THRESHOLD && last < CLOSER_END_THRESHOLD
+          && dayHasMorningOpening(dow)
+          && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
+
+      entry.slots[slot] = true
+      entry.totalHours = newHours
+      cov[slot] = (cov[slot] ?? 0) + 1
+      weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + 1
+      if (slot > (lastSlotWorked[d.id][dateStr] ?? -1)) {
+        lastSlotWorked[d.id][dateStr] = slot
+      }
+      void required
+      return true
+    }
+    return false
+  }
+  // Try (B) — off-day shift add. Picks a 4-5h pattern that includes the
+  // violation slot, bypasses over-coverage ceilings entirely. Returns
+  // true if it placed one.
+  const tryOffDayShift = (dateStr: string, dow: number, slot: number): boolean => {
+    const template = DRIVER_DAY_TEMPLATES[dow]
+    for (const d of shuffledDrivers) {
+      if (d.isShopper) continue
+      const idx = scheduleMap[d.id].findIndex((e) => e.date === dateStr)
+      if (idx < 0) continue
+      const entry = scheduleMap[d.id][idx]
+      if (!entry.isOff) continue
+      const wLabel = weekLabel(parseISO(dateStr))
+      const currentDays = daysWorked[d.id][wLabel] ?? 0
+      if (currentDays >= MAX_DAYS_PER_WEEK) continue
+      const cap = bufferedCapOf(d)
+      const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
+      if (remaining < 4) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks && blocks[slot]) continue
+
+      // Pick the shortest pattern (4-5h) that COVERS the violation slot
+      // and passes hard-rule checks. Skip patterns that don't touch
+      // `slot` since those don't help.
+      let bestPattern: boolean[] | null = null
+      let bestHours = Infinity
+      for (const raw of template.shiftPatterns) {
+        const p = raw.map(v => v === 1)
+        const h = slotHours(p)
+        if (h < 4 || h > 5) continue
+        if (h > remaining) continue
+        if (!p[slot]) continue
+        if (blocks && p.some((on, sIdx) => on && blocks[sIdx])) continue
+        {
+          const yest = scheduleMap[d.id][idx - 1]
+          if (yest && !yest.isOff && violatesMinRest(lastActive(yest.slots), firstActive(p))) continue
+        }
+        {
+          const tomorrow = scheduleMap[d.id][idx + 1]
+          if (tomorrow && !tomorrow.isOff) {
+            const tFirst = tomorrow.slots.findIndex(x => x)
+            if (tFirst >= 0 && violatesMinRest(lastActive(p), tFirst)) continue
+          }
+        }
+        if (lastActive(p) >= CLOSER_END_THRESHOLD
+            && dayHasMorningOpening(dow)
+            && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
+        if (h < bestHours) { bestHours = h; bestPattern = p }
+      }
+      if (!bestPattern) continue
+
+      const h = bestHours
+      entry.isOff = false
+      entry.slots = [...bestPattern]
+      entry.totalHours = h
+      weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) + h
+      daysWorked[d.id][wLabel] = (daysWorked[d.id][wLabel] ?? 0) + 1
+      const cov = coverageActual[dateStr]
+      for (let s = 0; s < bestPattern.length; s++) if (bestPattern[s]) cov[s]++
+      lastSlotWorked[d.id][dateStr] = lastActive(bestPattern)
+      return true
+    }
+    return false
+  }
+  // Try (C) — donor-slot swap. Find a driver covering a 3 PM or 4 PM
+  // donor slot on the violation date who can adjacently-extend onto the
+  // violation slot — net hours unchanged.
+  const tryDonorSwap = (dateStr: string, dow: number, slot: number): boolean => {
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    for (const d of shuffledDrivers) {
+      if (d.isShopper) continue
+      const idx = scheduleMap[d.id].findIndex((e) => e.date === dateStr)
+      if (idx < 0) continue
+      const entry = scheduleMap[d.id][idx]
+      if (entry.isOff) continue
+      if (entry.slots[slot]) continue                // already covers violation
+      // Driver must currently cover one of the donor slots.
+      let donorSlot = -1
+      for (const ds of DONOR_SLOTS) {
+        if (entry.slots[ds]) { donorSlot = ds; break }
+      }
+      if (donorSlot < 0) continue
+      // The trimmed donor slot must stay >= floor of its target — though
+      // donor slots have no floor by definition, we still gate on
+      // "target > 0 AND would go below target by more than 1" to avoid
+      // collapsing it entirely. (3 PM target is usually present but low.)
+      const trimmedCov = (cov[donorSlot] ?? 0) - 1
+      if (required[donorSlot] > 0 && trimmedCov < 0) continue
+      const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+      if (blocks && blocks[slot]) continue
+      // The new shift after swap. Build candidate slot array: remove
+      // donor slot, add violation slot. Then validate contiguous + checks.
+      const proposed = [...entry.slots]
+      proposed[donorSlot] = false
+      proposed[slot] = true
+      // Reject if proposed is non-contiguous past the existing break (we
+      // allow patterns with one break, but never two). Check by counting
+      // OFF→ON transitions after the first ON.
+      let transitions = 0
+      let sawOn = false
+      for (let s = 0; s < proposed.length; s++) {
+        if (proposed[s]) {
+          if (!sawOn) sawOn = true
+          else if (s > 0 && !proposed[s - 1]) transitions++
+        }
+      }
+      if (transitions > 1) continue
+      // Daily hours unchanged (1 off + 1 on), so no daily-max change.
+      // 12h rest may change if the new first/last slot shifts.
+      const newFirst = proposed.findIndex(s => s)
+      let newLast = -1
+      for (let z = proposed.length - 1; z >= 0; z--) if (proposed[z]) { newLast = z; break }
+      {
+        const yest = scheduleMap[d.id][idx - 1]
+        if (yest && !yest.isOff) {
+          const yLast = lastActive(yest.slots)
+          if (violatesMinRest(yLast, newFirst)) continue
+        }
+      }
+      {
+        const tomorrow = scheduleMap[d.id][idx + 1]
+        if (tomorrow && !tomorrow.isOff) {
+          const tFirst = tomorrow.slots.findIndex(x => x)
+          if (tFirst >= 0 && violatesMinRest(newLast, tFirst)) continue
+        }
+      }
+      // Closer-cap if swap creates a new closer.
+      if (newLast >= CLOSER_END_THRESHOLD) {
+        let prevLast = -1
+        for (let z = entry.slots.length - 1; z >= 0; z--) if (entry.slots[z]) { prevLast = z; break }
+        const becomesCloser = prevLast < CLOSER_END_THRESHOLD
+        if (becomesCloser
+            && dayHasMorningOpening(dow)
+            && countClosersOn(dateStr) >= MAX_CLOSERS_PER_NIGHT) continue
+      }
+
+      // Apply.
+      entry.slots = proposed
+      cov[donorSlot] = trimmedCov
+      cov[slot] = (cov[slot] ?? 0) + 1
+      lastSlotWorked[d.id][dateStr] = newLast
+      return true
+    }
+    return false
+  }
+
+  // Walk all dates, for each find priority-floor slots still below 40%
+  // and grind through (A)→(B)→(C) until either fixed or all three return
+  // false (no legal placement). The outer while loop iterates because
+  // applying (A) or (B) can OPEN new options (e.g. (B) added a driver
+  // who is now adjacent to the next violation slot).
+  for (const di of allDates) {
+    const dateStr = format(di, 'yyyy-MM-dd')
+    const dow = di.getDay()
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    if (!cov) continue
+    let safety = 30
+    while (safety-- > 0) {
+      // Build sorted violation list each iteration so we always target the
+      // deepest deficit (the slot furthest below its floor).
+      const violations: { slot: number; deficit: number }[] = []
+      for (let s = 0; s < required.length; s++) {
+        if (!isFloorPrioritySlot(dow, s)) continue
+        const floor = floorCoverageFor(required[s])
+        const deficit = floor - (cov[s] ?? 0)
+        if (deficit > 0) violations.push({ slot: s, deficit })
+      }
+      if (violations.length === 0) break
+      violations.sort((a, b) => b.deficit - a.deficit)
+      const v = violations[0]
+      const ok = tryAdjacentExtend(dateStr, dow, v.slot)
+        || tryOffDayShift(dateStr, dow, v.slot)
+        || tryDonorSwap(dateStr, dow, v.slot)
+      if (!ok) break  // nothing more to do for this date; will be flagged
+                      // as headcount-limited in the post-pass scan.
+    }
+  }
+
+  // ─── Headcount-limited slot detection ───────────────────────────────────
+  // Final scan: any priority floor slot still below 40% of its target is
+  // a genuine headcount shortage. The redistribution phases tried every
+  // legal placement; if those returned false, no driver can be added
+  // without breaking a hard rule (time-off, cap, daily max, 12h rest).
+  const headcountLimitedSlots: import('./types').HeadcountLimitedSlot[] = []
+  const slotLabelForIndex = (sIdx: number): string => {
+    // Slot 0 = 8 AM, slot 14 = 10 PM, +1 hour per slot.
+    const h24 = 8 + sIdx
+    const period = h24 >= 12 ? 'PM' : 'AM'
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+    return `${h12} ${period}`
+  }
+  for (const di of allDates) {
+    const dateStr = format(di, 'yyyy-MM-dd')
+    const dow = di.getDay()
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    if (!cov) continue
+    const dayLabel = format(di, 'EEE, MMMM do')
+    for (let s = 0; s < required.length; s++) {
+      if (!isFloorPrioritySlot(dow, s)) continue
+      const target = required[s]
+      const floor = floorCoverageFor(target)
+      const achieved = cov[s] ?? 0
+      if (achieved >= floor) continue
+      headcountLimitedSlots.push({
+        date: dateStr,
+        dayLabel,
+        slotIndex: s,
+        slotLabel: slotLabelForIndex(s),
+        achieved,
+        target,
+        floor,
+        hoursShortOfFloor: floor - achieved,
+      })
+    }
+  }
+
   const driverSchedules: DriverSchedule[] = drivers.map((d) => {
     const days = scheduleMap[d.id]
     const wh = weekHours[d.id]
@@ -1937,7 +2415,7 @@ export function generateDriverSchedule({
 
   return {
     startDate, endDate, fullTimeCap, partTimeCap, seed,
-    dates, driverSchedules, coverageActual,
+    dates, driverSchedules, coverageActual, headcountLimitedSlots,
   }
 }
 

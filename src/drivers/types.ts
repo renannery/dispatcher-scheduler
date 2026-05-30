@@ -46,6 +46,30 @@ export interface DriverSchedule {
   totalHours: number
 }
 
+/**
+ * A slot the scheduler couldn't lift to the 40% coverage floor even with
+ * its redistribution phases — meaning the gap is a genuine headcount
+ * shortage (not just a distribution problem). Surfaced in a banner so ops
+ * knows additional bodies are needed there, not algorithm tweaks.
+ */
+export interface HeadcountLimitedSlot {
+  date: string
+  /** Pretty day label, e.g. "Wed, June 3rd" — matches DriverDayEntry.dayLabel. */
+  dayLabel: string
+  /** Slot index 0..14, where 0 = 8 AM and 14 = 10 PM. */
+  slotIndex: number
+  /** Human label for the slot, e.g. "10 PM". */
+  slotLabel: string
+  /** Best coverage the scheduler achieved at this slot after all phases. */
+  achieved: number
+  /** Configured coverage target for this slot on this day. */
+  target: number
+  /** 40% floor for this slot — `ceil(target * 0.40)`. */
+  floor: number
+  /** Driver-hours short of the 40% floor. */
+  hoursShortOfFloor: number
+}
+
 export interface GeneratedDriverSchedule {
   startDate: string
   endDate: string
@@ -57,6 +81,9 @@ export interface GeneratedDriverSchedule {
   dates: { date: string; dayLabel: string; weekLabel: string; dayOfWeek: number }[]
   driverSchedules: DriverSchedule[]
   coverageActual: Record<string, number[]>
+  /** Slots that finished below 40% floor AND no additional driver could
+   *  legally be placed. Empty when every priority floor slot meets >=40%. */
+  headcountLimitedSlots: HeadcountLimitedSlot[]
 }
 
 /**
