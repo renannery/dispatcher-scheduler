@@ -27,6 +27,16 @@ function nextThursday(): string {
   return d.toISOString().slice(0, 10)
 }
 
+/**
+ * Computes the next work-week cycle (Thursday → following Wednesday).
+ * Exported so UI affordances ("Next cycle" button on the date picker)
+ * can produce the same range the store uses for its initial default.
+ */
+export function nextWorkWeekRange(): { start: string; end: string } {
+  const start = nextThursday()
+  return { start, end: addDays(start, 6) }
+}
+
 function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T00:00:00')
   d.setDate(d.getDate() + days)

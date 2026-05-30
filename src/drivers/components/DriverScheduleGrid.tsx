@@ -1,5 +1,6 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
+import { format, parseISO } from 'date-fns'
+import { AlertTriangle, Calendar, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
@@ -11,7 +12,7 @@ import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 
 import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
 import { shuffleDriverSchedules } from '../shuffler'
-import { useDriverStore } from '../store'
+import { nextWorkWeekRange, useDriverStore } from '../store'
 import { displayName } from '../utils'
 import { exportDriverScheduleToXLS } from '../xlsExporter'
 import { DriverDayGrid } from './DriverDayGrid'
@@ -1078,6 +1079,28 @@ export function DriverScheduleGrid() {
             compact
             showStats
           />
+          {(() => {
+            // "Next cycle" preset — jumps the range to the upcoming Thu→Wed
+            // work week. Hidden when already on next cycle, so the button
+            // disappears once it's applied (avoids confusing "do nothing"
+            // clicks). Auto-regenerates through handleDateRangeChange.
+            const { start: nextStart, end: nextEnd } = nextWorkWeekRange()
+            const alreadyOnNext = startDate === nextStart && endDate === nextEnd
+            if (alreadyOnNext) return null
+            const nextStartLabel = format(parseISO(nextStart), 'MMM d')
+            const nextEndLabel = format(parseISO(nextEnd), 'MMM d')
+            return (
+              <button
+                type="button"
+                onClick={() => handleDateRangeChange(nextStart, nextEnd)}
+                title={`Snap to the next Thursday → Wednesday work week (${nextStartLabel} → ${nextEndLabel}) and regenerate.`}
+                className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 transition hover:bg-blue-100"
+              >
+                <Calendar className="h-3 w-3" />
+                Next cycle: {nextStartLabel} → {nextEndLabel}
+              </button>
+            )
+          })()}
           <div className="text-xs text-slate-500">
             <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
             full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
