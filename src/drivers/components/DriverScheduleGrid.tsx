@@ -1,12 +1,14 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Clock, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, ChevronDown, ChevronRight, Clock, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 
-import { effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { DRIVER_SLOTS, effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
+import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 
 import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
@@ -423,9 +425,12 @@ interface DriverDrillDownModalProps {
   title: string
   subtitle?: string
   rows: DrillDownRow[]
+  /** Optional callback per-row: when set, each row gets an "Edit
+   *  availability" button that calls this with the driver id. */
+  onEditDriver?: (driverId: string) => void
 }
 
-function DriverDrillDownModal({ open, onClose, title, subtitle, rows }: DriverDrillDownModalProps) {
+function DriverDrillDownModal({ open, onClose, title, subtitle, rows, onEditDriver }: DriverDrillDownModalProps) {
   if (!open) return null
   // Sort by hours descending so the biggest-impact drivers (most hours
   // for "at cap" / fewest for "off") read first. Stable sort preserves
@@ -488,16 +493,29 @@ function DriverDrillDownModal({ open, onClose, title, subtitle, rows }: DriverDr
                         {r.daysWorked} day{r.daysWorked === 1 ? '' : 's'} worked · {r.daysOff} day{r.daysOff === 1 ? '' : 's'} off
                       </div>
                     </div>
-                    <div className="shrink-0 text-right tabular-nums">
-                      <div
-                        className={clsx(
-                          'rounded-full border px-2 py-0.5 text-xs font-semibold',
-                          hoursStatusBg(r.hours, r.cap),
-                        )}
-                      >
-                        {r.hours}h / {r.cap}h
+                    <div className="flex shrink-0 items-center gap-2">
+                      <div className="text-right tabular-nums">
+                        <div
+                          className={clsx(
+                            'rounded-full border px-2 py-0.5 text-xs font-semibold',
+                            hoursStatusBg(r.hours, r.cap),
+                          )}
+                        >
+                          {r.hours}h / {r.cap}h
+                        </div>
+                        <div className="mt-0.5 text-[10px] text-slate-400">{pct}%</div>
                       </div>
-                      <div className="mt-0.5 text-[10px] text-slate-400">{pct}%</div>
+                      {onEditDriver && (
+                        <button
+                          type="button"
+                          onClick={() => { onClose(); onEditDriver(r.id) }}
+                          title="Edit recurring weekly blocks + time-off for this driver"
+                          className="rounded-md border border-slate-200 bg-white p-1 text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                          aria-label="Edit availability"
+                        >
+                          <CalendarClock className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </li>
                 )
@@ -508,6 +526,143 @@ function DriverDrillDownModal({ open, onClose, title, subtitle, rows }: DriverDr
 
         <div className="border-t border-slate-100 px-5 py-2 text-xs text-slate-500">
           {sorted.length} driver{sorted.length === 1 ? '' : 's'} in this bucket
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Driver availability editor (modal) ──────────────────────────────────────
+//
+// Lets ops adjust a driver's recurring weekly blocks + per-date time-off
+// from the schedule step, without leaving the schedule view or walking
+// back to Names. Critical for the pending-availability workflow: when a
+// late-confirming driver (e.g. Andre) sends in updated blocks, ops needs
+// to record them BEFORE clicking "Confirm & add" so the incremental
+// placement honors the new constraints.
+//
+// Edits write straight to the store via the same actions the Names step
+// uses (`toggleRecurringBlock`, `setRecurringBlocks`, `applyAbsenceRange`).
+// They do NOT trigger a regenerate — that would re-shuffle the whole
+// schedule and defeat the point of editing one driver in isolation.
+
+interface DriverAvailabilityModalProps {
+  open: boolean
+  onClose: () => void
+  driverId: string | null
+  /** Schedule period bounds — passed to the date-range absence form so
+   *  the date inputs can't pick outside the active window. */
+  minDate: string
+  maxDate: string
+}
+
+function DriverAvailabilityModal({ open, onClose, driverId, minDate, maxDate }: DriverAvailabilityModalProps) {
+  const driver = useDriverStore((s) =>
+    driverId ? s.drivers.find((d) => d.id === driverId) ?? null : null,
+  )
+  const toggleRecurringBlock = useDriverStore((s) => s.toggleRecurringBlock)
+  const setRecurringBlocks = useDriverStore((s) => s.setRecurringBlocks)
+  const applyAbsenceRange = useDriverStore((s) => s.applyAbsenceRange)
+  const [showAbsenceForm, setShowAbsenceForm] = useState(false)
+  // Reset the inline-form visibility every time the modal closes so it
+  // re-opens fresh.
+  useEffect(() => { if (!open) setShowAbsenceForm(false) }, [open])
+
+  if (!open || !driver) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-2xl bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-slate-800">
+              Availability — {displayName(driver.name)}
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Edits apply to <span className="font-semibold">this driver only</span> and don't trigger a regenerate.
+              {driver.pendingAvailability && (
+                <span className="ml-1 text-amber-700">
+                  Set their blocks before clicking <span className="font-semibold">Confirm &amp; add</span> on the banner.
+                </span>
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          <div className="mb-4">
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Recurring weekly blocks
+            </h4>
+            <RecurringBlocksEditor
+              blocks={driver.recurringBlocks}
+              slots={DRIVER_SLOTS}
+              accentColor={driver.color}
+              onToggle={(dow, si) => toggleRecurringBlock(driver.id, dow, si)}
+              onSetAll={(blocks) => setRecurringBlocks(driver.id, blocks)}
+            />
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-baseline justify-between gap-2">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Time-off for this schedule period
+              </h4>
+              {!showAbsenceForm && (
+                <button
+                  type="button"
+                  onClick={() => setShowAbsenceForm(true)}
+                  className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add absence
+                </button>
+              )}
+            </div>
+            {showAbsenceForm ? (
+              <AbsenceRangeForm
+                minDate={minDate}
+                maxDate={maxDate}
+                slots={DRIVER_SLOTS}
+                onApply={(start, end, reason, slotMask) => {
+                  applyAbsenceRange(driver.id, start, end, reason, slotMask)
+                  setShowAbsenceForm(false)
+                }}
+                onCancel={() => setShowAbsenceForm(false)}
+              />
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                Add one-off absences (vacation, sick, partial-day) for any date in the current schedule period.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-5 py-2">
+          <span className="text-[11px] text-slate-500">
+            Changes save automatically.
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700"
+          >
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -777,6 +932,12 @@ export function DriverScheduleGrid() {
   // (which bucket inside that week).
   type DrillKind = 'ftAtCap' | 'ftUnder' | 'ftOff' | 'pt' | '1d' | '2d' | '3d' | '4d+'
   const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
+  // Availability-editor modal state — id of the driver whose recurring
+  // blocks + time-off are being edited from the schedule view. Cleared
+  // by close. Drives the DriverAvailabilityModal at the bottom of the
+  // page; changes apply immediately to the store and don't trigger a
+  // regenerate, so other drivers' shifts stay put.
+  const [editingAvailability, setEditingAvailability] = useState<string | null>(null)
   // Simulation state — when set, shows a comparison row in the hiring
   // banner: "Adding N drivers would close the gap to Yh." Cleared
   // whenever the underlying schedule changes (regenerate, add driver,
@@ -1039,6 +1200,15 @@ export function DriverScheduleGrid() {
                   >
                     {d.isShopper ? 'shopper' : d.employmentType === 'full' ? 'FT' : 'PT'}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingAvailability(d.id)}
+                    title="Edit recurring weekly blocks + time-off for this driver before slotting them in. Doesn't trigger a regenerate."
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-50"
+                  >
+                    <CalendarClock className="h-3 w-3" />
+                    Edit availability
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleConfirmPending(d.id)}
@@ -1666,6 +1836,14 @@ export function DriverScheduleGrid() {
         onSubmit={handleQuickAdd}
       />
 
+      <DriverAvailabilityModal
+        open={!!editingAvailability}
+        onClose={() => setEditingAvailability(null)}
+        driverId={editingAvailability}
+        minDate={startDate}
+        maxDate={endDate}
+      />
+
       {/* Drill-down modal — content computed from `drillDown` against the
           selected week's data. Closed state = null. Single instance at
           the bottom so we don't render 8 modals per week card. */}
@@ -1735,6 +1913,7 @@ export function DriverScheduleGrid() {
             title={title}
             subtitle={subtitle}
             rows={rows}
+            onEditDriver={(id) => setEditingAvailability(id)}
           />
         )
       })()}
