@@ -165,7 +165,7 @@ function blockedBitmap(
 }
 
 export function generateDriverSchedule({
-  drivers,
+  drivers: allDrivers,
   startDate,
   endDate,
   timeOff,
@@ -177,6 +177,15 @@ export function generateDriverSchedule({
   minHoursPerDay = 4,
   maxHoursPerDay = MAX_HOURS_PER_DAY,
 }: ScheduleParams): GeneratedDriverSchedule {
+  // Drivers with `pendingAvailability` are deferred: they stay in the
+  // roster but the generator pretends they don't exist for THIS run.
+  // The schedule output appends them back at the end as all-off rows so
+  // the UI keeps showing them with a "Pending availability" banner,
+  // and ops can flip the flag off + slot them in via
+  // `addDriverIncremental` once availability arrives — no full
+  // regenerate required.
+  const pendingDrivers = allDrivers.filter((d) => d.pendingAvailability)
+  const drivers = allDrivers.filter((d) => !d.pendingAvailability)
   const start = parseISO(startDate)
   const end = parseISO(endDate)
   const totalDays = differenceInDays(end, start) + 1
@@ -2411,6 +2420,25 @@ export function generateDriverSchedule({
     return { driver: d, days, weeklyHours: wh, totalHours }
   })
 
+  // Append pending-availability drivers as all-off rows so the UI still
+  // lists them in the schedule view (banner + roster pills) without
+  // them affecting coverage, weekly hours, or any phase. Once ops flips
+  // pendingAvailability off, the "Confirm & add" action in the
+  // schedule view runs `addDriverIncremental` to slot them in.
+  for (const d of pendingDrivers) {
+    const days: DriverDayEntry[] = allDates.map((date) => ({
+      date: format(date, 'yyyy-MM-dd'),
+      dayLabel: format(date, 'EEE, MMMM do'),
+      dayOfWeek: date.getDay(),
+      slots: new Array(DRIVER_SLOTS.length).fill(false),
+      totalHours: 0,
+      isOff: true,
+    }))
+    const wh: Record<string, number> = {}
+    for (const di of allDates) wh[weekLabel(di)] = 0
+    driverSchedules.push({ driver: d, days, weeklyHours: wh, totalHours: 0 })
+  }
+
   const dates = allDates.map((d) => ({
     date: format(d, 'yyyy-MM-dd'),
     dayLabel: format(d, 'EEE, MMMM do'),
@@ -2781,7 +2809,14 @@ export function addDriverIncremental({
   }
 
   // Append to the existing driverSchedules array (preserve order).
-  const newDriverSchedules = [...schedule.driverSchedules, newDriverSchedule]
+  // If a placeholder for this driver already exists (e.g. pending-
+  // availability entry that the scheduler appended as all-off), REPLACE
+  // it in place instead of appending a duplicate. Keyed by driver.id —
+  // a freshly-imported driver won't collide.
+  const existingIdx = schedule.driverSchedules.findIndex((ds) => ds.driver.id === newDriver.id)
+  const newDriverSchedules = existingIdx >= 0
+    ? schedule.driverSchedules.map((ds, i) => (i === existingIdx ? newDriverSchedule : ds))
+    : [...schedule.driverSchedules, newDriverSchedule]
 
   // Under-utilized when total < 70% of the per-week cap × number of weeks.
   const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size || 1

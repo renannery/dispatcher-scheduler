@@ -97,6 +97,7 @@ interface DriverSchedulerStore {
   removeDriver: (id: string) => void
   setEmploymentType: (id: string, type: EmploymentType) => void
   setShopperStatus: (id: string, isShopper: boolean) => void
+  setPendingAvailability: (id: string, pending: boolean) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
@@ -227,6 +228,17 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
         // Strip the field when toggling off so serialized snapshots stay clean.
         const next = { ...d }
         delete next.isShopper
+        return next
+      }),
+    })),
+
+  setPendingAvailability: (id, pending) =>
+    set((s) => ({
+      drivers: s.drivers.map((d) => {
+        if (d.id !== id) return d
+        if (pending) return { ...d, pendingAvailability: true }
+        const next = { ...d }
+        delete next.pendingAvailability
         return next
       }),
     })),

@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Clock, Download, FileJson, FileText, Lightbulb, Loader2, Plus, RefreshCw, Search, Shield, Shuffle, Undo2, Redo2, UserPlus, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
@@ -685,6 +685,7 @@ export function DriverScheduleGrid() {
     setMaxHoursPerDay,
     setCoverageScale,
     addDriver,
+    setPendingAvailability,
     undoScheduleEdit,
     redoScheduleEdit,
     applyShuffledSchedule,
@@ -877,6 +878,33 @@ export function DriverScheduleGrid() {
     }
   }
 
+  // "Confirm & add" for a pending-availability driver. Clears the
+  // pending flag in the roster, then runs the SAME addDriverIncremental
+  // path as quick-add so the driver gets slotted into the existing
+  // schedule without re-running the generator. Every other driver's
+  // shifts stay intact.
+  const handleConfirmPending = (driverId: string) => {
+    setPendingAvailability(driverId, false)
+    if (!schedule) return
+    const freshDrivers = useDriverStore.getState().drivers
+    const driver = freshDrivers.find((d) => d.id === driverId)
+    if (!driver) return
+    const result = addDriverIncremental({
+      schedule,
+      newDriver: driver,
+      timeOff,
+      coverageScale, coverageOverrides,
+      minHoursPerDay, maxHoursPerDay,
+    })
+    setSchedule(result.schedule)
+    setSimResult(null)
+    if (result.underUtilized) {
+      console.warn(
+        `[confirm pending] ${driver.name} placed at ${result.assignedHours}h / ${result.weeklyCap}h-per-week cap. Not enough coverage gaps to absorb their full capacity — use Regenerate if you want to rebalance.`
+      )
+    }
+  }
+
   // Run a hypothetical schedule with N placeholder FT drivers tacked
   // onto the roster, then report the shortfall before/after WITHOUT
   // mutating the real schedule or roster. Lets ops sanity-check the
@@ -965,8 +993,66 @@ export function DriverScheduleGrid() {
 
   const health = analyzeCoverageHealth(schedule, coverageScale, coverageOverrides)
 
+  // Drivers flagged as "pending availability" — excluded from generation,
+  // surfaced in a banner with a "Confirm & add" action that incrementally
+  // adds them once availability arrives.
+  const pendingDrivers = drivers.filter((d) => d.pendingAvailability)
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Pending-availability banner — only when at least one roster
+          driver has the flag set. Listing each driver with a one-click
+          "Confirm & add" action that slots them into the existing
+          schedule via addDriverIncremental (no full regenerate).
+          The flag is honored on the NEXT generation; if you toggle a
+          driver to pending AFTER generating, their old shifts persist
+          until you regenerate. The banner doesn't try to differentiate
+          — just says "marked pending" and lets ops decide. */}
+      {pendingDrivers.length > 0 && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
+          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="flex-1 text-sm text-amber-900">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-semibold">
+                {pendingDrivers.length} driver{pendingDrivers.length === 1 ? '' : 's'} marked pending availability.
+              </span>
+              <span className="text-xs text-amber-800/80">
+                Click <span className="font-semibold">Confirm &amp; add</span> once availability arrives — slots them in without re-running the generator (existing assignments stay put).
+              </span>
+            </div>
+            <ul className="mt-3 flex flex-wrap gap-2">
+              {pendingDrivers.map((d) => (
+                <li
+                  key={d.id}
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-white px-3 py-1 text-xs"
+                >
+                  <span className="font-semibold text-slate-800">{displayName(d.name)}</span>
+                  <span
+                    className={clsx(
+                      'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                      d.isShopper
+                        ? 'bg-purple-100 text-purple-700'
+                        : d.employmentType === 'full'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-blue-100 text-blue-700',
+                    )}
+                  >
+                    {d.isShopper ? 'shopper' : d.employmentType === 'full' ? 'FT' : 'PT'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmPending(d.id)}
+                    className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-emerald-700"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Confirm &amp; add
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       {/* Inline suggestions banner — only when there's any shortfall.
           Lets ops bump cap / max h-day / coverage scale and regenerate
           without walking back to the Period step. */}

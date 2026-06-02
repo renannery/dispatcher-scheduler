@@ -28,6 +28,16 @@ export interface Driver {
    * day-block (matching the reference layout the backend expects).
    */
   isShopper?: boolean
+  /**
+   * "Pending availability" — driver stays on the roster but is excluded
+   * from the next generated schedule. Used for drivers whose availability
+   * lands late in the week (Tue/Wed evening) after ops already needs to
+   * publish. Once their availability arrives, ops flips this flag off and
+   * the schedule view's "Confirm & add" action slots them in via
+   * `addDriverIncremental` — no full regenerate, no churn to existing
+   * assignments. Default unset = participates in generation as normal.
+   */
+  pendingAvailability?: boolean
 }
 
 export interface DriverDayEntry {

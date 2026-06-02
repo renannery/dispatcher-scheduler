@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { CalendarClock, Search, ShoppingBasket, Upload, UserPlus, X } from 'lucide-react'
+import { CalendarClock, Clock, Search, ShoppingBasket, Upload, UserPlus, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
@@ -27,7 +27,7 @@ const TYPE_STYLES: Record<EmploymentType, { pill: string; active: string }> = {
 }
 
 export function DriverInput() {
-  const { drivers, addDriver, removeDriver, setEmploymentType, setShopperStatus, toggleRecurringBlock, setRecurringBlocks, setStep, partTimeCap } = useDriverStore()
+  const { drivers, addDriver, removeDriver, setEmploymentType, setShopperStatus, setPendingAvailability, toggleRecurringBlock, setRecurringBlocks, setStep, partTimeCap } = useDriverStore()
   const [input, setInput] = useState('')
   const [type, setType] = useState<EmploymentType>('full')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -390,6 +390,24 @@ export function DriverInput() {
                     >
                       <ShoppingBasket className="h-3.5 w-3.5" />
                       Shopper
+                    </button>
+
+                    <button
+                      onClick={() => setPendingAvailability(d.id, !d.pendingAvailability)}
+                      title={
+                        d.pendingAvailability
+                          ? 'Pending availability — excluded from the next generated schedule. Click to undo and include normally.'
+                          : 'Mark as pending availability — driver stays on the roster but is left OUT of the next generated schedule. Use for late-confirming drivers (e.g. availability not in until Tue/Wed evening). Once availability arrives, the Schedule view has a "Confirm & add" button that slots them in without re-running the generator.'
+                      }
+                      className={clsx(
+                        'flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition',
+                        d.pendingAvailability
+                          ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                          : 'border-slate-200 bg-slate-50 text-slate-400 hover:bg-slate-100',
+                      )}
+                    >
+                      <Clock className="h-3.5 w-3.5" />
+                      Pending
                     </button>
 
                     <button
