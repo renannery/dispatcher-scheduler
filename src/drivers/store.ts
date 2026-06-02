@@ -533,7 +533,31 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
       state.startDate = start
       state.endDate = addDays(start, 6)
       state.schedule = null
+      return
     }
+    // Repair `coverageActual` in any persisted schedule that pre-dates
+    // the Phase-9 shopper-exclusion fix. Old generations could have
+    // bumped driver-coverage by 1 every time Phase-9 extended a shopper
+    // shift backward into an opening slot — leaving cells visibly
+    // "5/7" when only 4 drivers were actually there. Recount from
+    // scratch from the per-driver slot bitmaps, excluding shoppers.
+    // No-op when totals already match (the common case once the bug
+    // stops generating bad data).
+    const sch = state.schedule
+    if (!sch || !Array.isArray(sch.driverSchedules)) return
+    const recounted: Record<string, number[]> = {}
+    for (const date of Object.keys(sch.coverageActual ?? {})) {
+      const len = sch.coverageActual[date]?.length ?? 15
+      const fresh = new Array(len).fill(0)
+      for (const ds of sch.driverSchedules) {
+        if (ds.driver.isShopper) continue
+        const e = ds.days.find((d) => d.date === date)
+        if (!e || e.isOff) continue
+        e.slots.forEach((on, i) => { if (on) fresh[i]++ })
+      }
+      recounted[date] = fresh
+    }
+    state.schedule = { ...sch, coverageActual: recounted }
   },
   // Auto-save the full working set so refresh / browser close doesn't
   // nuke in-flight edits. Excludes the undo/redo stacks (they balloon

@@ -2040,7 +2040,12 @@ export function generateDriverSchedule({
       // Iterating shuffled order so we don't favor early-alphabet drivers.
       for (const d of shuffledDrivers) {
         if (shortfall <= 0) break
-        if (d.isShopper && dow === 0) continue   // shoppers don't work Sundays
+        // Skip shoppers entirely — they belong to a parallel pool
+        // (groceries) and don't count toward DRIVER coverage. Extending
+        // a shopper here would still bump `cov[targetSlot]` below
+        // (polluting driver-coverage with shopper hours) AND wouldn't
+        // help the actual gap.
+        if (d.isShopper) continue
 
         const entry = scheduleMap[d.id].find((e) => e.date === dateStr)
         if (!entry || entry.isOff) continue
