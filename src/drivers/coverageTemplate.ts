@@ -309,26 +309,37 @@ export function isProtectedOpeningSlot(_dow: number, slot: number): boolean {
  *  shortfall) instead of red (real gap). */
 export const LOW_PRIORITY_WEIGHT = 0.5
 
-// ─── Hard 40% coverage floor (tight-week safety net) ─────────────────────
-// No floor slot may drop below 40% of its target — i.e. never tolerate a
-// shortfall worse than 60%. Distinct from FLOOR_SLOTS (which says "this
-// slot must meet target" — a soft preference) and from PROTECTED_OPENING_SLOTS
-// (the 8-10 AM window the main pass actively fights for). The 40% floor is
-// the HARD bottom: even when total demand exceeds capacity, the optimizer
-// must spread the shortfall so every floor slot stays >= 40%, taking the
-// hit from the deprioritized 15:00-16:00 window instead.
+// ─── Hard coverage floors (safety nets for under-target slots) ───────────
+// No floor slot may drop below its FLOOR ratio of target. Distinct from
+// FLOOR_SLOTS (which says "this slot must meet target" — a soft
+// preference): floor ratios are the HARD bottom that triggers Phase 10
+// redistribution. Even when total demand exceeds capacity, the optimizer
+// must spread the shortfall so every floor slot stays at or above its
+// floor — taking the hit from the deprioritized 15:00-16:00 window
+// instead.
 //
-// Picked at 40% per ops: Wed 22:00 came in at 2/5 (40%) and Wed 19:00 at
-// 21/36 (58%) on a recent tight week. Both were judged "near-collapse"
-// service quality — anything worse needed to be prevented.
+// Two ratios:
+//   - 40% default — Wed 22:00 came in at 2/5 (40%) and Wed 19:00 at
+//     21/36 (58%) on a tight week. Both were judged "near-collapse"
+//     service quality. The default floor prevents anything worse.
+//   - 65% on opening slots (8-10 AM) — these are the start of operation.
+//     3/7 at Sat 8 AM (43%) passed the 40% floor but ops flagged it as
+//     too thin to open the day with. 65% bumps the floor on slot 0 with
+//     target 7 to ceil(7×0.65)=5, forcing Phase 10 to escalate.
 export const COVERAGE_FLOOR_RATIO = 0.40
+export const OPENING_FLOOR_RATIO = 0.65
 
-/** Minimum coverage a slot may run at, given its target. 0 when target is 0.
- *  Rounded UP so a slot with target 5 floors at 2 (40%), not 2 (40%) vs.
- *  1.6 floor. ceil avoids the optimizer happily landing at "just under". */
-export function floorCoverageFor(target: number): number {
+/** Minimum coverage a slot may run at, given its target. When dow/slot
+ *  are provided AND the slot is in the protected opening window
+ *  (PROTECTED_OPENING_SLOTS, i.e. 8-10 AM), the stricter OPENING_FLOOR_RATIO
+ *  applies. Otherwise the standard COVERAGE_FLOOR_RATIO. 0 when target
+ *  is 0. Rounded UP so the optimizer can't happily land at "just under". */
+export function floorCoverageFor(target: number, dow?: number, slot?: number): number {
   if (target <= 0) return 0
-  return Math.ceil(target * COVERAGE_FLOOR_RATIO)
+  const ratio = (dow !== undefined && slot !== undefined && isProtectedOpeningSlot(dow, slot))
+    ? OPENING_FLOOR_RATIO
+    : COVERAGE_FLOOR_RATIO
+  return Math.ceil(target * ratio)
 }
 
 /** Afternoon "donor" slots — 3 PM (15:00) and 4 PM (16:00). When total

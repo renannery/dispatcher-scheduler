@@ -2355,11 +2355,13 @@ export function generateDriverSchedule({
     let safety = 30
     while (safety-- > 0) {
       // Build sorted violation list each iteration so we always target the
-      // deepest deficit (the slot furthest below its floor).
+      // deepest deficit (the slot furthest below its floor). Floor ratio
+      // varies by slot — opening hours (8-10 AM) use the stricter
+      // OPENING_FLOOR_RATIO so 3/7 type opens get pushed harder.
       const violations: { slot: number; deficit: number }[] = []
       for (let s = 0; s < required.length; s++) {
         if (!isFloorPrioritySlot(dow, s)) continue
-        const floor = floorCoverageFor(required[s])
+        const floor = floorCoverageFor(required[s], dow, s)
         const deficit = floor - (cov[s] ?? 0)
         if (deficit > 0) violations.push({ slot: s, deficit })
       }
@@ -2397,7 +2399,7 @@ export function generateDriverSchedule({
     for (let s = 0; s < required.length; s++) {
       if (!isFloorPrioritySlot(dow, s)) continue
       const target = required[s]
-      const floor = floorCoverageFor(target)
+      const floor = floorCoverageFor(target, dow, s)
       const achieved = cov[s] ?? 0
       if (achieved >= floor) continue
       headcountLimitedSlots.push({
