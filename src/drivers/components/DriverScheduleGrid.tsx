@@ -11,7 +11,7 @@ import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 
-import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg } from '../scheduler'
+import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg, slideScheduleDates } from '../scheduler'
 import { shuffleDriverSchedules } from '../shuffler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
@@ -1092,12 +1092,34 @@ export function DriverScheduleGrid() {
     })
   }
 
-  // Inline date-range edit + regenerate from the Schedule header. Lets
-  // ops shift the schedule window (e.g. "actually start next Monday")
-  // without walking back to the Period step.
+  // Inline date-range edit from the Schedule header. The default
+  // behavior is now SLIDE — when the new range is a pure 7-day-aligned
+  // shift of the current schedule (same length, offset divisible by 7),
+  // the existing driver-shift distribution is re-keyed to the new dates
+  // without re-running the optimizer. This preserves any manual edits
+  // and the current shift assignments — ops can "publish next week"
+  // with one date change instead of regenerating + re-applying manual
+  // tweaks.
+  //
+  // Falls back to a full regenerate when:
+  //   - the new range has a different length (slide can't fill / drop
+  //     days while keeping a valid distribution)
+  //   - the new start day-of-week differs from the old (offset not a
+  //     multiple of 7), since the driver patterns are weekday-specific
+  //
+  // The Regenerate button stays available for ops who explicitly want
+  // a fresh optimizer run on the new dates.
   const handleDateRangeChange = (s: string, e: string) => {
     setDateRange(s, e)
     if (!s || !e || e < s) return
+    const slid = schedule ? slideScheduleDates(schedule, s, e) : null
+    if (slid) {
+      setSchedule(slid)
+      setExpandedDates(new Set())
+      setSimResult(null)
+      return
+    }
+    // Shape changed — full regenerate.
     regenSeed.current++
     const fresh = generateDriverSchedule({
       drivers, startDate: s, endDate: e, timeOff,

@@ -2454,6 +2454,107 @@ export function generateDriverSchedule({
   }
 }
 
+// ─── Slide schedule to new dates (no regeneration) ──────────────────────────
+//
+// When ops moves the date picker forward/backward by a multiple of 7 days
+// (same length, same start day-of-week), they almost always want to KEEP
+// the current driver-shift distribution and just re-label the dates. A
+// full regenerate would re-randomize the schedule and lose any manual
+// edits + Confirm-pending placements. This helper preserves the
+// distribution exactly — same drivers, same patterns, same coverage
+// numbers per DOW — and just re-keys every date by the offset.
+//
+// Returns null if the shape doesn't match (different length OR offset
+// not a multiple of 7 days). Callers should fall back to a full
+// regenerate in that case.
+
+/** Compute the day-offset between two ISO dates as integer days. */
+function offsetDays(fromISO: string, toISO: string): number {
+  return differenceInDays(parseISO(toISO), parseISO(fromISO))
+}
+
+/**
+ * Returns a new GeneratedDriverSchedule with every date shifted by
+ * `(newStartDate - schedule.startDate)` days. Preserves driver shift
+ * patterns, weekly hours, coverage counts (per-DOW), and headcount-
+ * limited flags. Returns null when the shift can't safely re-key —
+ * the caller should regenerate instead.
+ */
+export function slideScheduleDates(
+  schedule: GeneratedDriverSchedule,
+  newStartDate: string,
+  newEndDate: string,
+): GeneratedDriverSchedule | null {
+  const oldLen = offsetDays(schedule.startDate, schedule.endDate)
+  const newLen = offsetDays(newStartDate, newEndDate)
+  if (oldLen !== newLen) return null              // different length
+  const off = offsetDays(schedule.startDate, newStartDate)
+  if (off === 0) return schedule                  // no-op
+  if (off % 7 !== 0) return null                  // would shift weekday alignment
+
+  const shiftISO = (iso: string): string =>
+    format(addDays(parseISO(iso), off), 'yyyy-MM-dd')
+
+  // 1. Per-driver day arrays + weeklyHours rekeyed.
+  const driverSchedules: DriverSchedule[] = schedule.driverSchedules.map((ds) => {
+    const days = ds.days.map((d) => {
+      const nd = addDays(parseISO(d.date), off)
+      return {
+        ...d,
+        date: format(nd, 'yyyy-MM-dd'),
+        dayLabel: format(nd, 'EEE, MMMM do'),
+        // dayOfWeek unchanged — offset is a multiple of 7.
+      }
+    })
+    // weeklyHours is keyed by weekLabel (e.g. "Jun 4 – Jun 10"). Each
+    // old key needs to map to the new week containing its shifted dates.
+    // Recompute by walking days and accumulating into the new week label.
+    const weeklyHours: Record<string, number> = {}
+    for (const e of days) {
+      const wLabel = weekLabel(parseISO(e.date))
+      weeklyHours[wLabel] = (weeklyHours[wLabel] ?? 0) + (e.totalHours ?? 0)
+    }
+    return { ...ds, days, weeklyHours }
+  })
+
+  // 2. coverageActual: re-key each entry by the shifted date.
+  const coverageActual: Record<string, number[]> = {}
+  for (const [date, counts] of Object.entries(schedule.coverageActual)) {
+    coverageActual[shiftISO(date)] = [...counts]
+  }
+
+  // 3. dates array: shift each entry.
+  const dates = schedule.dates.map((di) => {
+    const nd = addDays(parseISO(di.date), off)
+    return {
+      date: format(nd, 'yyyy-MM-dd'),
+      dayLabel: format(nd, 'EEE, MMMM do'),
+      weekLabel: weekLabel(nd),
+      dayOfWeek: nd.getDay(),
+    }
+  })
+
+  // 4. headcountLimitedSlots: re-key each entry's date + dayLabel.
+  const headcountLimitedSlots = schedule.headcountLimitedSlots.map((s) => {
+    const nd = addDays(parseISO(s.date), off)
+    return {
+      ...s,
+      date: format(nd, 'yyyy-MM-dd'),
+      dayLabel: format(nd, 'EEE, MMMM do'),
+    }
+  })
+
+  return {
+    ...schedule,
+    startDate: newStartDate,
+    endDate: newEndDate,
+    dates,
+    driverSchedules,
+    coverageActual,
+    headcountLimitedSlots,
+  }
+}
+
 // ─── Hiring recommendation ───────────────────────────────────────────────────
 
 export interface CoverageHealth {
