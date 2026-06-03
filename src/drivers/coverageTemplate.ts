@@ -250,8 +250,15 @@ const COV_WED = [0,  9, 12, 20, 26, 26, 14, 11, 15, 20, 36, 36, 25, 15, 6]
 // dinner-peak shoulders. Combined with the FLOOR_SLOTS hard-floor
 // mechanism below, this stops the morning bleed.
 const PRIORITY_FRI = [2.0, 2.0, 1.8, 1.5, 2.5, 2.5, 1.0, 0.3, 0.5, 1.5, 2.5, 2.5, 1.5, 1.0, 0.5]
-const PRIORITY_SAT = [2.0, 2.0, 1.8, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
-const PRIORITY_SUN = [2.0, 2.0, 1.8, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+// Sat/Sun opening hours (8-10 AM) get the heaviest weights of any slot
+// anywhere — even higher than weekday peaks (2.5). Ops policy:
+// "weekend mornings are the start of operation and non-negotiable; the
+// afternoon 3-5 PM window absorbs the trade-off if capacity is short".
+// Combined with OPENING_FLOOR_RATIO bumped to 0.80 on weekends (vs 0.65
+// weekdays), this drives both the main-pass scorer AND Phase 10
+// redistribution toward opening hours.
+const PRIORITY_SAT = [3.0, 3.0, 2.5, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
+const PRIORITY_SUN = [3.0, 3.0, 2.5, 1.5, 1.8, 1.8, 1.4, 0.5, 0.8, 1.5, 1.8, 1.8, 1.5, 1.0, 0.5]
 const PRIORITY_THU = [1.8, 1.8, 1.5, 1.3, 1.8, 1.8, 1.0, 0.3, 0.5, 1.3, 1.8, 1.8, 1.3, 1.0, 0.5]
 const PRIORITY_MON = [1.8, 1.8, 1.5, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.8, 1.8, 1.3, 1.0, 0.5]
 const PRIORITY_TUE = [1.8, 1.8, 1.5, 1.2, 1.5, 1.5, 1.0, 0.3, 0.5, 1.2, 1.5, 1.5, 1.2, 1.0, 0.5]
@@ -318,27 +325,33 @@ export const LOW_PRIORITY_WEIGHT = 0.5
 // floor — taking the hit from the deprioritized 15:00-16:00 window
 // instead.
 //
-// Two ratios:
+// Three ratios:
 //   - 40% default — Wed 22:00 came in at 2/5 (40%) and Wed 19:00 at
 //     21/36 (58%) on a tight week. Both were judged "near-collapse"
 //     service quality. The default floor prevents anything worse.
-//   - 65% on opening slots (8-10 AM) — these are the start of operation.
-//     3/7 at Sat 8 AM (43%) passed the 40% floor but ops flagged it as
-//     too thin to open the day with. 65% bumps the floor on slot 0 with
-//     target 7 to ceil(7×0.65)=5, forcing Phase 10 to escalate.
+//   - 65% on weekday opening slots (8-10 AM) — start of operation,
+//     thinner than peaks but still important.
+//   - 80% on WEEKEND opening slots (Sat/Sun 8-10 AM) — ops policy:
+//     "weekend mornings are non-negotiable, the afternoon absorbs
+//     the trade-off when capacity is short". Sat 8 AM with target 7
+//     floors at ceil(7×0.80)=6 — Phase 10 must reach 6 (was 5 under
+//     the old 65%) or report the slot as headcount-limited.
 export const COVERAGE_FLOOR_RATIO = 0.40
 export const OPENING_FLOOR_RATIO = 0.65
+export const WEEKEND_OPENING_FLOOR_RATIO = 0.80
 
 /** Minimum coverage a slot may run at, given its target. When dow/slot
  *  are provided AND the slot is in the protected opening window
- *  (PROTECTED_OPENING_SLOTS, i.e. 8-10 AM), the stricter OPENING_FLOOR_RATIO
- *  applies. Otherwise the standard COVERAGE_FLOOR_RATIO. 0 when target
- *  is 0. Rounded UP so the optimizer can't happily land at "just under". */
+ *  (PROTECTED_OPENING_SLOTS, i.e. 8-10 AM), an opening-specific ratio
+ *  applies — stricter on Sat/Sun than on weekdays. Otherwise the standard
+ *  COVERAGE_FLOOR_RATIO. 0 when target is 0. Rounded UP so the optimizer
+ *  can't happily land at "just under". */
 export function floorCoverageFor(target: number, dow?: number, slot?: number): number {
   if (target <= 0) return 0
-  const ratio = (dow !== undefined && slot !== undefined && isProtectedOpeningSlot(dow, slot))
-    ? OPENING_FLOOR_RATIO
-    : COVERAGE_FLOOR_RATIO
+  let ratio = COVERAGE_FLOOR_RATIO
+  if (dow !== undefined && slot !== undefined && isProtectedOpeningSlot(dow, slot)) {
+    ratio = (dow === 0 || dow === 6) ? WEEKEND_OPENING_FLOOR_RATIO : OPENING_FLOOR_RATIO
+  }
   return Math.ceil(target * ratio)
 }
 
