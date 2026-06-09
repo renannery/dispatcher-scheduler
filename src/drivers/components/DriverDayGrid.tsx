@@ -5,7 +5,7 @@ import { HoverHint } from '@/components/HoverHint'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
 import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE, effectiveCoverage } from '../coverageTemplate'
-import { coverageStatus } from '../scheduler'
+import { MAX_BLOCKS_PER_DAY, MAX_BREAK_HOURS, MIN_BLOCK_HOURS, coverageStatus, violatesShape, workBlocks } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
 import { NowLine } from './NowLine'
@@ -401,6 +401,39 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                         </span>
                       </HoverHint>
                     )}
+                    {/* Shape-violation badge — bright red, ring + pulse so
+                        it can't be missed. Fires when a day's slot bitmap
+                        breaks the shift-shape rules: any work block < 3h,
+                        any break > 3h, or > 2 blocks (= more than 1
+                        break). Generator phases never produce these, so
+                        every badge in practice is the result of a manual
+                        toggle. Tooltip explains which rule(s) failed. */}
+                    {!isOff && entry && violatesShape(entry.slots) && (() => {
+                      const blocks = workBlocks(entry.slots)
+                      const reasons: string[] = []
+                      if (blocks.length > MAX_BLOCKS_PER_DAY) {
+                        reasons.push(`${blocks.length} work blocks (max ${MAX_BLOCKS_PER_DAY} per day — i.e. at most 1 break)`)
+                      }
+                      for (const [s, e] of blocks) {
+                        const len = e - s + 1
+                        if (len < MIN_BLOCK_HOURS) {
+                          reasons.push(`block ${shortHour(DRIVER_SLOTS[s].label)}–${shortHour(DRIVER_SLOTS[e].label)} is ${len}h (min ${MIN_BLOCK_HOURS}h)`)
+                        }
+                      }
+                      for (let i = 1; i < blocks.length; i++) {
+                        const gap = blocks[i][0] - blocks[i - 1][1] - 1
+                        if (gap > MAX_BREAK_HOURS) {
+                          reasons.push(`break is ${gap}h (max ${MAX_BREAK_HOURS}h)`)
+                        }
+                      }
+                      return (
+                        <HoverHint label={`Shift shape violates ops rules: ${reasons.join('; ')}. Adjust the slots until every block is ≥${MIN_BLOCK_HOURS}h and every break is ≤${MAX_BREAK_HOURS}h.`}>
+                          <span className="inline-flex animate-pulse items-center gap-0.5 rounded bg-red-600 px-1.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-sm ring-2 ring-red-300">
+                            ! Shape
+                          </span>
+                        </HoverHint>
+                      )
+                    })()}
                     {isOff && (() => {
                       const r = absenceReasons[ds.driver.id]?.[date]
                       if (r) {

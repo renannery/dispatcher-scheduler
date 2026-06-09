@@ -82,6 +82,78 @@ function patternHasBreak(p: boolean[]): boolean {
   return false
 }
 
+// ─── Shift-shape rules ───────────────────────────────────────────────────
+// Per ops policy on shift block shapes (every day, every driver):
+//   - Every contiguous work block must be >= 3 hours. No 1- or 2-hour
+//     blocks. This applies to BOTH halves of a split shift — a 1h trailing
+//     block from a donor swap is the bug that triggered the rule.
+//   - The break between two work blocks within a day must be <= 3 hours.
+//     The standard weekend split-shift break (13:00–16:00 = 3h) is exactly
+//     the ceiling. Anything longer is "two separate shifts" by ops' read.
+//   - At most ONE break per day — i.e. <= 2 work blocks total. A shift
+//     can be continuous (1 block) or split (2 blocks), never three pieces.
+//
+// Total day length is a separate rule (>= 4h) enforced upstream via
+// effectiveMin = max(4, minHoursPerDay) at every pattern-selection site.
+// The orphan-filler 3h patterns were deleted from coverageTemplate.ts
+// so a future relaxation of effectiveMin can't accidentally re-enable
+// a 3h day.
+export const MIN_BLOCK_HOURS = 3
+export const MAX_BREAK_HOURS = 3
+export const MAX_BLOCKS_PER_DAY = 2
+
+/** Walk a slot bitmap and return every contiguous work block as
+ *  `[startSlotIdx, endSlotIdx]` inclusive. Empty array for an off day. */
+export function workBlocks(slots: boolean[]): Array<[number, number]> {
+  const out: Array<[number, number]> = []
+  let s = -1
+  for (let i = 0; i < slots.length; i++) {
+    if (slots[i] && s < 0) s = i
+    else if (!slots[i] && s >= 0) { out.push([s, i - 1]); s = -1 }
+  }
+  if (s >= 0) out.push([s, slots.length - 1])
+  return out
+}
+
+/** True when the slot bitmap violates ANY of the shift-shape rules:
+ *  sub-3h block, >3h break, or more than 2 blocks. Off days never
+ *  violate (no blocks, no rules to apply). */
+export function violatesShape(slots: boolean[]): boolean {
+  const b = workBlocks(slots)
+  if (b.length === 0) return false
+  if (b.length > MAX_BLOCKS_PER_DAY) return true
+  for (const [s, e] of b) {
+    if (e - s + 1 < MIN_BLOCK_HOURS) return true
+  }
+  for (let i = 1; i < b.length; i++) {
+    const gap = b[i][0] - b[i - 1][1] - 1
+    if (gap > MAX_BREAK_HOURS) return true
+  }
+  return false
+}
+
+// Build-time sanity check: assert every pattern in the pools conforms
+// to the shape rules. Catches a future pool edit (or template tweak)
+// that would silently produce an illegal shape. Runs once at module
+// load — cheap, no runtime cost per generation.
+;(() => {
+  const seen = new Set<string>()
+  const dump = (label: string, p: number[] | boolean[]) => {
+    const bools = p.map((v) => !!v)
+    const key = label + ':' + bools.map((v) => (v ? '1' : '0')).join('')
+    if (seen.has(key)) return
+    seen.add(key)
+    if (violatesShape(bools)) {
+      throw new Error(`Shift-shape rule violated in pattern pool: ${label} ${bools.map((v) => (v ? '1' : '0')).join('')}`)
+    }
+  }
+  for (const dow of Object.keys(DRIVER_DAY_TEMPLATES)) {
+    const tpl = DRIVER_DAY_TEMPLATES[Number(dow)]
+    for (const p of tpl.shiftPatterns) dump(`dow=${dow}`, p)
+  }
+  dump('WEEKEND_SPLIT_PATTERN', WEEKEND_SPLIT_PATTERN)
+})()
+
 /** Minimum shift length above which a break (≥1h) is required.
  *  Legal/ops rule: ANY 8h+ shift must include at least one hour of
  *  break. Applies to drivers and shoppers uniformly — the previous
@@ -1698,9 +1770,19 @@ export function generateDriverSchedule({
           let last = -1
           for (let z = entry.slots.length - 1; z >= 0; z--) if (entry.slots[z]) { last = z; break }
 
+          // Build the post-trim candidate for each side so we can also
+          // shape-check it. A trim that shrinks the boundary block
+          // below 3h must be refused even when coverage allows it,
+          // per the new shift-shape rules.
+          const trimCandidate = (sideSlot: number): boolean[] => {
+            const cand = [...entry.slots]
+            cand[sideSlot] = false
+            return cand
+          }
+
           // First-side trim: would the first slot stay AT or ABOVE target?
           const fOver = cov[first] - required[first]
-          if (fOver >= 1) {
+          if (fOver >= 1 && !violatesShape(trimCandidate(first))) {
             // Score by current over-coverage — trim the most-over slots first.
             if (fOver > bestOver) {
               bestOver = fOver
@@ -1712,7 +1794,7 @@ export function generateDriverSchedule({
           // Last-side trim: same check.
           if (last !== first) {
             const lOver = cov[last] - required[last]
-            if (lOver >= 1) {
+            if (lOver >= 1 && !violatesShape(trimCandidate(last))) {
               if (lOver > bestOver) {
                 bestOver = lOver
                 bestEntry = entry
@@ -2286,22 +2368,15 @@ export function generateDriverSchedule({
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       if (blocks && blocks[slot]) continue
       // The new shift after swap. Build candidate slot array: remove
-      // donor slot, add violation slot. Then validate contiguous + checks.
+      // donor slot, add violation slot. Then validate against the
+      // full shift-shape rules (min-3h block, max-3h break, max 2
+      // blocks). This is the Sonny-bug guard: a 7h block + 1h break
+      // + 1h trailing block has only "one transition" but fails the
+      // 3h-block rule and would never have shipped.
       const proposed = [...entry.slots]
       proposed[donorSlot] = false
       proposed[slot] = true
-      // Reject if proposed is non-contiguous past the existing break (we
-      // allow patterns with one break, but never two). Check by counting
-      // OFF→ON transitions after the first ON.
-      let transitions = 0
-      let sawOn = false
-      for (let s = 0; s < proposed.length; s++) {
-        if (proposed[s]) {
-          if (!sawOn) sawOn = true
-          else if (s > 0 && !proposed[s - 1]) transitions++
-        }
-      }
-      if (transitions > 1) continue
+      if (violatesShape(proposed)) continue
       // Daily hours unchanged (1 off + 1 on), so no daily-max change.
       // 12h rest may change if the new first/last slot shifts.
       const newFirst = proposed.findIndex(s => s)
