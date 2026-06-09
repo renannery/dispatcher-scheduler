@@ -132,6 +132,35 @@ export function violatesShape(slots: boolean[]): boolean {
   return false
 }
 
+/**
+ * Score multiplier for a protected opening slot (8/9/10 AM) that is
+ * still BELOW its hard floor — 80% on Sat/Sun, 65% weekdays. Returns
+ * 1.0 when the slot has reached or passed the floor, or isn't an
+ * opening slot. Returns OPENING_BELOW_FLOOR_BOOST otherwise.
+ *
+ * Used by main-pass, Phase 6, and Phase 8 scoring to make the
+ * optimizer aggressively chase under-floor opening slots, even at the
+ * cost of overstaffing peaks slightly. Self-regulates: as soon as the
+ * slot reaches floor the boost flips back to 1.0, so we don't overshoot.
+ *
+ * 10× was chosen so an opening slot's contribution (raw 100 × weight
+ * 3.0 × boost 10 = 3000) dominates a peak slot's contribution (raw
+ * 100 × weight 2.5 × 1 = 250) by roughly 10×, ensuring the opening
+ * always wins when it's under floor.
+ */
+const OPENING_BELOW_FLOOR_BOOST = 10
+function openingFloorBoost(
+  dow: number,
+  slot: number,
+  currentCov: number,
+  target: number,
+): number {
+  if (!isProtectedOpeningSlot(dow, slot)) return 1
+  if (target <= 0) return 1
+  const floor = floorCoverageFor(target, dow, slot)
+  return currentCov < floor ? OPENING_BELOW_FLOOR_BOOST : 1
+}
+
 // Build-time sanity check: assert every pattern in the pools conforms
 // to the shape rules. Catches a future pool edit (or template tweak)
 // that would silently produce an illegal shape. Runs once at module
@@ -692,7 +721,15 @@ export function generateDriverSchedule({
           let score = 0
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
-            const w = d.isShopper ? 1 : slotPriorityWeight(dow, s)
+            // Below-floor boost: when a protected opening slot (8-10 AM
+            // on weekends, with the stricter 80% floor) is still below
+            // its hard floor, multiply this slot's contribution by 10×.
+            // Self-regulates: once the slot reaches floor, boost is 1×.
+            // Lets the optimizer aggressively chase openers even when a
+            // longer 9 AM-start pattern would otherwise win on peak-slot
+            // sum. Shoppers don't get the boost (separate pool, no floor).
+            const boost = d.isShopper ? 1 : openingFloorBoost(dow, s, myCov[s], myReq[s])
+            const w = (d.isShopper ? 1 : slotPriorityWeight(dow, s)) * boost
             if (myShort[s] > 0) {
               const t = myReq[s] || myShort[s]
               score += w * (myShort[s] * 10 + (myShort[s] / t) * 50)
@@ -704,7 +741,8 @@ export function generateDriverSchedule({
           }
           for (let s = 0; s < p.length; s++) {
             if (p[s] && myPriority[s] > 0) {
-              const w = d.isShopper ? 1 : slotPriorityWeight(dow, s)
+              const boost = d.isShopper ? 1 : openingFloorBoost(dow, s, myCov[s], myReq[s])
+              const w = (d.isShopper ? 1 : slotPriorityWeight(dow, s)) * boost
               score += w * myPriority[s] * 20
             }
           }
@@ -1522,8 +1560,10 @@ export function generateDriverSchedule({
           // coverage status (matches UI color buckets), THEN multiply by
           // the per-slot priority weight so peak slots (weight 2.5 on Fri
           // 12-2/6-8 PM) are preferentially filled and slow slots
-          // (weight 0.3 at 3 PM) are passively avoided.
-          const w = slotPriorityWeight(dow, s)
+          // (weight 0.3 at 3 PM) are passively avoided. Apply the
+          // below-floor boost so under-floor opening slots dominate the
+          // score and Phase 6 lands openers when they're available.
+          const w = slotPriorityWeight(dow, s) * openingFloorBoost(dow, s, cov[s], required[s])
           const diff = cov[s] - required[s]  // pos = over, 0 = at, neg = short
           let raw: number
           if (diff < 0) raw = 100
@@ -1685,7 +1725,7 @@ export function generateDriverSchedule({
           for (let s = 0; s < p.length; s++) {
             if (!p[s]) continue
             if (cov[s] + 1 > required[s] + tightFillTol(required[s])) { exceeds = true; break }
-            const w = slotPriorityWeight(dow, s)
+            const w = slotPriorityWeight(dow, s) * openingFloorBoost(dow, s, cov[s], required[s])
             const diff = cov[s] - required[s]
             if (diff < 0 && isFloorSlot(dow, s)) { helpsShort = true }
             let raw: number
@@ -1915,7 +1955,10 @@ export function generateDriverSchedule({
             // Status buckets: SHORT 100 / OK 30 / MILD 20 / OVER 1.
             // Weight: peak slots (Fri 12-2/6-8 PM = 2.5) pull spare cap
             // toward them; slow slots (3 PM = 0.3) get nearly ignored.
-            const w = slotPriorityWeight(dow, s)
+            // Below-floor opening boost amplifies the per-slot weight
+            // on under-floor opening slots so Phase 8 push lands the
+            // extra hour on 8/9/10 AM ahead of peak slots.
+            const w = slotPriorityWeight(dow, s) * openingFloorBoost(dow, s, cov[s], required[s])
             const diff = cov[s] - required[s]
             let raw: number
             if (diff < 0) raw = 100

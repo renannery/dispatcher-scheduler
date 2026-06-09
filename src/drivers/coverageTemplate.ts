@@ -159,9 +159,21 @@ const WEEKDAY_PATTERNS: number[][] = [
 // Weekend adds early-morning patterns (8 AM start).
 const WEEKEND_PATTERNS: number[][] = [
   ...WEEKDAY_PATTERNS,
-  // Weekend openers — break capped at 2h per ops policy (was 3h).
+  // Weekend openers — break capped at 3h per the shift-shape rules
+  // (was 2h). Wider pool to give the main pass more landing pads for
+  // 8 AM starts — diagnosis showed 42 of 54 drivers AVAILABLE for
+  // Sat 8 AM but only 3-4 placed because the pool was thin on opener
+  // patterns and longer 9 AM-start patterns score higher on more
+  // peak slots.
   [1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],  // 9h:  8 AM – 7 PM  (1-3 PM break, 2h)
   [1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0],  // 10h: 8 AM – 8 PM  (2-4 PM break, 2h)
+  // New split-opener patterns with longer breaks (2h / 3h) — give
+  // optimizer more ways to land a driver on opening slots while still
+  // covering the dinner peak.
+  [1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0],  //  8h: 8 AM – 12 PM + 2 PM – 6 PM  (2h break)
+  [1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],  //  8h: 8 AM – 12 PM + 3 PM – 7 PM  (3h break, ceiling)
+  [1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],  //  9h: 8 AM – 1 PM  + 3 PM – 7 PM  (2h break)
+  [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0],  //  9h: 8 AM – 1 PM  + 4 PM – 8 PM  (3h break, ceiling)
   // REMOVED: 8 AM – 3 PM with 11-12 PM break — break sits in the
   // forbidden lunch-peak window (11 AM-1 PM). Continuous 8 AM-3 PM 7h
   // pattern is already in the pool below as the weekend opener.
