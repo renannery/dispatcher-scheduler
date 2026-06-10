@@ -100,7 +100,8 @@ const WEEKDAY_PATTERNS: number[][] = [
   // [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],  // 8h:  12 PM – 8 PM (continuous)
   // [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 8h:  1 PM – 9 PM (continuous)
   // Mid-afternoon
-  [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0],  // 7h:  12 PM – 9 PM
+  [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0],  // 7h:  12 PM – 9 PM (split: 12-3 PM + 6-9 PM)
+  [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],  // 7h:  1 PM – 8 PM continuous (manual dispatcher's "1p-7p" — extends through dinner)
   [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // 7h:  2 PM – 9 PM
   // Evening-night (start ≥ 3 PM, end up to 11 PM)
   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],  // 7h:  3 PM – 10 PM
@@ -320,6 +321,17 @@ export function isProtectedOpeningSlot(_dow: number, slot: number): boolean {
   return PROTECTED_OPENING_SLOTS.includes(slot)
 }
 
+/** Dinner-peak slots (6-8 PM) that the scorer should aggressively chase
+ *  when below their high floor. Same mechanism as PROTECTED_OPENING_SLOTS
+ *  but on the other end of the day. Identified from manual-dispatcher
+ *  comparison: the generator was missing dinner-peak target by 4-7 bodies
+ *  per weekday while the dispatcher consistently lands +4 over target.
+ *  Slots 10/11/12 = 6 PM / 7 PM / 8 PM. */
+export const PROTECTED_DINNER_SLOTS: number[] = [10, 11, 12]
+export function isProtectedDinnerSlot(_dow: number, slot: number): boolean {
+  return PROTECTED_DINNER_SLOTS.includes(slot)
+}
+
 /** Threshold below which a slot is considered "low priority" — used by
  *  coverageStatus() to render under-target slots in amber (acceptable
  *  shortfall) instead of red (real gap). */
@@ -334,7 +346,7 @@ export const LOW_PRIORITY_WEIGHT = 0.5
 // floor — taking the hit from the deprioritized 15:00-16:00 window
 // instead.
 //
-// Three ratios:
+// Four ratios:
 //   - 40% default — Wed 22:00 came in at 2/5 (40%) and Wed 19:00 at
 //     21/36 (58%) on a tight week. Both were judged "near-collapse"
 //     service quality. The default floor prevents anything worse.
@@ -343,23 +355,36 @@ export const LOW_PRIORITY_WEIGHT = 0.5
 //   - 80% on WEEKEND opening slots (Sat/Sun 8-10 AM) — ops policy:
 //     "weekend mornings are non-negotiable, the afternoon absorbs
 //     the trade-off when capacity is short". Sat 8 AM with target 7
-//     floors at ceil(7×0.80)=6 — Phase 10 must reach 6 (was 5 under
-//     the old 65%) or report the slot as headcount-limited.
+//     floors at ceil(7×0.80)=6.
+//   - 90% on DINNER peak slots (6-8 PM, Mon-Sat) — manual-dispatcher
+//     comparison showed the generator missing dinner target by 4-7
+//     bodies per weekday while the dispatcher landed +4 over. 90%
+//     forces the optimizer to fight harder for dinner peaks instead
+//     of trickling drivers into mid-afternoon shifts that miss the
+//     peak entirely. Fri 6 PM target 50 floors at 45.
 export const COVERAGE_FLOOR_RATIO = 0.40
 export const OPENING_FLOOR_RATIO = 0.65
 export const WEEKEND_OPENING_FLOOR_RATIO = 0.80
+export const DINNER_FLOOR_RATIO = 0.90
 
-/** Minimum coverage a slot may run at, given its target. When dow/slot
- *  are provided AND the slot is in the protected opening window
- *  (PROTECTED_OPENING_SLOTS, i.e. 8-10 AM), an opening-specific ratio
- *  applies — stricter on Sat/Sun than on weekdays. Otherwise the standard
- *  COVERAGE_FLOOR_RATIO. 0 when target is 0. Rounded UP so the optimizer
- *  can't happily land at "just under". */
+/** Minimum coverage a slot may run at, given its target. The ratio
+ *  depends on which "protected" window the slot falls into:
+ *    - opening (8-10 AM): 80% weekends, 65% weekdays
+ *    - dinner peak (6-8 PM): 90% Mon-Sat
+ *    - everything else: 40% default safety net
+ *  Rounded UP so the optimizer can't happily land at "just under". */
 export function floorCoverageFor(target: number, dow?: number, slot?: number): number {
   if (target <= 0) return 0
   let ratio = COVERAGE_FLOOR_RATIO
-  if (dow !== undefined && slot !== undefined && isProtectedOpeningSlot(dow, slot)) {
-    ratio = (dow === 0 || dow === 6) ? WEEKEND_OPENING_FLOOR_RATIO : OPENING_FLOOR_RATIO
+  if (dow !== undefined && slot !== undefined) {
+    if (isProtectedOpeningSlot(dow, slot)) {
+      ratio = (dow === 0 || dow === 6) ? WEEKEND_OPENING_FLOOR_RATIO : OPENING_FLOOR_RATIO
+    } else if (isProtectedDinnerSlot(dow, slot)) {
+      // 90% floor on dinner peaks (6-8 PM) every day. Empirically the
+      // manual dispatcher hits target on Sunday 6-7 PM too, so the
+      // generator should have the same pressure there.
+      ratio = DINNER_FLOOR_RATIO
+    }
   }
   return Math.ceil(target * ratio)
 }

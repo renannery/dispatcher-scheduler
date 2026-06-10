@@ -17,6 +17,7 @@ import {
   floorCoverageFor,
   isFloorPrioritySlot,
   isFloorSlot,
+  isProtectedDinnerSlot,
   isProtectedOpeningSlot,
   slotPriorityWeight,
 } from './coverageTemplate'
@@ -131,32 +132,35 @@ export function violatesShape(slots: boolean[]): boolean {
 }
 
 /**
- * Score multiplier for a protected opening slot (8/9/10 AM) that is
- * still BELOW its hard floor — 80% on Sat/Sun, 65% weekdays. Returns
- * 1.0 when the slot has reached or passed the floor, or isn't an
- * opening slot. Returns OPENING_BELOW_FLOOR_BOOST otherwise.
+ * Score multiplier for a PROTECTED slot — opening (8/9/10 AM) or
+ * dinner peak (6-8 PM on Mon-Sat) — that is still BELOW its hard
+ * floor. Returns BELOW_FLOOR_BOOST when the slot is under-floor,
+ * 1.0 otherwise. Identical mechanism on both ends of the day so the
+ * optimizer fights symmetrically for opening AND dinner coverage.
  *
- * Used by main-pass, Phase 6, and Phase 8 scoring to make the
- * optimizer aggressively chase under-floor opening slots, even at the
- * cost of overstaffing peaks slightly. Self-regulates: as soon as the
- * slot reaches floor the boost flips back to 1.0, so we don't overshoot.
+ * Used by main-pass, Phase 6, Phase 6.5, and Phase 8 scoring.
+ * Self-regulating: once a slot reaches floor the boost flips back to
+ * 1×, so we don't overshoot.
  *
- * 10× was chosen so an opening slot's contribution (raw 100 × weight
- * 3.0 × boost 10 = 3000) dominates a peak slot's contribution (raw
- * 100 × weight 2.5 × 1 = 250) by roughly 10×, ensuring the opening
- * always wins when it's under floor.
+ * 10× picked so the under-floor slot's contribution (raw 100 × weight
+ * 3.0 × boost 10 = 3000) dominates a competing peak slot's
+ * contribution (100 × 2.5 × 1 = 250) by ~10×, ensuring the under-
+ * floor slot always wins while it's failing.
  */
-const OPENING_BELOW_FLOOR_BOOST = 10
+const BELOW_FLOOR_BOOST = 10
 function openingFloorBoost(
   dow: number,
   slot: number,
   currentCov: number,
   target: number,
 ): number {
-  if (!isProtectedOpeningSlot(dow, slot)) return 1
   if (target <= 0) return 1
+  // Opening slots (8-10 AM) and dinner peaks (6-8 PM) every day.
+  const isOpening = isProtectedOpeningSlot(dow, slot)
+  const isDinner = isProtectedDinnerSlot(dow, slot)
+  if (!isOpening && !isDinner) return 1
   const floor = floorCoverageFor(target, dow, slot)
-  return currentCov < floor ? OPENING_BELOW_FLOOR_BOOST : 1
+  return currentCov < floor ? BELOW_FLOOR_BOOST : 1
 }
 
 // Build-time sanity check: assert every pattern in the pools conforms
@@ -747,17 +751,28 @@ export function generateDriverSchedule({
           }
           // Soft length preference: pay a *quadratic* penalty for each
           // hour above `perDayTarget - 1` (7h for the default cap=45).
-          // Quadratic so 8h is mildly discouraged (-1500) but 9h is
-          // strongly discouraged (-6000) — 9h shifts then only happen
-          // when the extra hour covers a critically short slot. Goal:
-          // most drivers settle around 6-7h, a healthy minority at 8h,
-          // and only a few at the daily max. The user feedback was
-          // "we're fine with a few working the max hours, but we don't
-          // want every full-timer doing it."
+          // Quadratic length penalty. On a NORMAL day the multiplier is
+          // 1500: 8h is mildly discouraged (-1500) but 9h is strongly
+          // discouraged (-6000) so 9h shifts only happen when they
+          // cover a critically short slot.
+          //
+          // On BUSY days (Thu/Fri/Sat/Sun = BUSY_DAY_PRIORITY > 0) the
+          // multiplier drops to 750 — manual-dispatcher comparison
+          // showed the manual person uses 92× 9h shifts vs the
+          // generator's 47×, and almost all the missing hours land on
+          // dinner peaks (6-8 PM). Halving the penalty on busy days
+          // lets the optimizer reach 9h split shifts that extend into
+          // the dinner peak instead of settling at 7-8h shifts that
+          // end at 7 PM and miss it.
+          // Inline busy-day check — BUSY_DAY_PRIORITY is declared later
+          // in the function (Phase 6) so we can't reference it from the
+          // main pass without hoisting. Thu/Fri/Sat/Sun = busy.
+          const isBusyDayForLength = dow === 0 || dow === 4 || dow === 5 || dow === 6
+          const lengthPenaltyMult = isBusyDayForLength ? 750 : 1500
           const preferredLength = Math.max(effectiveMin, perDayTarget - 1)
           if (h > preferredLength) {
             const over = h - preferredLength
-            score -= over * over * 1500
+            score -= over * over * lengthPenaltyMult
           }
           // Layer 1 — Opening-floor penalty. Scoped to the PROTECTED
           // opening slots (8-10 AM) because those are the slots that
