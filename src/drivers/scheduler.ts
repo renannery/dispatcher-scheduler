@@ -4,12 +4,10 @@ import {
   DONOR_SLOTS,
   DRIVER_DAY_TEMPLATES,
   DRIVER_SLOTS,
-  LEGAL_DAILY_MAX_HOURS,
   LEGAL_PT_WEEKLY_MAX_HOURS,
   LEGAL_WEEKLY_MAX_HOURS,
   LOW_PRIORITY_WEIGHT,
   MAX_HOURS_PER_DAY,
-  OT_DAILY_BONUS,
   OT_FLEET_PCT,
   OT_WEEKLY_BONUS,
   SHOPPER_COVERAGE,
@@ -295,12 +293,11 @@ export function generateDriverSchedule({
   const weekHours: Record<string, Record<string, number>> = {}
   const lastSlotWorked: Record<string, Record<string, number>> = {}
   const scheduleMap: Record<string, DriverDayEntry[]> = {}
-  // Tracks per (driver, week) whether the driver has already worked a
-  // shift at the user-set `maxHoursPerDay` length. The overflow shift
-  // (`maxHoursPerDay + 1`, e.g. 9h when max=8) is only allowed for
-  // drivers who already have a max-length shift this week — so the
-  // 9h shift is an "extension" of an already-full day, never the
-  // first long shift of someone's week.
+  // LEGACY tracker: used to gate a "+1h overflow" shift (the bygone
+  // 10h-after-9h "earned overflow" rule). The +1h flexibility was
+  // removed — daily max is now a hard ceiling — so this stays as a
+  // dormant flag in case future ops wants a similar earned mechanism.
+  // No phase reads it for placement decisions today.
   const hasMaxShiftThisWeek: Record<string, Record<string, boolean>> = {}
   drivers.forEach((d) => {
     weekHours[d.id] = {}
@@ -660,8 +657,16 @@ export function generateDriverSchedule({
         const spreadDays = Math.min(workDaysLeft, calendarDaysLeft)
         const spreadTarget = Math.ceil(remaining / spreadDays)
         const perDayTarget = Math.min(Math.ceil(capOf(d) / MAX_DAYS_PER_WEEK), spreadTarget)
-        const softMax = Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS, MAX_HOURS_PER_DAY)
-        const dailyCap = Math.min(remaining, softMax, Math.max(effectiveMin, spreadTarget))
+        // Hard daily ceiling per ops policy: a shift never exceeds the
+        // user-set maxHoursPerDay (default 9h). The previous +1h
+        // "earned overflow" mechanism — letting drivers who'd already
+        // worked a max-length shift this week have one 10h day — was
+        // explicitly removed: ops prefers redistributing the extra
+        // hour to another driver (e.g. shifting 9 AM from a 10h Emil
+        // shift to an 8h Damian shift = both at 9h) over emitting a
+        // 10h shift in the first place.
+        const dailyMax = Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)
+        const dailyCap = Math.min(remaining, dailyMax, Math.max(effectiveMin, spreadTarget))
 
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
@@ -670,13 +675,7 @@ export function generateDriverSchedule({
 
         for (const p of allPatterns) {
           const h = slotHours(p)
-          if (h < effectiveMin || h > softMax) continue
-          // Overflow gate: a shift longer than the user-set max is only
-          // allowed for drivers who've already worked a max-length shift
-          // this week. So a "9h driver" must have already done their
-          // 8h elsewhere — the overflow is a bonus hour for the team's
-          // hardest workers, not a default.
-          if (h > maxHoursPerDay && !hasMaxShiftThisWeek[d.id][wLabel]) continue
+          if (h < effectiveMin || h > dailyMax) continue
           if (h > dailyCap) continue
           if (h > remaining) continue
           if (violatesMinRest(yesterdaysLastSlot(d.id), firstActive(p))) continue
@@ -900,7 +899,7 @@ export function generateDriverSchedule({
         const p = raw.map(v => v === 1)
         const h = slotHours(p)
         if (h < minShift || h > remaining) continue
-        if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
+        if (h > Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) continue
         {
           const yest = scheduleMap[d.id][i - 1]
           if (yest && !yest.isOff) {
@@ -981,8 +980,7 @@ export function generateDriverSchedule({
 
         const slots = entry.slots
         const currentHours = slots.filter(Boolean).length
-        if (currentHours >= maxHoursPerDay + 1) break  // already at soft max
-        if (currentHours >= LEGAL_DAILY_MAX_HOURS) break  // legal max
+        if (currentHours >= Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) break  // hard daily max
         // Ops rule: long shifts MUST include a break (≥1h). Drivers at 9h+,
         // shoppers at 8h+ (stricter — on-feet grocery work). If extending
         // would push this shift past the threshold while still continuous,
@@ -1068,7 +1066,8 @@ export function generateDriverSchedule({
   // After Phase 1 (add shift) + Phase 2 (extend within 45h cap), if any
   // day still has driver shortfall, allow up to OT_FLEET_PCT of FT drivers
   // (5 drivers for a 53-FT roster) to go past the legal weekly cap by
-  // OT_WEEKLY_BONUS and past the daily cap by OT_DAILY_BONUS. The pass
+  // OT_WEEKLY_BONUS. The DAILY ceiling stays at maxHoursPerDay (no
+  // 10h shifts even in OT). The pass
   // picks the highest-utilized drivers (already running close to cap, so
   // already proven willing/available) and extends their shifts to cover
   // residual gaps. Each extension is real legal overtime — shown as the
@@ -1125,11 +1124,13 @@ export function generateDriverSchedule({
       if (!entry) continue
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
 
-      // EXTEND case: existing shift, add 1h on either side (10h daily max
-      // via OT_DAILY_BONUS = 1, so 9h + 1 = 10h).
+      // EXTEND case: existing shift, add 1h on either side. Phase 3
+      // is the weekly OT pass (can push driver-week past LEGAL weekly
+      // cap by OT_WEEKLY_BONUS) but the DAILY ceiling is the strict
+      // user-set maxHoursPerDay per the no-10h-shifts rule.
       if (!entry.isOff) {
         const currentHours = entry.totalHours ?? 0
-        if (currentHours >= LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS) continue
+        if (currentHours >= Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) continue
         const slots = entry.slots
         // Ops rule: 8h+ shifts MUST include a break (uniform for drivers
         // and shoppers). If extending into OT would push a still-continuous
@@ -1356,7 +1357,7 @@ export function generateDriverSchedule({
         for (const p of narrowPatterns) {
           const h = slotHours(p)
           if (h > remaining) continue
-          if (h > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS)) continue
+          if (h > Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) continue
           if (blocks && p.some((on, i) => on && blocks[i])) continue
           if (violatesMinRest(yestLast, firstActive(p))) continue
           if (tomorrowFirst >= 0 && violatesMinRest(lastActive(p), tomorrowFirst)) continue
@@ -1900,8 +1901,7 @@ export function generateDriverSchedule({
           if (weekLabel(parseISO(entry.date)) !== wLabel) continue
           const slots = entry.slots
           const h = slots.filter(Boolean).length
-          if (h >= maxHoursPerDay + 1) continue       // soft daily max
-          if (h >= LEGAL_DAILY_MAX_HOURS) continue    // legal daily max
+          if (h >= Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) continue  // hard daily max
           // Break rule (drivers 9h+, shoppers 8h+).
           if (h + 1 >= breakRequiredAt(d) && !patternHasBreak(slots)) continue
 
@@ -2148,7 +2148,7 @@ export function generateDriverSchedule({
   //
   // Constraints honored at every extension:
   //   - within bufferedCapOf(d) for the week
-  //   - within maxHoursPerDay + 1 soft daily ceiling
+  //   - within maxHoursPerDay strict daily ceiling (no 10h shifts)
   //   - 8h+ break rule (refuses if extension creates 8h+ continuous)
   //   - 12h rest with yesterday's close
   //   - driver not blocked at the target slot
@@ -2191,13 +2191,13 @@ export function generateDriverSchedule({
         const cap = bufferedCapOf(d)
         if ((weekHours[d.id][wLabel] ?? 0) + 1 > cap) continue
 
-        // Daily-hour check: Phase 9 allows up to LEGAL_DAILY_MAX_HOURS +
-        // OT_DAILY_BONUS (10h) because the floor slot would otherwise
-        // stay structurally short — even drivers at the 9h soft cap
-        // can give the extra hour. Shows up as daily OT in the UI
-        // (purple pill in the hour cell on the day-grid), so payroll sees it.
+        // Daily-hour check: Phase 9 respects the strict maxHoursPerDay
+        // ceiling per the no-10h-shifts rule. If the only path to fill
+        // an opening slot would push a driver past their daily max,
+        // leave the slot short — ops would rather redistribute hours
+        // to another driver than emit a 10h shift.
         const newHours = (entry.totalHours ?? 0) + 1
-        if (newHours > Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS, MAX_HOURS_PER_DAY)) continue
+        if (newHours > Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)) continue
 
         // Block check: driver mustn't be blocked at targetSlot.
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
@@ -2254,11 +2254,11 @@ export function generateDriverSchedule({
   //
   // Anything still below 40% after (A)+(B)+(C) is reported as
   // headcount-limited in the banner.
-  const FLOOR_DAILY_HOUR_MAX = Math.min(
-    maxHoursPerDay + 1,
-    LEGAL_DAILY_MAX_HOURS + OT_DAILY_BONUS,
-    MAX_HOURS_PER_DAY,
-  )
+  // Hard daily ceiling for Phase 10 floor enforcement — no exceptions
+  // for opening-floor violations either. If the only path to lift the
+  // floor would push a driver past their daily max, that slot stays
+  // headcount-limited (and is surfaced in the banner).
+  const FLOOR_DAILY_HOUR_MAX = Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)
   // Try (A) — adjacent extension — on a single (date, slot). Returns true
   // if it placed at least one driver. Loops drivers in shuffle order so
   // the load distributes across the roster.
@@ -2877,7 +2877,8 @@ export function addDriverIncremental({
 
   // Effective min per shift (4h hard floor per ops policy).
   const effectiveMin = Math.max(4, minHoursPerDay)
-  const softMaxPerDay = Math.min(maxHoursPerDay + 1, LEGAL_DAILY_MAX_HOURS, MAX_HOURS_PER_DAY)
+  // Hard daily max — no exceptions per ops policy (no 10h shifts).
+  const softMaxPerDay = Math.min(maxHoursPerDay, MAX_HOURS_PER_DAY)
 
   // Work in a shallow copy of coverageActual so we can incrementally
   // update as we place the new driver's shifts. We DON'T mutate the
