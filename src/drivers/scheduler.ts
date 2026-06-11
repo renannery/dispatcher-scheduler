@@ -1524,7 +1524,22 @@ export function generateDriverSchedule({
       const isBusyDay = (BUSY_DAY_PRIORITY[dow] ?? 0) > 0
       const cap = bufferedCapOf(d)
       const remaining = cap - (weekHours[d.id][wLabel] ?? 0)
-      if (remaining < 4) continue  // 4h-min policy
+      // Pattern length range:
+      //   - default: 4-6h. 4h is the policy minimum, 6h ceiling lets
+      //     evening-only 6h patterns (e.g. 6p-10p, 4p-9p) land on
+      //     drivers with heavy daytime blocks. Was 4-5h originally;
+      //     widening to 6h covers Sacha-/Terrine-style cases where the
+      //     manual dispatcher places a 5-6h evening shift but the
+      //     algorithm couldn't because no 4-5h pattern matched the
+      //     unblocked slots.
+      //   - busy-day stretch: when remaining cap < 4h AND the
+      //     candidate off-day is busy (Thu/Fri/Sat/Sun), allow a 3h
+      //     pattern. Lets a driver near cap (e.g. Himal at 40/45)
+      //     contribute a final 3h shift to a high-priority day instead
+      //     of sitting idle.
+      const minShift = isBusyDay && remaining >= 3 && remaining < 4 ? 3 : 4
+      const maxShift = 6
+      if (remaining < minShift) continue
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       if (blocks && blocks.length > 0 && blocks.every(Boolean)) continue
 
@@ -1532,16 +1547,12 @@ export function generateDriverSchedule({
       const cov = coverageActual[dateStr]
       const template = DRIVER_DAY_TEMPLATES[dow]
 
-      // Short patterns only (4-5h) — minimizes over-coverage damage.
-      // 4h is the policy minimum; 5h ceiling keeps Phase 6 from
-      // ballooning into long shifts that should've come from the
-      // main pass.
       let bestPattern: boolean[] | null = null
       let bestScore = -Infinity
       for (const raw of template.shiftPatterns) {
         const p = raw.map(v => v === 1)
         const h = slotHours(p)
-        if (h < 4 || h > 5) continue
+        if (h < minShift || h > maxShift) continue
         if (h > remaining) continue
         if (blocks && p.some((on, idx) => on && blocks[idx])) continue
         // 12h rest with yesterday's close and tomorrow's start.
