@@ -98,6 +98,15 @@ interface DriverSchedulerStore {
   setEmploymentType: (id: string, type: EmploymentType) => void
   setShopperStatus: (id: string, isShopper: boolean) => void
   setPendingAvailability: (id: string, pending: boolean) => void
+  /**
+   * Patch a driver's basic info (name, driverId, employmentType,
+   * isShopper) in one call. If isShopper changes, the existing
+   * schedule's coverageActual is recomputed so the day grid reflects
+   * the new pool assignment immediately — without needing a full
+   * regenerate. Schedule's embedded driver references are also
+   * updated so the new name/driverId shows up everywhere.
+   */
+  updateDriverInfo: (id: string, patch: { name?: string; driverId?: string; employmentType?: EmploymentType; isShopper?: boolean }) => void
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
@@ -242,6 +251,64 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
         return next
       }),
     })),
+
+  updateDriverInfo: (id, patch) =>
+    set((s) => {
+      const trimmedName = patch.name?.trim()
+      const trimmedDriverId = patch.driverId?.trim()
+      let shopperFlipped = false
+      const drivers = s.drivers.map((d) => {
+        if (d.id !== id) return d
+        const next = { ...d }
+        if (trimmedName !== undefined && trimmedName.length > 0) next.name = trimmedName
+        if (trimmedDriverId !== undefined) {
+          if (trimmedDriverId.length > 0) next.driverId = trimmedDriverId
+          else delete next.driverId
+        }
+        if (patch.employmentType && patch.employmentType !== d.employmentType) {
+          next.employmentType = patch.employmentType
+        }
+        if (patch.isShopper !== undefined && !!patch.isShopper !== !!d.isShopper) {
+          shopperFlipped = true
+          if (patch.isShopper) next.isShopper = true
+          else delete next.isShopper
+        }
+        return next
+      })
+      // If there's no current schedule, the drivers-only patch is enough.
+      if (!s.schedule) return { drivers }
+
+      // Otherwise propagate the new field values to the schedule's
+      // embedded driver references so the UI shows them immediately,
+      // and — when shopper status flipped — recompute coverageActual
+      // since shoppers belong to a parallel pool and don't count toward
+      // DRIVER coverage. Mirrors the recount logic in toggleDriverSlot.
+      const updatedDriver = drivers.find((d) => d.id === id) ?? null
+      const driverSchedules = s.schedule.driverSchedules.map((ds) => {
+        if (ds.driver.id !== id || !updatedDriver) return ds
+        return { ...ds, driver: updatedDriver }
+      })
+      let coverageActual = s.schedule.coverageActual
+      if (shopperFlipped) {
+        const slotCount = driverSchedules[0]?.days[0]?.slots.length ?? 15
+        const recounted: Record<string, number[]> = {}
+        for (const date of Object.keys(s.schedule.coverageActual ?? {})) {
+          const fresh = new Array(slotCount).fill(0)
+          for (const ds of driverSchedules) {
+            if (ds.driver.isShopper) continue
+            const e = ds.days.find((d2) => d2.date === date)
+            if (!e || e.isOff) continue
+            e.slots.forEach((on, i) => { if (on) fresh[i]++ })
+          }
+          recounted[date] = fresh
+        }
+        coverageActual = recounted
+      }
+      return {
+        drivers,
+        schedule: { ...s.schedule, driverSchedules, coverageActual },
+      }
+    }),
 
   toggleRecurringBlock: (id, dayOfWeek, slotIndex) =>
     set((s) => ({

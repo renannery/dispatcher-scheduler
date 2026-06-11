@@ -563,12 +563,42 @@ function DriverAvailabilityModal({ open, onClose, driverId, minDate, maxDate }: 
   const toggleRecurringBlock = useDriverStore((s) => s.toggleRecurringBlock)
   const setRecurringBlocks = useDriverStore((s) => s.setRecurringBlocks)
   const applyAbsenceRange = useDriverStore((s) => s.applyAbsenceRange)
+  const updateDriverInfo = useDriverStore((s) => s.updateDriverInfo)
   const [showAbsenceForm, setShowAbsenceForm] = useState(false)
+  // Local-edit buffers for the basic-info section so typing in the
+  // name / driverId fields doesn't fire a store write per keystroke
+  // (which would re-render the whole schedule view each time). The
+  // committed values land on blur via updateDriverInfo.
+  const [nameDraft, setNameDraft] = useState('')
+  const [driverIdDraft, setDriverIdDraft] = useState('')
   // Reset the inline-form visibility every time the modal closes so it
   // re-opens fresh.
   useEffect(() => { if (!open) setShowAbsenceForm(false) }, [open])
+  // Seed the local drafts from the driver record whenever we switch
+  // drivers or re-open the modal. Without this the previous driver's
+  // text would leak into a freshly-opened editor.
+  useEffect(() => {
+    if (driver) {
+      setNameDraft(driver.name)
+      setDriverIdDraft(driver.driverId ?? '')
+    }
+  }, [driver?.id, open])
 
   if (!open || !driver) return null
+
+  const commitName = () => {
+    const trimmed = nameDraft.trim()
+    if (trimmed.length === 0 || trimmed === driver.name) {
+      setNameDraft(driver.name)
+      return
+    }
+    updateDriverInfo(driver.id, { name: trimmed })
+  }
+  const commitDriverId = () => {
+    const trimmed = driverIdDraft.trim()
+    if (trimmed === (driver.driverId ?? '')) return
+    updateDriverInfo(driver.id, { driverId: trimmed })
+  }
 
   return (
     <div
@@ -582,7 +612,7 @@ function DriverAvailabilityModal({ open, onClose, driverId, minDate, maxDate }: 
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-slate-800">
-              Availability — {displayName(driver.name)}
+              Manage driver — {displayName(driver.name)}
             </h3>
             <p className="mt-0.5 text-xs text-slate-500">
               Edits apply to <span className="font-semibold">this driver only</span> and don't trigger a regenerate.
@@ -604,7 +634,89 @@ function DriverAvailabilityModal({ open, onClose, driverId, minDate, maxDate }: 
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-3">
+          {/* Basic driver info — name, driverId, term, shopper toggle.
+              Drafts commit on blur or Enter so we don't thrash the
+              store on every keystroke. Term and shopper toggle commit
+              immediately on click. Switching the shopper flag triggers
+              a coverageActual recount in the store action so the day
+              grid reflects the new pool assignment without a regen. */}
           <div className="mb-4">
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Driver info
+            </h4>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+                Name
+                <input
+                  type="text"
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={commitName}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+                Driver ID <span className="text-slate-400">(backend lookup, optional)</span>
+                <input
+                  type="text"
+                  value={driverIdDraft}
+                  onChange={(e) => setDriverIdDraft(e.target.value)}
+                  onBlur={commitDriverId}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                  placeholder="e.g. cUZ2A5Q30pss1tBvtJ8W"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                />
+              </label>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-slate-700">Term</span>
+                <div className="flex gap-2">
+                  {(['full', 'part'] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => updateDriverInfo(driver.id, { employmentType: t })}
+                      className={clsx(
+                        'flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition',
+                        driver.employmentType === t
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50',
+                      )}
+                    >
+                      {t === 'full' ? 'Full-time' : 'Part-time'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-slate-700">Role</span>
+                <button
+                  type="button"
+                  onClick={() => updateDriverInfo(driver.id, { isShopper: !driver.isShopper })}
+                  className={clsx(
+                    'flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition',
+                    driver.isShopper
+                      ? 'border-violet-400 bg-violet-50 text-violet-700 hover:bg-violet-100'
+                      : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-50',
+                  )}
+                  title={driver.isShopper
+                    ? 'Currently a shopper — counts toward grocery coverage, not driver coverage. Click to revert to driver.'
+                    : 'Currently a driver — counts toward driver coverage. Click to mark as shopper (grocery pool).'}
+                >
+                  <Users className="h-4 w-4" />
+                  {driver.isShopper ? 'Shopper (click to revert)' : 'Mark as shopper'}
+                </button>
+              </div>
+            </div>
+            {driver.isShopper && (
+              <p className="mt-2 text-[11px] text-violet-700/90">
+                As a shopper, this driver counts toward the grocery coverage pool and is excluded from driver
+                coverage targets in the day grid. Toggling this updates the displayed coverage immediately.
+              </p>
+            )}
+          </div>
+
+          <div className="mb-4 border-t border-slate-100 pt-4">
             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
               Recurring weekly blocks
             </h4>
