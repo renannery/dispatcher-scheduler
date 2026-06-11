@@ -750,20 +750,21 @@ export function generateDriverSchedule({
             }
           }
           // Soft length preference: pay a *quadratic* penalty for each
-          // hour above `perDayTarget - 1` (7h for the default cap=45).
-          // Quadratic length penalty. On a NORMAL day the multiplier is
-          // 1500: 8h is mildly discouraged (-1500) but 9h is strongly
-          // discouraged (-6000) so 9h shifts only happen when they
-          // cover a critically short slot.
+          // hour above `perDayTarget - 1` (7h for a 45h/6-day driver).
+          // Quadratic so 8h is mildly discouraged (-1500) but 9h is
+          // strongly discouraged (-6000) — 9h shifts then only happen
+          // when the extra hour covers a critically short slot.
           //
-          // On BUSY days (Thu/Fri/Sat/Sun = BUSY_DAY_PRIORITY > 0) the
-          // multiplier drops to 750 — manual-dispatcher comparison
-          // showed the manual person uses 92× 9h shifts vs the
-          // generator's 47×, and almost all the missing hours land on
-          // dinner peaks (6-8 PM). Halving the penalty on busy days
-          // lets the optimizer reach 9h split shifts that extend into
-          // the dinner peak instead of settling at 7-8h shifts that
-          // end at 7 PM and miss it.
+          // BUSY days (Thu/Fri/Sat/Sun) get a 50% multiplier (750 vs
+          // 1500) so 9h shifts land more easily when peaks are short.
+          // Tested with mult=250 in an attempt to push past gen's 55×
+          // 9h to manual's 92×, but reducing it caused drivers to
+          // concentrate hours into fewer days, leaving Fri/Sun peaks
+          // SHORTER overall. Roster utilization is already 92% of cap
+          // (2242h demand / 2430h max) — manual matches 92× 9h by
+          // hand-directing each driver to a peak pattern; algorithmic
+          // pattern selection can't fully replicate that without more
+          // total roster capacity. Keeping 750 as the sweet spot.
           // Inline busy-day check — BUSY_DAY_PRIORITY is declared later
           // in the function (Phase 6) so we can't reference it from the
           // main pass without hoisting. Thu/Fri/Sat/Sun = busy.
