@@ -10,34 +10,41 @@ interface Props {
   coverageOverrides: Record<number, number[]>
   onSetOverride: (dayOfWeek: number, slotIndex: number, value: number) => void
   onReset: () => void
+  /** When true, render the grid body directly without the collapsible
+   *  toggle header. Used when the editor is hosted inside a modal where
+   *  the toggle is redundant. */
+  alwaysOpen?: boolean
 }
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const DAY_ORDER = [4, 5, 6, 0, 1, 2, 3]  // Thu-Wed work week order
 
-export function CoverageGridEditor({ coverageScale, coverageOverrides, onSetOverride, onReset }: Props) {
+export function CoverageGridEditor({ coverageScale, coverageOverrides, onSetOverride, onReset, alwaysOpen }: Props) {
   const [open, setOpen] = useState(false)
   const overrideCount = Object.keys(coverageOverrides).length
+  const isOpen = alwaysOpen || open
 
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800"
-      >
-        <Sliders className="h-4 w-4" />
-        Customize coverage targets
-        {overrideCount > 0 && (
-          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-            {overrideCount} day{overrideCount === 1 ? '' : 's'} overridden
-          </span>
-        )}
-        <span className="ml-auto text-xs text-slate-400">{open ? 'hide' : 'show'}</span>
-      </button>
+      {!alwaysOpen && (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800"
+        >
+          <Sliders className="h-4 w-4" />
+          Customize coverage targets
+          {overrideCount > 0 && (
+            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+              {overrideCount} day{overrideCount === 1 ? '' : 's'} overridden
+            </span>
+          )}
+          <span className="ml-auto text-xs text-slate-400">{isOpen ? 'hide' : 'show'}</span>
+        </button>
+      )}
 
-      {open && (
-        <div className="border-t border-slate-200 px-4 py-3">
+      {isOpen && (
+        <div className={clsx('px-4 py-3', !alwaysOpen && 'border-t border-slate-200')}>
           <p className="mb-3 text-xs text-slate-500">
             Edit the number of drivers needed in each hourly slot. The coverage scale ({coverageScale.toFixed(2)}×)
             still applies on top of your overrides. Empty cell = use baseline.

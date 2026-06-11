@@ -61,9 +61,12 @@ interface Props {
    *  that opens the parent's "Manage driver" modal. Parent decides what
    *  to do (typically: set editingAvailability state to the id). */
   onEditDriver?: (driverId: string) => void
+  /** When set, the "Coverage" header label becomes a clickable button
+   *  that opens the parent's coverage-targets modal. */
+  onEditCoverage?: () => void
 }
 
-export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel, onEditDriver }: Props) {
+export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel, onEditDriver, onEditCoverage }: Props) {
   const toggleDriverSlot = useDriverStore((s) => s.toggleDriverSlot)
   const timeOff = useDriverStore((s) => s.timeOff)
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
@@ -219,7 +222,18 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
           */}
           <tr>
             <th className="sticky left-0 top-11 z-30 min-w-[130px] bg-slate-100 px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Coverage
+              {onEditCoverage ? (
+                <button
+                  type="button"
+                  onClick={onEditCoverage}
+                  title="Click to edit per-DOW coverage targets"
+                  className="underline-offset-2 hover:underline focus:underline focus:outline-none"
+                >
+                  Coverage
+                </button>
+              ) : (
+                'Coverage'
+              )}
             </th>
             {visibleSlotIndices.map((si) => {
               const a = actual[si]
@@ -554,7 +568,18 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
         <tfoot>
           <tr className="border-t-2 border-slate-300">
             <td className="sticky left-0 bg-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Coverage
+              {onEditCoverage ? (
+                <button
+                  type="button"
+                  onClick={onEditCoverage}
+                  title="Click to edit per-DOW coverage targets"
+                  className="underline-offset-2 hover:underline focus:underline focus:outline-none"
+                >
+                  Coverage
+                </button>
+              ) : (
+                'Coverage'
+              )}
             </td>
             {visibleSlotIndices.map((si) => {
               const a = actual[si]

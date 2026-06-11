@@ -7,6 +7,7 @@ import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 
 import { DRIVER_SLOTS, effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
+import { CoverageGridEditor } from './CoverageGridEditor'
 import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
@@ -953,6 +954,8 @@ export function DriverScheduleGrid() {
     setCoverageScale,
     addDriver,
     setPendingAvailability,
+    setCoverageOverride,
+    resetCoverageOverrides,
     undoScheduleEdit,
     redoScheduleEdit,
     applyShuffledSchedule,
@@ -1050,6 +1053,12 @@ export function DriverScheduleGrid() {
   // page; changes apply immediately to the store and don't trigger a
   // regenerate, so other drivers' shifts stay put.
   const [editingAvailability, setEditingAvailability] = useState<string | null>(null)
+  // Coverage-targets modal — opens when ops clicks the "Coverage" label
+  // in a day grid header. Surfaces the same editor used on the Period
+  // step so per-DOW × per-slot targets can be retuned without leaving
+  // the schedule view. Changes apply through the existing
+  // setCoverageOverride action → coverage cells reactively re-render.
+  const [coverageEditorOpen, setCoverageEditorOpen] = useState(false)
   // Simulation state — when set, shows a comparison row in the hiring
   // banner: "Adding N drivers would close the gap to Yh." Cleared
   // whenever the underlying schedule changes (regenerate, add driver,
@@ -1909,6 +1918,7 @@ export function DriverScheduleGrid() {
                         dayOfWeek={dateInfo.dayOfWeek}
                         driverIdFilter={matchedDriverIds}
                         onEditDriver={(id) => setEditingAvailability(id)}
+                        onEditCoverage={() => setCoverageEditorOpen(true)}
                         // Only the day-card matching today's Cayman date
                         // AND only when we're inside ops hours gets the
                         // now-line. Every other card sees undefined →
@@ -1978,6 +1988,62 @@ export function DriverScheduleGrid() {
         minDate={startDate}
         maxDate={endDate}
       />
+
+      {/* Coverage-targets modal — opens from the day-grid "Coverage"
+          header label. Edits apply via setCoverageOverride and the
+          schedule view's coverage cells re-render reactively (they
+          consume coverageOverrides from the store). No regenerate
+          required to see the new targets reflected in the per-day
+          gap counts and cell colors. */}
+      {coverageEditorOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+          onClick={() => setCoverageEditorOpen(false)}
+        >
+          <div
+            className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-slate-800">Coverage targets</h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Edit the number of drivers required in each hourly slot per day-of-week.
+                  Changes apply immediately to the displayed coverage cells. Regenerate to re-run
+                  the optimizer against the new targets.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCoverageEditorOpen(false)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              <CoverageGridEditor
+                coverageScale={coverageScale}
+                coverageOverrides={coverageOverrides}
+                onSetOverride={setCoverageOverride}
+                onReset={resetCoverageOverrides}
+                alwaysOpen
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-5 py-2">
+              <span className="text-[11px] text-slate-500">Changes save automatically.</span>
+              <button
+                type="button"
+                onClick={() => setCoverageEditorOpen(false)}
+                className="rounded-lg bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Drill-down modal — content computed from `drillDown` against the
           selected week's data. Closed state = null. Single instance at
