@@ -2509,6 +2509,79 @@ export function generateDriverSchedule({
     }
   }
 
+  // ─── Phase 11: Over-cover trim on low-priority slots ───────────────────
+  // When a low-priority slot (weight ≤ LOW_PRIORITY_WEIGHT = 0.5: 10 PM
+  // all days, 3-4 PM weekdays) is OVER target, trim drivers off that
+  // slot so coverage lands back at target. Saves fleet payroll —
+  // every body trimmed = 1h saved that doesn't need to be staffed.
+  //
+  // Example from ops: Sat 10 PM target 6 lands at 8. Two drivers can
+  // lose their 10 PM slot (their shifts end at 9 PM instead) and the
+  // 10 PM count drops to 6 — saves 2 driver-hours.
+  //
+  // Hard constraints preserved at every trim:
+  //   - shape rules (3h-block, 3h-break, ≤1 break)
+  //   - 4h-min day (no shift may drop below 4h)
+  //   - opening / dinner floor already met — Phase 10 ran first
+  //
+  // Restricted to low-priority slots so we don't accidentally trim
+  // bodies off opening / lunch / dinner peaks even when they're
+  // technically over target.
+  for (const di of allDates) {
+    const dateStr = format(di, 'yyyy-MM-dd')
+    const dow = di.getDay()
+    const required = effectiveCoverage(dow, coverageScale, coverageOverrides)
+    const cov = coverageActual[dateStr]
+    if (!cov) continue
+
+    for (let slot = 0; slot < required.length; slot++) {
+      // Only act on LOW-PRIORITY over-covered slots. High-priority
+      // slots that happen to over-cover are usually the result of a
+      // pattern that also covers a critical slot — trimming them
+      // would risk uncovering the critical one.
+      const w = slotPriorityWeight(dow, slot)
+      if (w > LOW_PRIORITY_WEIGHT) continue
+      let over = (cov[slot] ?? 0) - required[slot]
+      if (over <= 0) continue
+
+      // Iterate shuffled drivers, trim one at a time until at target.
+      let safety = over + 5
+      while (over > 0 && safety-- > 0) {
+        let trimmed = false
+        for (const d of shuffledDrivers) {
+          if (d.isShopper) continue                  // separate pool
+          const entry = scheduleMap[d.id].find((e) => e.date === dateStr)
+          if (!entry || entry.isOff) continue
+          if (!entry.slots[slot]) continue
+
+          // Candidate post-trim bitmap.
+          const cand = [...entry.slots]
+          cand[slot] = false
+          const newHours = cand.filter(Boolean).length
+          if (newHours < 4) continue              // 4h-min day rule
+          if (violatesShape(cand)) continue       // 3h-block / 3h-break / ≤2 blocks
+
+          // Apply the trim.
+          entry.slots[slot] = false
+          entry.totalHours = newHours
+          cov[slot] = (cov[slot] ?? 0) - 1
+          const wLabel = weekLabel(parseISO(dateStr))
+          weekHours[d.id][wLabel] = (weekHours[d.id][wLabel] ?? 0) - 1
+          // Recompute last-slot-worked if needed.
+          let newLast = -1
+          for (let z = entry.slots.length - 1; z >= 0; z--) {
+            if (entry.slots[z]) { newLast = z; break }
+          }
+          lastSlotWorked[d.id][dateStr] = newLast
+          over--
+          trimmed = true
+          break
+        }
+        if (!trimmed) break  // no more legal trims for this slot
+      }
+    }
+  }
+
   // ─── Headcount-limited slot detection ───────────────────────────────────
   // Final scan: any priority floor slot still below 40% of its target is
   // a genuine headcount shortage. The redistribution phases tried every
