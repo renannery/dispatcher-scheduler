@@ -318,6 +318,55 @@ function WeekHeadcountBanner({ slots }: WeekHeadcountBannerProps) {
   )
 }
 
+// ─── Inline weekly-cap stepper (schedule step) ──────────────────────────────
+//
+// Compact number input for the FT or PT weekly cap. Commits on blur or
+// Enter via the onCommit callback (which the parent wires to
+// handleApplyEdits → regenerate). User feedback: the PT cap got typed
+// as 29 instead of 30 on the Period step and wasn't easy to fix from
+// the schedule view — this control lets ops correct it inline.
+
+interface CapStepperProps {
+  label: string
+  value: number
+  min: number
+  max: number
+  onCommit: (next: number) => void
+}
+
+function CapStepper({ label, value, min, max, onCommit }: CapStepperProps) {
+  const [draft, setDraft] = useState(String(value))
+  // Reset the local draft whenever the underlying value changes (e.g.
+  // a regenerate / suggestions-banner edit committed elsewhere).
+  useEffect(() => { setDraft(String(value)) }, [value])
+
+  const commit = () => {
+    const parsed = parseInt(draft, 10)
+    if (Number.isNaN(parsed)) { setDraft(String(value)); return }
+    const clamped = Math.max(min, Math.min(max, parsed))
+    if (clamped !== value) onCommit(clamped)
+    else setDraft(String(value))
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+        title={`${label} weekly hours. Enter to commit, blur to commit. Range ${min}-${max}h.`}
+        className="w-12 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums text-slate-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+      />
+      <span>h</span>
+    </span>
+  )
+}
+
 // ─── Inline coverage-scale adjuster (schedule step) ──────────────────────────
 //
 // Lightweight wrapper around the same coverage-scale control exposed in
@@ -950,6 +999,7 @@ export function DriverScheduleGrid() {
     setStep,
     setDateRange,
     setFullTimeCap,
+    setPartTimeCap,
     setMaxHoursPerDay,
     setCoverageScale,
     addDriver,
@@ -1253,15 +1303,19 @@ export function DriverScheduleGrid() {
     setSimResult(null)
   }
 
-  // Apply edits from the suggestions banner and regenerate in one shot.
-  const handleApplyEdits = (next: { fullTimeCap: number; maxHoursPerDay: number; coverageScale: number }) => {
+  // Apply edits from the suggestions banner / inline cap editors and
+  // regenerate in one shot. partTimeCap is optional so callers that
+  // don't change it (suggestions banner only edits FT cap) can omit.
+  const handleApplyEdits = (next: { fullTimeCap: number; maxHoursPerDay: number; coverageScale: number; partTimeCap?: number }) => {
     setFullTimeCap(next.fullTimeCap)
     setMaxHoursPerDay(next.maxHoursPerDay)
     setCoverageScale(next.coverageScale)
+    const nextPT = next.partTimeCap ?? partTimeCap
+    if (next.partTimeCap !== undefined) setPartTimeCap(next.partTimeCap)
     regenSeed.current++
     const fresh = generateDriverSchedule({
       drivers, startDate, endDate, timeOff,
-      fullTimeCap: next.fullTimeCap, partTimeCap,
+      fullTimeCap: next.fullTimeCap, partTimeCap: nextPT,
       coverageScale: next.coverageScale, coverageOverrides,
       minHoursPerDay, maxHoursPerDay: next.maxHoursPerDay,
       seed: weekendRotationOffset + regenSeed.current,
@@ -1477,10 +1531,33 @@ export function DriverScheduleGrid() {
             compact
             showStats
           />
-          <div className="text-xs text-slate-500">
-            <span className="font-semibold text-slate-700">{drivers.length}</span> drivers ·
-            full-time cap <span className="font-semibold text-slate-700">{fullTimeCap}h</span> ·
-            part-time cap <span className="font-semibold text-slate-700">{schedule.partTimeCap}h</span>
+          {/* Inline cap editors — turns the static "FT cap Xh · PT cap Yh"
+              line into editable steppers so ops can fix a wrong cap
+              (e.g. PT 29h that should have been 30h) without walking
+              back to the Period step. Number inputs commit on blur or
+              Enter via handleApplyEdits which regenerates in one shot. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+            <span><span className="font-semibold text-slate-700">{drivers.length}</span> drivers</span>
+            <span className="text-slate-300">·</span>
+            <CapStepper
+              label="FT cap"
+              value={fullTimeCap}
+              min={20}
+              max={LEGAL_WEEKLY_MAX_HOURS}
+              onCommit={(v) =>
+                handleApplyEdits({ fullTimeCap: v, maxHoursPerDay, coverageScale, partTimeCap })
+              }
+            />
+            <span className="text-slate-300">·</span>
+            <CapStepper
+              label="PT cap"
+              value={schedule.partTimeCap}
+              min={10}
+              max={LEGAL_PT_WEEKLY_MAX_HOURS}
+              onCommit={(v) =>
+                handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale, partTimeCap: v })
+              }
+            />
           </div>
           {/* Inline coverage-scale knob — same control as Period step, also
               available in the suggestions banner. Surfaced here so ops can
