@@ -2509,24 +2509,28 @@ export function generateDriverSchedule({
     }
   }
 
-  // ─── Phase 11: Over-cover trim on low-priority slots ───────────────────
-  // When a low-priority slot (weight ≤ LOW_PRIORITY_WEIGHT = 0.5: 10 PM
-  // all days, 3-4 PM weekdays) is OVER target, trim drivers off that
-  // slot so coverage lands back at target. Saves fleet payroll —
-  // every body trimmed = 1h saved that doesn't need to be staffed.
+  // ─── Phase 11: Over-cover trim on ANY over-target slot ─────────────────
+  // When any slot lands strictly OVER its target, trim drivers off that
+  // slot so coverage lands back at target. Saves fleet payroll — every
+  // body trimmed = 1h saved that doesn't need to be staffed.
   //
-  // Example from ops: Sat 10 PM target 6 lands at 8. Two drivers can
-  // lose their 10 PM slot (their shifts end at 9 PM instead) and the
-  // 10 PM count drops to 6 — saves 2 driver-hours.
+  // Example from ops: Thu 10 AM target 13 lands at 15. Two drivers
+  // starting their morning block at 10 AM (10a-1p) become 11a-1p (3h
+  // morning block, still passes the 3h-block rule). 10 AM coverage
+  // drops to 13, fleet saves 2 driver-hours.
   //
-  // Hard constraints preserved at every trim:
+  // Earlier this phase was restricted to LOW_PRIORITY slots (weight ≤
+  // 0.5) on the assumption that high-priority over-coverage was
+  // intentional cushioning for critical slots. In practice every body
+  // over target = payroll waste regardless of slot weight, AND each
+  // trim is gated on:
   //   - shape rules (3h-block, 3h-break, ≤1 break)
-  //   - 4h-min day (no shift may drop below 4h)
-  //   - opening / dinner floor already met — Phase 10 ran first
-  //
-  // Restricted to low-priority slots so we don't accidentally trim
-  // bodies off opening / lunch / dinner peaks even when they're
-  // technically over target.
+  //   - 4h-min day (no shift drops below 4h)
+  //   - opening / dinner FLOORS already met (Phase 10 ran first)
+  //   - the slot trimmed must STAY AT TARGET — never goes below
+  // …so high-priority trimming is safe by construction. The boundary-
+  // shape check naturally protects critical patterns (you can't trim
+  // a slot mid-block).
   for (const di of allDates) {
     const dateStr = format(di, 'yyyy-MM-dd')
     const dow = di.getDay()
@@ -2535,12 +2539,6 @@ export function generateDriverSchedule({
     if (!cov) continue
 
     for (let slot = 0; slot < required.length; slot++) {
-      // Only act on LOW-PRIORITY over-covered slots. High-priority
-      // slots that happen to over-cover are usually the result of a
-      // pattern that also covers a critical slot — trimming them
-      // would risk uncovering the critical one.
-      const w = slotPriorityWeight(dow, slot)
-      if (w > LOW_PRIORITY_WEIGHT) continue
       let over = (cov[slot] ?? 0) - required[slot]
       if (over <= 0) continue
 
