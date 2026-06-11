@@ -57,9 +57,13 @@ interface Props {
   nowSlotIdx?: number
   nowMinuteFrac?: number
   nowLabel?: string
+  /** When set, the driver name in each row becomes a clickable button
+   *  that opens the parent's "Manage driver" modal. Parent decides what
+   *  to do (typically: set editingAvailability state to the id). */
+  onEditDriver?: (driverId: string) => void
 }
 
-export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel }: Props) {
+export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel, onEditDriver }: Props) {
   const toggleDriverSlot = useDriverStore((s) => s.toggleDriverSlot)
   const timeOff = useDriverStore((s) => s.timeOff)
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
@@ -325,17 +329,33 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                     >
                       {ds.driver.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
                     </div>
-                    <span
-                      className={clsx(
-                        'font-medium',
-                        isShopperRow
-                          ? (isOff ? 'text-purple-500' : 'text-purple-900')
-                          : (isOff ? 'text-slate-400' : 'text-slate-800'),
-                      )}
-                      title={ds.driver.name}
-                    >
-                      {displayName(ds.driver.name)}
-                    </span>
+                    {onEditDriver ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditDriver(ds.driver.id)}
+                        title={`${ds.driver.name} — click to edit driver info, blocks, or time-off`}
+                        className={clsx(
+                          'font-medium underline-offset-2 hover:underline focus:underline focus:outline-none',
+                          isShopperRow
+                            ? (isOff ? 'text-purple-500' : 'text-purple-900')
+                            : (isOff ? 'text-slate-400' : 'text-slate-800'),
+                        )}
+                      >
+                        {displayName(ds.driver.name)}
+                      </button>
+                    ) : (
+                      <span
+                        className={clsx(
+                          'font-medium',
+                          isShopperRow
+                            ? (isOff ? 'text-purple-500' : 'text-purple-900')
+                            : (isOff ? 'text-slate-400' : 'text-slate-800'),
+                        )}
+                        title={ds.driver.name}
+                      >
+                        {displayName(ds.driver.name)}
+                      </span>
+                    )}
                     <span
                       className={clsx(
                         'rounded px-1 text-[9px] font-bold',

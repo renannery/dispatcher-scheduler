@@ -1908,6 +1908,7 @@ export function DriverScheduleGrid() {
                         dayLabel={dateInfo.dayLabel}
                         dayOfWeek={dateInfo.dayOfWeek}
                         driverIdFilter={matchedDriverIds}
+                        onEditDriver={(id) => setEditingAvailability(id)}
                         // Only the day-card matching today's Cayman date
                         // AND only when we're inside ops hours gets the
                         // now-line. Every other card sees undefined →
