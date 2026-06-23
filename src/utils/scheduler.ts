@@ -1,6 +1,11 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
-import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import {
+  DAY_TEMPLATES,
+  MAX_BREAK_PREFERRED_HOURS,
+  patternMaxBreakHours,
+  SLOTS,
+} from '@/data/coverageTemplate'
 import type {
   Dispatcher,
   DispatcherDayEntry,
@@ -13,35 +18,18 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Fri, Sat, Sun — the "heavy" weekend days that we rotate off every 2 weeks. */
+/** Fri, Sat, Sun — the "heavy" weekend days the fairness picker spreads. */
 export const HEAVY_DAYS = new Set([5, 6, 0]) // Fri, Sat, Sun
 
-/**
- * Returns the id of the dispatcher who gets Fri/Sat/Sun off on the 2-week
- * block that contains `date`.  Block 0 → dispatchers[0], block 1 →
- * dispatchers[1], …, wrapping around.
- *
- * "Block" boundaries are aligned to the Thursday-start work week so that the
- * rotation always changes on a Thursday, never mid-week.
- */
-export function weekendOffDispatcherId(
-  date: Date,
-  scheduleStart: Date,
-  dispatchers: Dispatcher[],
-  seed = 0,
-): string | null {
-  if (dispatchers.length < 2) return null
-  const toThursday = (d: Date) => {
-    const dow = d.getDay()
-    return addDays(d, -((dow + 3) % 7))
-  }
-  const startThu = toThursday(scheduleStart)
-  const dateThu  = toThursday(date)
-  const weeksSinceStart = Math.round(differenceInDays(dateThu, startThu) / 7)
-  // 1-week rotation so a different dispatcher cycles in each week.
-  // Seed lets Regenerate produce different starting points.
-  return dispatchers[(weeksSinceStart + seed) % dispatchers.length].id
-}
+/** Soft target: try to give every dispatcher 2 days off per week, fall back
+ *  to 1 day off only when coverage demand makes 2 infeasible. The picker
+ *  never *elects* a 3rd off-day on top of recurring blocks. */
+const MAX_DAYS_OFF_PER_WEEK = 2
+
+/** Legal weekly maximum. Once a dispatcher reaches this they're forced off
+ *  the rest of the week (treated like time-off, doesn't count against the
+ *  off-days fairness cap). Daily max (9 h) is enforced via pattern shapes. */
+const WEEKLY_CAP_HOURS = 45
 
 function slotHours(slots: boolean[]): number {
   return slots.reduce((sum, on, i) => sum + (on ? SLOTS[i].hours : 0), 0)
@@ -115,6 +103,23 @@ export function generateSchedule(
   const weekHours: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (weekHours[d.id] = {}))
 
+  // Per-dispatcher, per-week off-day counter. Counts recurring blocks AND
+  // elected off-days together, so a dispatcher with Fri as a recurring block
+  // gets at most 1 more elected off-day in that week.
+  const weekOffDays: Record<string, Record<string, number>> = {}
+  dispatchers.forEach((d) => (weekOffDays[d.id] = {}))
+
+  // Per-dispatcher total weekend (Fri/Sat/Sun) off-days across the whole
+  // schedule. Used by the fairness picker to spread weekend off-days evenly.
+  const weekendOffTotal: Record<string, number> = {}
+  dispatchers.forEach((d) => (weekendOffTotal[d.id] = 0))
+
+  // Per-dispatcher total elected off-days (excludes recurring/per-date blocks
+  // and 45 h cap-hits). Used as a fairness tiebreak across weeks so the same
+  // dispatcher isn't picked off every Thursday.
+  const totalElectedOff: Record<string, number> = {}
+  dispatchers.forEach((d) => (totalElectedOff[d.id] = 0))
+
   // Track the last active slot index each dispatcher worked on each date
   // (used to enforce the night-rest constraint)
   const lastSlotWorked: Record<string, Record<string, number>> = {}
@@ -144,13 +149,22 @@ export function generateSchedule(
         first: firstActiveSlot(bool),
         last: lastActiveSlot(bool),
         isMorning: firstActiveSlot(bool) <= MORNING_SLOT_THRESHOLD,
+        maxBreak: patternMaxBreakHours(bool, SLOTS),
       }
     })
 
-    // Sort patterns: morning first (longest first within group), then late
+    // Sort patterns: morning first, then within each group prefer smaller
+    // breaks (≤2h before 3h) and then longer shifts as a final tiebreak.
+    const byBreakThenLength = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
+      const aOverPref = a.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
+      const bOverPref = b.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
+      if (aOverPref !== bOverPref) return aOverPref - bOverPref
+      if (a.maxBreak !== b.maxBreak) return a.maxBreak - b.maxBreak
+      return b.hours - a.hours
+    }
     const sortedPatterns = [
-      ...patternMeta.filter((p) => p.isMorning).sort((a, b) => b.hours - a.hours),
-      ...patternMeta.filter((p) => !p.isMorning).sort((a, b) => b.hours - a.hours),
+      ...patternMeta.filter((p) => p.isMorning).sort(byBreakThenLength),
+      ...patternMeta.filter((p) => !p.isMorning).sort(byBreakThenLength),
     ]
 
     // Rotate dispatcher order for variety (step 3 per day visits all positions)
@@ -161,28 +175,72 @@ export function generateSchedule(
       ...dispatchers.slice(0, rotationOffset),
     ]
 
-    // Which dispatcher (if any) gets Fri/Sat/Sun off this 2-week block?
-    const weekendOffId = HEAVY_DAYS.has(dow)
-      ? weekendOffDispatcherId(date, start, dispatchers, seed)
-      : null
-
-    // Split into off-today, 40h-capped, and available pools
-    const offToday: typeof dispatchers = []
-    const cappedDispatchers: typeof dispatchers = []
-    const workingPool: typeof dispatchers = []
+    // Phase A — classify dispatchers into:
+    //   blockedToday  — fully blocked by recurring/per-date time-off
+    //   cappedToday   — already at 45 h this week (forced off, doesn't count
+    //                   toward the 2-days-off cap, treated like time-off)
+    //   availablePool — could work today
+    const isWeekend = HEAVY_DAYS.has(dow)
+    const blockedToday: typeof dispatchers = []
+    const cappedToday: typeof dispatchers = []
+    const availablePool: typeof dispatchers = []
 
     for (const d of rotated) {
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
-      const onWeekendBreak = d.id === weekendOffId
-      if (fullyBlocked || onWeekendBreak) {
-        offToday.push(d)
-      } else if ((weekHours[d.id][wLabel] ?? 0) >= 40) {
-        cappedDispatchers.push(d)
+      if (fullyBlocked) {
+        blockedToday.push(d)
+        weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        if (isWeekend) weekendOffTotal[d.id] += 1
+      } else if ((weekHours[d.id][wLabel] ?? 0) >= WEEKLY_CAP_HOURS) {
+        cappedToday.push(d)
       } else {
-        workingPool.push(d)
+        availablePool.push(d)
       }
     }
+
+    // Phase B — fairness pick: how many in availablePool to elect OFF today.
+    // The day needs at most `patternsNeeded` dispatchers; everyone past that
+    // is potentially off. Cap each dispatcher at MAX_DAYS_OFF_PER_WEEK total.
+    const patternsNeeded = template.shiftPatterns.length
+    const desiredElectedOff = Math.max(0, availablePool.length - patternsNeeded)
+
+    const eligibleForOff = availablePool.filter(
+      (d) => (weekOffDays[d.id][wLabel] ?? 0) < MAX_DAYS_OFF_PER_WEEK,
+    )
+
+    // On weekend days, weekend-off fairness leads (so everyone cycles through
+    // Fri/Sat/Sun off-days regardless of which weekday they were off). On
+    // weekdays, prefer those with fewest off-days this week so the week's
+    // off-days are spread evenly. totalElectedOff breaks all final ties so
+    // the same person isn't picked off every same-weekday.
+    eligibleForOff.sort((a, b) => {
+      if (isWeekend) {
+        const wA = weekendOffTotal[a.id]
+        const wB = weekendOffTotal[b.id]
+        if (wA !== wB) return wA - wB
+      }
+      const dA = weekOffDays[a.id][wLabel] ?? 0
+      const dB = weekOffDays[b.id][wLabel] ?? 0
+      if (dA !== dB) return dA - dB
+      return totalElectedOff[a.id] - totalElectedOff[b.id]
+    })
+
+    const electedOffIds = new Set(
+      eligibleForOff.slice(0, desiredElectedOff).map((d) => d.id),
+    )
+    for (const id of electedOffIds) {
+      weekOffDays[id][wLabel] = (weekOffDays[id][wLabel] ?? 0) + 1
+      totalElectedOff[id] += 1
+      if (isWeekend) weekendOffTotal[id] += 1
+    }
+
+    const offToday: typeof dispatchers = [
+      ...availablePool.filter((d) => electedOffIds.has(d.id)),
+      ...blockedToday,
+    ]
+    const cappedDispatchers = cappedToday
+    const workingPool = availablePool.filter((d) => !electedOffIds.has(d.id))
 
     // Sort available dispatchers by ascending weekly hours → balances totals
     const sortedWorking = [...workingPool].sort(
@@ -202,12 +260,14 @@ export function generateSchedule(
 
     for (const p of sortedPatterns) {
       // Morning patterns exclude dispatchers who worked night yesterday.
-      // Also exclude any dispatcher whose blocks overlap this pattern.
+      // Also exclude any dispatcher whose blocks overlap this pattern, and
+      // any whose current weekly hours + this shift would push past the cap.
       const eligible = sortedWorking.filter((d) => {
         if (usedIds.has(d.id)) return false
         if (p.isMorning && workedNightYesterday(d.id)) return false
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
         if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
+        if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) return false
         return true
       })
       if (eligible.length === 0) break

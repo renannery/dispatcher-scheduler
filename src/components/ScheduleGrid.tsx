@@ -1,11 +1,10 @@
 import clsx from 'clsx'
 import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, Users, X } from 'lucide-react'
-import { parseISO } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DAY_TEMPLATES } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
-import { generateSchedule, HEAVY_DAYS, hoursStatusBg, hoursStatusColor, weekendOffDispatcherId } from '@/utils/scheduler'
+import { generateSchedule, hoursStatusBg, hoursStatusColor } from '@/utils/scheduler'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DayGrid } from './DayGrid'
@@ -264,14 +263,6 @@ export function ScheduleGrid() {
       {weekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
 
-        const heavyDateInfo = weekDates.find((d) => HEAVY_DAYS.has(d.dayOfWeek))
-        const weekendOffId = heavyDateInfo
-          ? weekendOffDispatcherId(parseISO(heavyDateInfo.date), parseISO(schedule.startDate), dispatchers, schedule.seed)
-          : null
-        const weekendOffDispatcher = weekendOffId
-          ? schedule.dispatcherSchedules.find((ds) => ds.dispatcher.id === weekendOffId)?.dispatcher
-          : null
-
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => ({
           name:  ds.dispatcher.name,
           hours: ds.weeklyHours[wl] ?? 0,
@@ -304,15 +295,6 @@ export function ScheduleGrid() {
                       <><span className="ml-1">·</span> <span className="ml-1 font-semibold text-slate-500">{offCount}</span> off</>
                     )}
                   </div>
-                  {weekendOffDispatcher && (
-                    <span
-                      className="flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700"
-                      title={`${weekendOffDispatcher.name} has Fri/Sat/Sun off this 2-week block`}
-                    >
-                      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: weekendOffDispatcher.color }} />
-                      {weekendOffDispatcher.name.split(' ')[0]}: weekend off
-                    </span>
-                  )}
                 </div>
                 <div className="flex shrink-0 gap-2 text-xs text-slate-400">
                   <button

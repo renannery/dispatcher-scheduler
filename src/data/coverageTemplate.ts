@@ -4,9 +4,15 @@
  * Mon–Fri: 9 AM – 11 PM  (slot 0 = 8–9 AM, coverage = 0 → hidden in UI)
  * Sat–Sun: 8 AM – 11 PM  (slot 0 = 8–9 AM, coverage > 0)
  *
- * Break rules enforced in every pattern:
- *   ≥ 6 h work → at least 30 min break (one 0.5 h slot gap inside the shift)
- *   ≥ 7 h work → at least 1 h break   (one 1 h slot gap, or two consecutive 0.5 h gaps)
+ * Shape rules enforced in every pattern (build-time assertion at the bottom
+ * of this file fails the import on violation):
+ *   Every work block ≥ MIN_BLOCK_HOURS (3 h)        — no 1-2 h tail blocks
+ *   work ≤ 6 h           → no break required
+ *   6 h < work < 8 h     → ≥ 30 min break
+ *   work ≥ 8 h           → ≥ 1 h break
+ *   Mid-shift break ≤ MAX_BREAK_HARD_HOURS (3 h)    — 2 h preferred, 3 h fallback
+ *   Mid-shift break MUST NOT overlap any PEAK_SLOT  — lunch (12–2 PM) and
+ *     dinner (5–8 PM) must always be staffed at full intent
  * Max work per day = 9 h.
  *
  * Where a break inside a pattern would reduce coverage below required,
@@ -52,16 +58,16 @@ const THU: DayTemplate = {
   requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 2, 2, 3, 3, 2, 3, 1],
   //                                              ↑  ↑ adjusted down 1 (staggered late breaks)
   shiftPatterns: [
-    // Early A  (9 AM–4 PM, 6.5 h + 30 m break at 11–11:30)
-    [0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (9 AM–4 PM, 6.5 h + 30 m break at 2–2:30)
-    [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Late A   (4 PM–11 PM, 6.5 h + 30 m break at 6:30–7)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1],
-    // Late B   (4 PM–11 PM, 6.5 h + 30 m break at 6–6:30)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1],
-    // Late C   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+    // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -74,18 +80,18 @@ const FRI: DayTemplate = {
   //                                                      ↑  ↑ adjusted (Late B on break)
   //                                                               ↑ adjusted (Late A on break)
   shiftPatterns: [
-    // Early A  (9 AM–4 PM, 6 h work + 1 h break at noon)
-    [0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (9 AM–4 PM, 6.5 h + 30 m break at 11–11:30)
-    [0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 5 PM–8:30 PM, ~6.5 h, natural break 2–5 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (4 PM–11 PM, 6 h + 1 h break at 8–9 PM)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1],
-    // Late B   (4 PM–11 PM, 6 h + 1 h break at 6–7 PM)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1],
-    // Late C   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+    // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Early B  (10 AM–4 PM, 6 h single block — covers mid-morning + lunch + afternoon)
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -100,15 +106,14 @@ const SAT: DayTemplate = {
     [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
     [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split A  (11 AM–2 PM + 5 PM–8:30 PM, ~6.5 h, natural break 2–5 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Split B  (11 AM–2 PM + 5 PM–8:30 PM, ~6.5 h)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (3 PM–10 PM, 6 h + 1 h break at 6–7 PM)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1],
-    //  NOTE: Late B has only 5.5h → still shows 30m break as good practice ↑
+    // Split A  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Split B  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -119,18 +124,18 @@ const SUN: DayTemplate = {
   requiredCoverage: [    2, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3],
   //                                                            ↑ adjusted (Early A on lunch)
   shiftPatterns: [
-    // Early A  (8 AM–3 PM, 6 h + 1 h break at noon)
-    [1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
+    // Early A  (8 AM–3 PM, 6 h + 1 h break at 11 AM–12 PM, blocks 3 h + 3 h)
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30, blocks 3 h + 3.5 h)
     [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 5 PM–8:30 PM, ~6.5 h, natural break 2–5 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (3 PM–11 PM, 7 h + 1 h break at 7–8 PM)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late B   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
-    // Late C   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late A   (3 PM–9 PM, 6 h single block — covers afternoon + dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (4 PM–10 PM, 6 h single block — covers dinner peak + evening)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late C   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -140,14 +145,14 @@ const MON: DayTemplate = {
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
   requiredCoverage: [    0, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 3, 3, 3, 3, 1, 2, 2],
   shiftPatterns: [
-    // Early    (9 AM–4 PM, 6.5 h + 30 m break at 2–2:30)
-    [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–3 PM + 6 PM–8:30 PM, ~6 h, natural break 3–6 PM)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
-    // Late B   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+    // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -157,14 +162,14 @@ const TUE: DayTemplate = {
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
   requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1],
   shiftPatterns: [
-    // Early A  (9 AM–3 PM, 6 h + 30 m break at 11–11:30)
-    [0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (9 AM–4 PM, 6.5 h + 30 m break at 2–2:30)
-    [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 4 PM–9:30 PM, ~8 h, natural break 2–4 PM — trimmed from 9.5 h)
+    // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Early B  (10 AM–4 PM, 6 h single block)
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Split    (11 AM–2 PM + 4 PM–9:30 PM, ~8 h, 2 h break 2–4 PM — trimmed from 9.5 h)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late     (11 AM–2 PM + 6 PM–11 PM, ~7.5 h, natural break 2–6 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+    // Late     (11 AM–2 PM + 5 PM–11 PM, 9 h, 3 h break 2–5 PM)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -175,16 +180,16 @@ const WED: DayTemplate = {
   requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2],
   //                                       ↑ adjusted (Early A on lunch break)
   shiftPatterns: [
-    // Early A  (9 AM–4 PM, 6 h + 1 h break at noon)
-    [0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 5 PM–8:30 PM, ~6 h, natural break 2–5 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Early C  (9 AM–4 PM, 6 h + 30 m break at 2–2:30)
-    [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Late A   (4 PM–11 PM, 7 h + 1 h break at 8–9 PM)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1],
-    // Late B   (4 PM–11 PM, 6.5 h + 30 m break at 8:30–9)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+    // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -198,3 +203,116 @@ export const DAY_TEMPLATES: Record<number, DayTemplate> = {
   5: FRI,
   6: SAT,
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Break-shape rules
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Preferred max mid-shift break. Patterns over this are scored lower. */
+export const MAX_BREAK_PREFERRED_HOURS = 2
+
+/** Hard cap on mid-shift break. Patterns over this are rejected at import. */
+export const MAX_BREAK_HARD_HOURS = 3
+
+/** Minimum length of any single work block in a pattern. Prevents 1-2 h
+ *  tail-blocks before/after a break. A dispatcher should work at least 3 h
+ *  before taking a break. */
+export const MIN_BLOCK_HOURS = 3
+
+/** Required break for an 8 h+ shift. */
+export const LONG_SHIFT_BREAK_MIN = 1
+
+/** Required break for a 6–8 h shift. */
+export const MED_SHIFT_BREAK_MIN = 0.5
+
+/** Slot indices that fall within peak hours — lunch (12–2 PM) and dinner
+ *  (5–8 PM). Mid-shift breaks must not overlap any of these slots; the
+ *  whole peak must always be staffed at full intent. */
+export const PEAK_SLOT_INDICES = [5, 6, 11, 12, 13, 14]
+
+/** Returns the largest mid-shift break (in hours) inside a pattern.
+ *  Leading and trailing off-slots don't count — only gaps between work blocks. */
+export function patternMaxBreakHours(
+  pattern: number[] | boolean[],
+  slots: { hours: number }[] = SLOTS,
+): number {
+  let maxBreak = 0
+  let breakSoFar = 0
+  let seenWork = false
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i]) {
+      if (seenWork && breakSoFar > maxBreak) maxBreak = breakSoFar
+      breakSoFar = 0
+      seenWork = true
+    } else if (seenWork) {
+      breakSoFar += slots[i].hours
+    }
+  }
+  return maxBreak
+}
+
+/** Returns the list of work-block durations (in hours) inside a pattern. */
+export function patternWorkBlocks(
+  pattern: number[] | boolean[],
+  slots: { hours: number }[] = SLOTS,
+): number[] {
+  const blocks: number[] = []
+  let cur = 0
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i]) cur += slots[i].hours
+    else if (cur > 0) { blocks.push(cur); cur = 0 }
+  }
+  if (cur > 0) blocks.push(cur)
+  return blocks
+}
+
+function totalWorkHours(pattern: number[] | boolean[], slots: { hours: number }[] = SLOTS): number {
+  let h = 0
+  for (let i = 0; i < pattern.length; i++) if (pattern[i]) h += slots[i].hours
+  return h
+}
+
+/** Returns the slot indices that fall inside any mid-shift break (off-slots
+ *  between work blocks). Leading and trailing off-slots are excluded. */
+function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
+  let firstOn = -1, lastOn = -1
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i]) { if (firstOn < 0) firstOn = i; lastOn = i }
+  }
+  if (firstOn < 0) return []
+  const out: number[] = []
+  for (let i = firstOn + 1; i < lastOn; i++) if (!pattern[i]) out.push(i)
+  return out
+}
+
+// Build-time assertion: every pattern must satisfy the shape rules.
+;(() => {
+  const violations: string[] = []
+  const peakSet = new Set(PEAK_SLOT_INDICES)
+  for (const day of Object.values(DAY_TEMPLATES)) {
+    day.shiftPatterns.forEach((pat, idx) => {
+      const brk = patternMaxBreakHours(pat, day.slots)
+      const blocks = patternWorkBlocks(pat, day.slots)
+      const minBlock = blocks.length === 0 ? 0 : Math.min(...blocks)
+      const work = totalWorkHours(pat, day.slots)
+      const peakBreaks = midShiftBreakSlots(pat).filter((i) => peakSet.has(i))
+      if (brk > MAX_BREAK_HARD_HOURS) {
+        violations.push(`${day.dayName} #${idx}: ${brk}h break > ${MAX_BREAK_HARD_HOURS}h hard cap`)
+      }
+      if (blocks.length > 1 && minBlock < MIN_BLOCK_HOURS) {
+        violations.push(`${day.dayName} #${idx}: ${minBlock}h work block < ${MIN_BLOCK_HOURS}h min (blocks=[${blocks.join(',')}])`)
+      }
+      if (work >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
+        violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break, has ${brk}h`)
+      } else if (work > 6 && work < 8 && brk < MED_SHIFT_BREAK_MIN) {
+        violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break, has ${brk}h`)
+      }
+      if (peakBreaks.length > 0) {
+        violations.push(`${day.dayName} #${idx}: break overlaps peak slot(s) ${peakBreaks.join(',')} (lunch 12–2 PM / dinner 5–8 PM)`)
+      }
+    })
+  }
+  if (violations.length > 0) {
+    throw new Error(`Dispatcher pattern shape violations:\n  ${violations.join('\n  ')}`)
+  }
+})()
