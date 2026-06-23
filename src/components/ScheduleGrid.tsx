@@ -8,6 +8,7 @@ import { generateSchedule, hoursStatusBg, hoursStatusColor } from '@/utils/sched
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
+import { DateRangePicker } from '@/components/DateRangePicker'
 import { DayGrid } from './DayGrid'
 
 // Per-slot start times (in minutes from midnight) computed from the SLOTS
@@ -125,7 +126,7 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
     useSchedulerStore()
   // Track undo/redo button enabled state. Subscribe via stack lengths so the
   // component re-renders the moment toggle changes them.
@@ -137,6 +138,10 @@ export function ScheduleGrid() {
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  // Drill-down modal: click any hour-summary or days-off pill to see the
+  // filtered dispatcher list for that bucket.
+  type DrillKind = 'atCap' | 'target' | 'under' | 'off' | '1d' | '2d' | '3d' | '4d+'
+  const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
   // Forces a re-render every wall-clock minute so the NowLine slides.
   const [nowTick, setNowTick] = useState(0)
   useEffect(() => {
@@ -217,6 +222,17 @@ export function ScheduleGrid() {
     applyShuffledSchedule(shuffled)
   }
 
+  // Date-range change: re-run the generator for the new window. Loses any
+  // manual edits to the prior schedule (we don't have a slide helper for
+  // dispatchers yet) — Cmd+Z brings the previous schedule back.
+  const handleDateRangeChange = (start: string, end: string) => {
+    if (start === startDate && end === endDate) return
+    setDateRange(start, end)
+    const fresh = generateSchedule(dispatchers, start, end, timeOff, weekendRotationOffset + regenSeed.current)
+    setSchedule(fresh)
+    setExpandedDates(new Set())
+  }
+
   // Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z (or Y) = redo. Skips
   // when focus is inside an editable element so user text-input isn't
   // hijacked.
@@ -270,7 +286,23 @@ export function ScheduleGrid() {
   return (
     <div className="flex flex-col gap-6">
       {/* Action bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        {/* Schedule period — change dates inline; re-runs the generator
+            (Cmd+Z reverts). Dispatcher count next to it for quick context. */}
+        <div className="flex flex-wrap items-end gap-x-5 gap-y-2">
+          <DateRangePicker
+            startDate={startDate}
+            endDate={endDate}
+            onChange={handleDateRangeChange}
+            label="Schedule period"
+            compact
+            showStats
+          />
+          <div className="pb-1 text-xs text-slate-500">
+            <span className="font-semibold text-slate-700">{dispatchers.length}</span> dispatchers
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">peak wk</span>
           {totalsByPerson.map(({ name, hours, color, level }) => (
@@ -347,6 +379,7 @@ export function ScheduleGrid() {
             XLS
           </button>
         </div>
+        </div>
       </div>
 
       {/* Dispatcher search — filters pill list and day-grid rows */}
@@ -418,51 +451,86 @@ export function ScheduleGrid() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
                   <div className="text-xs text-slate-500">
-                    <span className="font-semibold text-emerald-600">{atCap}</span> at 45h ·
-                    <span className="ml-1 font-semibold text-emerald-600">{target}</span> 36–44h ·
-                    <span className="ml-1 font-semibold text-amber-600">{under}</span> under
+                    <button
+                      type="button"
+                      onClick={() => atCap > 0 && setDrillDown({ wl, kind: 'atCap' })}
+                      disabled={atCap === 0}
+                      title={atCap > 0 ? 'Click to see dispatchers at the 45 h legal cap' : 'No dispatchers at cap'}
+                      className="font-semibold text-emerald-600 disabled:text-slate-300 enabled:hover:underline"
+                    >{atCap}</button> at 45h ·
+                    <button
+                      type="button"
+                      onClick={() => target > 0 && setDrillDown({ wl, kind: 'target' })}
+                      disabled={target === 0}
+                      title={target > 0 ? 'Click to see dispatchers in the 36–44 h target band' : 'No dispatchers in 36–44 h'}
+                      className="ml-1 font-semibold text-emerald-600 disabled:text-slate-300 enabled:hover:underline"
+                    >{target}</button> 36–44h ·
+                    <button
+                      type="button"
+                      onClick={() => under > 0 && setDrillDown({ wl, kind: 'under' })}
+                      disabled={under === 0}
+                      title={under > 0 ? 'Click to see dispatchers under 36 h' : 'No dispatchers under 36 h'}
+                      className="ml-1 font-semibold text-amber-600 disabled:text-slate-300 enabled:hover:underline"
+                    >{under}</button> under
                     {offCount > 0 && (
-                      <><span className="ml-1">·</span> <span className="ml-1 font-semibold text-slate-500">{offCount}</span> off</>
+                      <>
+                        <span className="ml-1">·</span>
+                        <button
+                          type="button"
+                          onClick={() => setDrillDown({ wl, kind: 'off' })}
+                          title="Click to see dispatchers fully off this week"
+                          className="ml-1 font-semibold text-slate-500 hover:underline"
+                        >{offCount}</button> off
+                      </>
                     )}
                   </div>
-                  {/* Days-off pills — 2d off = target (emerald), 1d off =
-                      shortfall week (amber), 3+d off = under-utilized. */}
+                  {/* Days-off pills — clickable to open drill-down modal.
+                      2d off = target (emerald), 1d off = shortfall (amber),
+                      3+d off = under-utilized. */}
                   <div className="flex items-center gap-1 text-xs">
                     {dayOffBuckets['1d'] > 0 && (
-                      <span
-                        title={`${dayOffBuckets['1d']} dispatcher${dayOffBuckets['1d'] === 1 ? '' : 's'} worked 6 days this week (1 day off — shortfall)`}
-                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700"
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: '1d' })}
+                        title={`Click to see the ${dayOffBuckets['1d']} dispatcher${dayOffBuckets['1d'] === 1 ? '' : 's'} that worked 6 days this week (1 day off — shortfall)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700 hover:bg-amber-200"
                       >
                         {dayOffBuckets['1d']}
                         <span className="text-[10px] font-normal opacity-80">1d off</span>
-                      </span>
+                      </button>
                     )}
                     {dayOffBuckets['2d'] > 0 && (
-                      <span
-                        title={`${dayOffBuckets['2d']} dispatcher${dayOffBuckets['2d'] === 1 ? '' : 's'} got 2 days off this week (target)`}
-                        className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700"
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: '2d' })}
+                        title={`Click to see the ${dayOffBuckets['2d']} dispatcher${dayOffBuckets['2d'] === 1 ? '' : 's'} that got 2 days off this week (target)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700 hover:bg-emerald-200"
                       >
                         {dayOffBuckets['2d']}
                         <span className="text-[10px] font-normal opacity-80">2d off</span>
-                      </span>
+                      </button>
                     )}
                     {dayOffBuckets['3d'] > 0 && (
-                      <span
-                        title={`${dayOffBuckets['3d']} dispatcher${dayOffBuckets['3d'] === 1 ? '' : 's'} worked 4 days this week (3 days off — under-utilized)`}
-                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700"
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: '3d' })}
+                        title={`Click to see the ${dayOffBuckets['3d']} dispatcher${dayOffBuckets['3d'] === 1 ? '' : 's'} that worked 4 days this week (3 days off — under-utilized)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700 hover:bg-amber-200"
                       >
                         {dayOffBuckets['3d']}
                         <span className="text-[10px] font-normal opacity-80">3d off</span>
-                      </span>
+                      </button>
                     )}
                     {dayOffBuckets['4d+'] > 0 && (
-                      <span
-                        title={`${dayOffBuckets['4d+']} dispatcher${dayOffBuckets['4d+'] === 1 ? '' : 's'} worked 3 or fewer days this week (4+ days off — heavily under-utilized)`}
-                        className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700"
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: '4d+' })}
+                        title={`Click to see the ${dayOffBuckets['4d+']} dispatcher${dayOffBuckets['4d+'] === 1 ? '' : 's'} that worked 3 or fewer days this week (4+ days off — heavily under-utilized)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700 hover:bg-red-200"
                       >
                         {dayOffBuckets['4d+']}
                         <span className="text-[10px] font-normal opacity-80">4+d off</span>
-                      </span>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -596,6 +664,127 @@ export function ScheduleGrid() {
           </button>
         </div>
       </div>
+
+      {/* Drill-down modal — opens when a week's stat or days-off pill is
+          clicked. Computes filtered rows from `drillDown.kind` against the
+          week's data. Single instance at the bottom (no per-week duplicates). */}
+      {(() => {
+        if (!drillDown) return null
+        const { wl, kind } = drillDown
+        const weekDateSet = new Set(
+          schedule.dates.filter((d) => d.weekLabel === wl).map((d) => d.date),
+        )
+        type Row = {
+          id: string; name: string; level: string; color: string
+          hours: number; daysWorked: number; daysOff: number
+        }
+        const allRows: Row[] = schedule.dispatcherSchedules.map((ds) => {
+          const hours = ds.weeklyHours[wl] ?? 0
+          let daysWorked = 0
+          for (const e of ds.days) {
+            if (!weekDateSet.has(e.date)) continue
+            if (!e.isOff) daysWorked++
+          }
+          return {
+            id: ds.dispatcher.id,
+            name: ds.dispatcher.name,
+            level: ds.dispatcher.level,
+            color: ds.dispatcher.color,
+            hours,
+            daysWorked,
+            daysOff: 7 - daysWorked,
+          }
+        })
+        let rows: Row[] = []
+        let title = ''
+        let subtitle: string = wl
+        if (kind === 'atCap') {
+          rows = allRows.filter((r) => r.hours >= 45)
+          title = 'Dispatchers at the 45 h legal cap'
+        } else if (kind === 'target') {
+          rows = allRows.filter((r) => r.hours >= 36 && r.hours < 45)
+          title = 'Dispatchers in the 36–44 h target band'
+        } else if (kind === 'under') {
+          rows = allRows.filter((r) => r.hours > 0 && r.hours < 36)
+          title = 'Dispatchers under 36 h'
+          subtitle = `${wl} · unused capacity`
+        } else if (kind === 'off') {
+          rows = allRows.filter((r) => r.hours === 0)
+          title = 'Dispatchers fully off this week'
+        } else {
+          const wanted = kind === '4d+' ? (n: number) => n >= 4
+            : kind === '3d' ? (n: number) => n === 3
+            : kind === '2d' ? (n: number) => n === 2
+            : (n: number) => n === 1
+          rows = allRows.filter((r) => r.hours > 0 && wanted(r.daysOff))
+          const label = kind === '4d+' ? '4+ days off'
+            : `${kind === '1d' ? '1' : kind === '2d' ? '2' : '3'} day${kind === '1d' ? '' : 's'} off`
+          title = `Dispatchers with ${label}`
+          subtitle = `${wl} · ${kind === '1d' ? '6 days worked' : kind === '2d' ? '5 days worked' : kind === '3d' ? '4 days worked' : '3 or fewer days worked'}`
+        }
+        const sorted = [...rows].sort((a, b) => b.hours - a.hours)
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+            onClick={() => setDrillDown(null)}
+          >
+            <div
+              className="flex max-h-[80vh] w-full max-w-md flex-col rounded-2xl bg-white shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-base font-semibold text-slate-800">{title}</h3>
+                  <p className="mt-0.5 truncate text-xs text-slate-500">{subtitle}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDrillDown(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 py-3">
+                {sorted.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-slate-400">No dispatchers match.</p>
+                ) : (
+                  <ul className="flex flex-col divide-y divide-slate-100">
+                    {sorted.map((r) => (
+                      <li key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: r.color }} />
+                            <span className="truncate font-semibold text-slate-800">{r.name.split(' ')[0]}</span>
+                            <span className={clsx(
+                              'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                              r.level === 'Senior' ? 'bg-amber-100 text-amber-700' :
+                              r.level === 'Regular' ? 'bg-blue-100 text-blue-700' :
+                              'bg-slate-100 text-slate-600',
+                            )}>
+                              {r.level === 'Senior' ? 'SR' : r.level === 'Regular' ? 'RG' : 'TR'}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {r.daysWorked} day{r.daysWorked === 1 ? '' : 's'} worked · {r.daysOff} day{r.daysOff === 1 ? '' : 's'} off
+                          </div>
+                        </div>
+                        <div className={clsx('rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums', hoursStatusBg(r.hours))}>
+                          {r.hours.toFixed(1)}h
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="border-t border-slate-100 px-5 py-2 text-xs text-slate-500">
+                {sorted.length} dispatcher{sorted.length === 1 ? '' : 's'} in this bucket
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
