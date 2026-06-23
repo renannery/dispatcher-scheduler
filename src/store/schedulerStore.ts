@@ -46,6 +46,10 @@ interface SchedulerStore {
   /** Persisted weekend-off rotation cursor — see driver store comment. */
   weekendRotationOffset: number
   schedule: GeneratedSchedule | null
+  /** History stacks for the schedule view's edits + shuffle. Capped to keep
+   *  memory bounded. New generate / hydrate clears both. */
+  scheduleUndoStack: GeneratedSchedule[]
+  scheduleRedoStack: GeneratedSchedule[]
 
   setStep: (step: Step) => void
   addDispatcher: (name: string, level?: DispatcherLevel) => void
@@ -65,7 +69,13 @@ interface SchedulerStore {
     slotMask?: boolean[],
   ) => void
   setSchedule: (s: GeneratedSchedule) => void
+  /** Shuffle / re-roll: replace the schedule but push the prior one onto
+   *  the undo stack so Cmd+Z reverses it (unlike setSchedule which clears
+   *  the stacks). */
+  applyShuffledSchedule: (s: GeneratedSchedule) => void
   toggleDispatcherSlot: (dispatcherId: string, date: string, slotIndex: number) => void
+  undoScheduleEdit: () => void
+  redoScheduleEdit: () => void
   hydrateFromSnapshot: (data: DispatcherSnapshotData) => void
   /**
    * Partial hydrate for the period step: pulls the roster + rotation cursor
@@ -77,6 +87,8 @@ interface SchedulerStore {
   reset: () => void
 }
 
+const SCHEDULE_HISTORY_MAX = 50
+
 function makeFullBitmap(): boolean[] {
   return new Array(SLOTS.length).fill(true)
 }
@@ -87,7 +99,7 @@ function isAllTrue(arr: boolean[] | undefined): boolean {
   return !!arr && arr.length === SLOTS.length && arr.every(Boolean)
 }
 
-export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
+export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => ({
   step: 'names',
   dispatchers: [],
   startDate: defaultStart,
@@ -96,6 +108,8 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
   absenceReasons: {},
   weekendRotationOffset: 0,
   schedule: null,
+  scheduleUndoStack: [],
+  scheduleRedoStack: [],
 
   setStep: (step) => set({ step }),
 
@@ -205,13 +219,33 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
       }
     }),
 
-  setSchedule: (schedule) => set({ schedule }),
+  // Fresh generate — drop the in-flight edit history (it pointed at a
+  // schedule that no longer exists).
+  setSchedule: (schedule) =>
+    set({ schedule, scheduleUndoStack: [], scheduleRedoStack: [] }),
+
+  // Shuffle / re-roll: preserve undo history so the user can Cmd+Z back
+  // to the prior shuffled state.
+  applyShuffledSchedule: (shuffled) =>
+    set((state) => {
+      if (!state.schedule) return { schedule: shuffled }
+      const nextUndo = [...state.scheduleUndoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX)
+      return {
+        schedule: shuffled,
+        scheduleUndoStack: nextUndo,
+        scheduleRedoStack: [],
+      }
+    }),
 
   toggleDispatcherSlot: (dispatcherId, date, slotIndex) =>
     set((state) => {
       if (!state.schedule) return state
       const sch = state.schedule
       const slotCount = SLOTS.length
+      // Snapshot the PRE-edit schedule onto the undo stack so Cmd/Ctrl+Z
+      // rolls this toggle back. Clear the redo stack — a new action after
+      // an undo invalidates the future timeline.
+      const nextUndo = [...state.scheduleUndoStack, sch].slice(-SCHEDULE_HISTORY_MAX)
 
       const dispatcherSchedules = sch.dispatcherSchedules.map((ds) => {
         if (ds.dispatcher.id !== dispatcherId) return ds
@@ -244,8 +278,36 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
           dispatcherSchedules,
           coverageActual: { ...sch.coverageActual, [date]: newCov },
         },
+        scheduleUndoStack: nextUndo,
+        scheduleRedoStack: [],
       }
     }),
+
+  undoScheduleEdit: () => {
+    const state = get()
+    if (state.scheduleUndoStack.length === 0 || !state.schedule) return
+    const undo = [...state.scheduleUndoStack]
+    const prev = undo.pop()!
+    set({
+      schedule: prev,
+      scheduleUndoStack: undo,
+      // Save the current (post-edit) schedule onto the redo stack so the
+      // user can Cmd/Ctrl+Shift+Z back into it.
+      scheduleRedoStack: [...state.scheduleRedoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX),
+    })
+  },
+
+  redoScheduleEdit: () => {
+    const state = get()
+    if (state.scheduleRedoStack.length === 0 || !state.schedule) return
+    const redo = [...state.scheduleRedoStack]
+    const next = redo.pop()!
+    set({
+      schedule: next,
+      scheduleRedoStack: redo,
+      scheduleUndoStack: [...state.scheduleUndoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX),
+    })
+  },
 
   hydrateFromSnapshot: (data) =>
     set((s) => ({
@@ -257,6 +319,8 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
       schedule: data.schedule,
+      scheduleUndoStack: [],
+      scheduleRedoStack: [],
     })),
 
   importRotationContext: (data) =>
@@ -280,6 +344,8 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set) => ({
       timeOff: {},
       absenceReasons: {},
       schedule: null,
+      scheduleUndoStack: [],
+      scheduleRedoStack: [],
     }),
 }), {
   name: 'dispatcher-scheduler',

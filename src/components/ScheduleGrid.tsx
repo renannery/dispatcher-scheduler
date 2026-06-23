@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, Users, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
@@ -125,8 +125,14 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, setStep } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep } =
     useSchedulerStore()
+  // Track undo/redo button enabled state. Subscribe via stack lengths so the
+  // component re-renders the moment toggle changes them.
+  const undoCount = useSchedulerStore((s) => s.scheduleUndoStack.length)
+  const redoCount = useSchedulerStore((s) => s.scheduleRedoStack.length)
+  const canUndo = undoCount > 0
+  const canRedo = redoCount > 0
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
@@ -202,6 +208,35 @@ export function ScheduleGrid() {
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
+  // Shuffle = re-roll with a new seed but keep undo history so Cmd+Z
+  // brings the previous shuffle back. Different from Regenerate which
+  // clears the stacks (treated as a fresh start).
+  const handleShuffle = () => {
+    regenSeed.current++
+    const shuffled = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current)
+    applyShuffledSchedule(shuffled)
+  }
+
+  // Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z (or Y) = redo. Skips
+  // when focus is inside an editable element so user text-input isn't
+  // hijacked.
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false
+      if (el.isContentEditable) return true
+      const tag = el.tagName
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    }
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (isEditable(e.target)) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undoScheduleEdit() }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); redoScheduleEdit() }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [undoScheduleEdit, redoScheduleEdit])
 
   const handleExportJson = () => {
     downloadSnapshot({
@@ -254,9 +289,38 @@ export function ScheduleGrid() {
             </div>
           ))}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {/* Undo / Redo — only enabled when there's something on the stack.
+              Keyboard shortcuts: Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z (or Y). */}
+          <button
+            onClick={undoScheduleEdit}
+            disabled={!canUndo}
+            title={canUndo ? `Undo last edit (${undoCount} in history) — Cmd/Ctrl+Z` : 'Nothing to undo'}
+            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Undo2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Undo</span>
+          </button>
+          <button
+            onClick={redoScheduleEdit}
+            disabled={!canRedo}
+            title={canRedo ? `Redo (${redoCount} available) — Cmd/Ctrl+Shift+Z` : 'Nothing to redo'}
+            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Redo2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Redo</span>
+          </button>
+          <button
+            onClick={handleShuffle}
+            title="Re-roll the schedule with a new rotation seed — same dispatchers, different pairings. Cmd+Z to undo."
+            className="flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-100"
+          >
+            <Shuffle className="h-4 w-4" />
+            Shuffle
+          </button>
           <button
             onClick={handleRegenerate}
+            title="Regenerate from scratch — clears undo history"
             className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             <RefreshCw className="h-4 w-4" />
