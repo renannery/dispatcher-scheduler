@@ -31,6 +31,12 @@ const MAX_DAYS_OFF_PER_WEEK = 2
  *  off-days fairness cap). Daily max (9 h) is enforced via pattern shapes. */
 const WEEKLY_CAP_HOURS = 45
 
+/** Soft target the picker tries to keep everyone under, even when there's
+ *  spare cap room. Dispatchers are on fixed monthly salary so a tight
+ *  band keeps weekly hours equitable. Only relaxed when no eligible
+ *  dispatcher fits — then we fall back to the legal 45 h cap. */
+const SOFT_WEEKLY_TARGET = 38
+
 function slotHours(slots: boolean[]): number {
   return slots.reduce((sum, on, i) => sum + (on ? SLOTS[i].hours : 0), 0)
 }
@@ -120,6 +126,12 @@ export function generateSchedule(
   const totalElectedOff: Record<string, number> = {}
   dispatchers.forEach((d) => (totalElectedOff[d.id] = 0))
 
+  // Per-dispatcher running total of working hours across the entire schedule.
+  // Used as a tiebreak so dispatchers who are *cumulatively* behind get the
+  // next shift first, smoothing imbalances that build up week after week.
+  const totalHoursWorked: Record<string, number> = {}
+  dispatchers.forEach((d) => (totalHoursWorked[d.id] = 0))
+
   // Track the last active slot index each dispatcher worked on each date
   // (used to enforce the night-rest constraint)
   const lastSlotWorked: Record<string, Record<string, number>> = {}
@@ -153,18 +165,22 @@ export function generateSchedule(
       }
     })
 
-    // Sort patterns: morning first, then within each group prefer smaller
-    // breaks (≤2h before 3h) and then longer shifts as a final tiebreak.
-    const byBreakThenLength = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
+    // Sort patterns: morning first, then LONGEST shifts first so they get
+    // assigned to the least-loaded dispatcher (who's first in the sorted
+    // working pool). Break-size penalty (over the preferred 2 h cap) is
+    // last — keeps the 3 h Tue Late fallback out of the way without
+    // pushing long patterns to the end of the queue, which used to give
+    // the worst-balanced dispatcher the 9 h shift.
+    const byLengthThenBreak = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
+      if (a.hours !== b.hours) return b.hours - a.hours
       const aOverPref = a.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
       const bOverPref = b.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
       if (aOverPref !== bOverPref) return aOverPref - bOverPref
-      if (a.maxBreak !== b.maxBreak) return a.maxBreak - b.maxBreak
-      return b.hours - a.hours
+      return a.maxBreak - b.maxBreak
     }
     const sortedPatterns = [
-      ...patternMeta.filter((p) => p.isMorning).sort(byBreakThenLength),
-      ...patternMeta.filter((p) => !p.isMorning).sort(byBreakThenLength),
+      ...patternMeta.filter((p) => p.isMorning).sort(byLengthThenBreak),
+      ...patternMeta.filter((p) => !p.isMorning).sort(byLengthThenBreak),
     ]
 
     // Rotate dispatcher order for variety (step 3 per day visits all positions)
@@ -243,9 +259,17 @@ export function generateSchedule(
     const workingPool = availablePool.filter((d) => !electedOffIds.has(d.id))
 
     // Sort available dispatchers by ascending weekly hours → balances totals
-    const sortedWorking = [...workingPool].sort(
-      (a, b) => (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0),
-    )
+    // Balance sort: prefer dispatchers cumulatively behind on the
+    // schedule (totalHoursWorked ASC), with this-week hours as a
+    // secondary tiebreak so within a week we still pull from the
+    // least-loaded. Dispatchers are on fixed monthly salary so a tight
+    // total-hours band is more important than perfectly equal weekly
+    // hours — the cumulative tracker self-corrects drift week over week.
+    const sortedWorking = [...workingPool].sort((a, b) => {
+      const tA = totalHoursWorked[a.id], tB = totalHoursWorked[b.id]
+      if (tA !== tB) return tA - tB
+      return (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0)
+    })
 
     // Night-rest check: did this dispatcher work a night shift yesterday?
     const workedNightYesterday = (dispId: string) =>
@@ -272,14 +296,24 @@ export function generateSchedule(
       })
       if (eligible.length === 0) break
 
+      // Hours-balance preference: prefer dispatchers whose post-shift weekly
+      // hours stay at or below the soft target (38 h). This stops one
+      // dispatcher from accumulating to 42-45 h while others sit at 30 h.
+      // Falls back to all eligible if nobody fits (rare — usually means a
+      // tight day where someone has to absorb the extra hours).
+      const withinSoft = eligible.filter(
+        (d) => (weekHours[d.id][wLabel] ?? 0) + p.hours <= SOFT_WEEKLY_TARGET,
+      )
+      const pickFrom = withinSoft.length > 0 ? withinSoft : eligible
+
       // If no Senior has been assigned yet and Seniors are available, promote
       // the least-hours Senior to the front of the candidate list.
       let dispatcher: (typeof dispatchers)[0]
       if (hasSeniors && !seniorAssigned) {
-        const seniors = eligible.filter((d) => d.level === 'Senior')
-        dispatcher = seniors.length > 0 ? seniors[0] : eligible[0]
+        const seniors = pickFrom.filter((d) => d.level === 'Senior')
+        dispatcher = seniors.length > 0 ? seniors[0] : pickFrom[0]
       } else {
-        dispatcher = eligible[0]
+        dispatcher = pickFrom[0]
       }
 
       if (dispatcher.level === 'Senior') seniorAssigned = true
@@ -300,6 +334,7 @@ export function generateSchedule(
     for (const { dispatcher, pattern } of assignments) {
       const hours = slotHours(pattern)
       weekHours[dispatcher.id][wLabel] = (weekHours[dispatcher.id][wLabel] ?? 0) + hours
+      totalHoursWorked[dispatcher.id] += hours
       lastSlotWorked[dispatcher.id][dateStr] = lastActiveSlot(pattern)
 
       scheduleMap[dispatcher.id].push({
