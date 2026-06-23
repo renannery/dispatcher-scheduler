@@ -278,67 +278,111 @@ export function PeriodPicker() {
                     />
                   </div>
                 )}
-                <div className="flex flex-col gap-1.5">
-                  {allDates.map(({ date, label }) => {
-                    const bm = dispatcherTimeOff[date]
-                    const fullOff = !!bm && bm.length === SLOTS.length && bm.every(Boolean)
-                    const partial = !!bm && bm.some(Boolean) && !fullOff
-                    const blockedCount = bm?.reduce((acc, on, i) => acc + (on ? SLOTS[i].hours : 0), 0) ?? 0
-                    const dateOpen = isOpen && expanded.has(`${d.id}:${date}`)
-                    const reason = absenceReasons[d.id]?.[date]
-                    const reasonCls = reason ? reasonColors(reason).tw : null
-                    return (
-                      <div key={date} className="flex flex-col gap-1">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => toggleFullDayOff(d.id, date)}
-                            className={clsx(
-                              'flex-1 rounded-lg border px-2.5 py-1.5 text-left text-xs font-medium transition flex items-center gap-2',
-                              fullOff && !reason && 'border-red-300 bg-red-50 text-red-700',
-                              partial && 'border-amber-300 bg-amber-50 text-amber-700',
-                              !fullOff && !partial && 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:bg-blue-50',
-                              fullOff && reasonCls,
-                            )}
-                          >
-                            <span>{label}</span>
-                            {reason && (
-                              <HoverHint label={reasonLabel(reason)} side="bottom">
-                                <span className="rounded border border-current/30 bg-white/40 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide">
-                                  {reasonShort(reason)}
-                                </span>
-                              </HoverHint>
-                            )}
-                            {partial && (
-                              <span className="ml-auto text-[10px] opacity-70">{blockedCount}h blocked</span>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setExpanded((prev) => {
-                              const next = new Set(prev)
-                              const key = `${d.id}:${date}`
-                              if (next.has(key)) next.delete(key)
-                              else { next.add(key); next.add(d.id) }
-                              return next
-                            })}
-                            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                            aria-label="Block specific hours"
-                          >
-                            {dateOpen
-                              ? <ChevronDown className="h-3.5 w-3.5" />
-                              : <ChevronRight className="h-3.5 w-3.5" />}
-                          </button>
-                        </div>
-                        {dateOpen && (
-                          <div className="flex flex-wrap gap-1 rounded-lg bg-slate-50 p-2">
+                {(() => {
+                  // Calendar grid: 7 columns (Thu-first work week), N rows of
+                  // 7 day chips. Click a chip to toggle full-day off. The
+                  // small chevron in the chip corner opens an inline hour
+                  // picker below the grid — only one date can be open at a
+                  // time per dispatcher, so the picker is rendered once
+                  // instead of inlined per row.
+                  const WEEKDAY_LABELS = ['Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed']
+                  const expandedKey = [...expanded].find((k) => k.startsWith(`${d.id}:`))
+                  const expandedDate = expandedKey?.split(':')[1] ?? null
+                  const expandedBm = expandedDate ? dispatcherTimeOff[expandedDate] : null
+                  return (
+                    <div className="flex flex-col gap-2">
+                      <div className="grid grid-cols-7 gap-1">
+                        {WEEKDAY_LABELS.map((w) => (
+                          <div key={w} className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            {w}
+                          </div>
+                        ))}
+                        {allDates.map(({ date }) => {
+                          const bm = dispatcherTimeOff[date]
+                          const fullOff = !!bm && bm.length === SLOTS.length && bm.every(Boolean)
+                          const partial = !!bm && bm.some(Boolean) && !fullOff
+                          const reason = absenceReasons[d.id]?.[date]
+                          const reasonCls = reason ? reasonColors(reason).tw : null
+                          const isExpanded = isOpen && expandedDate === date
+                          const day = parseISO(date).getDate()
+                          return (
+                            <div key={date} className="relative">
+                              <button
+                                type="button"
+                                onClick={() => toggleFullDayOff(d.id, date)}
+                                className={clsx(
+                                  'w-full rounded-md border py-1.5 text-center text-xs font-semibold transition',
+                                  isExpanded && 'ring-2 ring-blue-300',
+                                  fullOff && !reason && 'border-red-300 bg-red-50 text-red-700',
+                                  partial && 'border-amber-300 bg-amber-50 text-amber-700',
+                                  !fullOff && !partial && 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:bg-blue-50',
+                                  fullOff && reasonCls,
+                                )}
+                                title={`${date}${fullOff ? ' (off)' : partial ? ' (partial)' : ''}`}
+                              >
+                                {day}
+                                {reason && (
+                                  <HoverHint label={reasonLabel(reason)} side="bottom">
+                                    <span className="ml-1 rounded border border-current/30 bg-white/40 px-0.5 text-[8px] font-bold uppercase">
+                                      {reasonShort(reason)}
+                                    </span>
+                                  </HoverHint>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setExpanded((prev) => {
+                                    const next = new Set(prev)
+                                    const key = `${d.id}:${date}`
+                                    // Singleton: closing the previous expansion before opening a new one.
+                                    for (const k of [...next]) {
+                                      if (k.startsWith(`${d.id}:`) && k !== key) next.delete(k)
+                                    }
+                                    if (next.has(key)) next.delete(key)
+                                    else { next.add(key); next.add(d.id) }
+                                    return next
+                                  })
+                                }}
+                                className="absolute right-0 top-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-slate-700"
+                                aria-label="Block specific hours"
+                              >
+                                {isExpanded
+                                  ? <ChevronDown className="h-2.5 w-2.5" />
+                                  : <ChevronRight className="h-2.5 w-2.5" />}
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {isOpen && expandedDate && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-slate-600">
+                              {format(parseISO(expandedDate), 'EEE, MMM d')} — block specific hours
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setExpanded((prev) => {
+                                const next = new Set(prev)
+                                next.delete(`${d.id}:${expandedDate}`)
+                                return next
+                              })}
+                              className="text-[10px] text-slate-400 hover:text-slate-600"
+                            >
+                              Close
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
                             {SLOTS.map((slot, si) => {
-                              const blocked = bm?.[si] ?? false
+                              const blocked = expandedBm?.[si] ?? false
                               return (
                                 <button
                                   key={si}
                                   type="button"
-                                  onClick={() => toggleBlockedSlot(d.id, date, si)}
+                                  onClick={() => toggleBlockedSlot(d.id, expandedDate, si)}
                                   className={clsx(
                                     'rounded border px-1.5 py-0.5 text-[10px] font-medium transition',
                                     blocked
@@ -352,11 +396,11 @@ export function PeriodPicker() {
                               )
                             })}
                           </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 <button
                   type="button"
                   onClick={() => toggleExpand(d.id)}
