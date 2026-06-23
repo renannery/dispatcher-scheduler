@@ -262,18 +262,36 @@ export function ScheduleGrid() {
       {/* Per-week sections */}
       {weekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
+        const weekDateSet = new Set(weekDates.map((d) => d.date))
 
-        const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => ({
-          name:  ds.dispatcher.name,
-          hours: ds.weeklyHours[wl] ?? 0,
-        }))
+        const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
+          const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
+          return {
+            name:  ds.dispatcher.name,
+            hours: ds.weeklyHours[wl] ?? 0,
+            off,
+          }
+        })
 
         // Aggregate summary
         const allHours = weekHoursSummary.map((s) => s.hours)
-        const atCap = allHours.filter((h) => h >= 40).length
+        const atCap = allHours.filter((h) => h >= 45).length
         const under = allHours.filter((h) => h > 0 && h < 36).length
-        const target = allHours.filter((h) => h >= 36 && h < 40).length
+        const target = allHours.filter((h) => h >= 36 && h < 45).length
         const offCount = allHours.filter((h) => h === 0).length
+
+        // Days-off distribution buckets (skip dispatchers who didn't work at
+        // all this week — those are blocked / on leave, not under-utilized).
+        // Semantics tuned for dispatchers: 2 days off is the target (emerald),
+        // 1 day off is the shortfall week (amber), 3+ days off is under-used.
+        const dayOffBuckets = { '1d': 0, '2d': 0, '3d': 0, '4d+': 0 }
+        for (const d of weekHoursSummary) {
+          if (d.hours === 0) continue
+          if (d.off === 1) dayOffBuckets['1d']++
+          else if (d.off === 2) dayOffBuckets['2d']++
+          else if (d.off === 3) dayOffBuckets['3d']++
+          else if (d.off >= 4) dayOffBuckets['4d+']++
+        }
 
         const filteredPills = trimmedSearch
           ? weekHoursSummary.filter(({ name }) => name.toLowerCase().includes(trimmedSearch))
@@ -288,11 +306,51 @@ export function ScheduleGrid() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
                   <div className="text-xs text-slate-500">
-                    <span className="font-semibold text-emerald-600">{atCap}</span> at 40h ·
-                    <span className="ml-1 font-semibold text-emerald-600">{target}</span> 36–39h ·
+                    <span className="font-semibold text-emerald-600">{atCap}</span> at 45h ·
+                    <span className="ml-1 font-semibold text-emerald-600">{target}</span> 36–44h ·
                     <span className="ml-1 font-semibold text-amber-600">{under}</span> under
                     {offCount > 0 && (
                       <><span className="ml-1">·</span> <span className="ml-1 font-semibold text-slate-500">{offCount}</span> off</>
+                    )}
+                  </div>
+                  {/* Days-off pills — 2d off = target (emerald), 1d off =
+                      shortfall week (amber), 3+d off = under-utilized. */}
+                  <div className="flex items-center gap-1 text-xs">
+                    {dayOffBuckets['1d'] > 0 && (
+                      <span
+                        title={`${dayOffBuckets['1d']} dispatcher${dayOffBuckets['1d'] === 1 ? '' : 's'} worked 6 days this week (1 day off — shortfall)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700"
+                      >
+                        {dayOffBuckets['1d']}
+                        <span className="text-[10px] font-normal opacity-80">1d off</span>
+                      </span>
+                    )}
+                    {dayOffBuckets['2d'] > 0 && (
+                      <span
+                        title={`${dayOffBuckets['2d']} dispatcher${dayOffBuckets['2d'] === 1 ? '' : 's'} got 2 days off this week (target)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700"
+                      >
+                        {dayOffBuckets['2d']}
+                        <span className="text-[10px] font-normal opacity-80">2d off</span>
+                      </span>
+                    )}
+                    {dayOffBuckets['3d'] > 0 && (
+                      <span
+                        title={`${dayOffBuckets['3d']} dispatcher${dayOffBuckets['3d'] === 1 ? '' : 's'} worked 4 days this week (3 days off — under-utilized)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700"
+                      >
+                        {dayOffBuckets['3d']}
+                        <span className="text-[10px] font-normal opacity-80">3d off</span>
+                      </span>
+                    )}
+                    {dayOffBuckets['4d+'] > 0 && (
+                      <span
+                        title={`${dayOffBuckets['4d+']} dispatcher${dayOffBuckets['4d+'] === 1 ? '' : 's'} worked 3 or fewer days this week (4+ days off — heavily under-utilized)`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700"
+                      >
+                        {dayOffBuckets['4d+']}
+                        <span className="text-[10px] font-normal opacity-80">4+d off</span>
+                      </span>
                     )}
                   </div>
                 </div>
