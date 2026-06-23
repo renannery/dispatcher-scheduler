@@ -705,7 +705,7 @@ export function ScheduleGrid() {
                     </span>
                     <span className="min-w-[140px] text-sm font-semibold text-slate-800">{dateInfo.dayLabel}</span>
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
-                    {hasGap && (
+                    {isAdmin && hasGap && (
                       <span
                         className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600"
                         title={`${gapCount} slot${gapCount === 1 ? '' : 's'} under target — total deficit ${gapHours.toFixed(1)}h across the day`}

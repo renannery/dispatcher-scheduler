@@ -2009,7 +2009,7 @@ export function DriverScheduleGrid() {
                       </span>
                     )}
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
-                    {gapSlots > 0 && (
+                    {isAdmin && gapSlots > 0 && (
                       <span
                         className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700"
                         title={`${gapSlots} of ${required.length} hourly slot${gapSlots === 1 ? '' : 's'} below target (${gapBodies} driver-hour${gapBodies === 1 ? '' : 's'} short)`}
