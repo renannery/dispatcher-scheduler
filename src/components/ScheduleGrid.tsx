@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, patternMaxBreakHours, SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import { generateSchedule, hoursStatusBg, hoursStatusColor } from '@/utils/scheduler'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
@@ -455,10 +455,17 @@ export function ScheduleGrid() {
 
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
           const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
+          // Split-shift = a worked day with a mid-shift break >= 3 h.
+          // This includes both 0.5/1 h breaks the scheduler emits and
+          // longer breaks that arise from manual slot edits.
+          const splits = ds.days.filter((d) =>
+            weekDateSet.has(d.date) && !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 3,
+          ).length
           return {
             name:  ds.dispatcher.name,
             hours: ds.weeklyHours[wl] ?? 0,
             off,
+            splits,
           }
         })
 
@@ -601,12 +608,23 @@ export function ScheduleGrid() {
                   {filteredPills.length === 0 && (
                     <span className="text-xs text-slate-400">No dispatchers match &quot;{trimmedSearch}&quot;.</span>
                   )}
-                  {filteredPills.map(({ name, hours }) => (
+                  {filteredPills.map(({ name, hours, splits }) => (
                     <span
                       key={name}
-                      className={clsx('rounded-full border px-2 py-0.5 text-xs font-semibold', hoursStatusBg(hours))}
+                      className={clsx(
+                        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold',
+                        hoursStatusBg(hours),
+                      )}
                     >
                       {name.split(' ')[0]} {hours.toFixed(1)}h
+                      {splits > 0 && (
+                        <span
+                          className="rounded-full bg-white/60 px-1 py-0 text-[10px] font-bold text-current/80"
+                          title={`${splits} split shift${splits === 1 ? '' : 's'} (break ≥ 3 h) this week`}
+                        >
+                          ⤳{splits}
+                        </span>
+                      )}
                     </span>
                   ))}
                 </div>
