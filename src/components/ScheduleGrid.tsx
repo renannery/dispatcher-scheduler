@@ -283,8 +283,52 @@ export function ScheduleGrid() {
     hours: Math.max(0, ...Object.values(ds.weeklyHours)),
   }))
 
+  // Weekend-rotation feasibility: for everyone to cycle through one Fri,
+  // one Sat, and one Sun off, you need (N * 3) / weekend-off-slots-per-week
+  // weeks of schedule. With N dispatchers and X patterns needed per weekend
+  // day, off-slots per weekend day = max(0, N - X). Aggregated over 3 days
+  // gives off-slots per week; ideal weeks = ceil(3N / off-slots-per-week).
+  const N = dispatchers.length
+  const friPatterns = DAY_TEMPLATES[5]?.shiftPatterns.length ?? 0
+  const satPatterns = DAY_TEMPLATES[6]?.shiftPatterns.length ?? 0
+  const sunPatterns = DAY_TEMPLATES[0]?.shiftPatterns.length ?? 0
+  const weekendOffSlotsPerWeek =
+    Math.max(0, N - friPatterns) +
+    Math.max(0, N - satPatterns) +
+    Math.max(0, N - sunPatterns)
+  const idealRotationWeeks = weekendOffSlotsPerWeek > 0
+    ? Math.ceil((N * 3) / weekendOffSlotsPerWeek)
+    : Infinity
+  const currentWeeks = weekLabels.length
+  const rotationShort = currentWeeks < idealRotationWeeks
+  const rosterTooSmall = !Number.isFinite(idealRotationWeeks)
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Weekend-rotation period banner — surfaced when the current
+          schedule is shorter than the math requires for everyone to cycle
+          through one Fri + one Sat + one Sun off. Goes away once the
+          period is long enough; shows a hire-more message when the
+          roster itself is too small to leave anyone off on weekends. */}
+      {(rotationShort || rosterTooSmall) && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800 shadow-sm">
+          <span className="mt-0.5 shrink-0 text-base">💡</span>
+          <div className="flex-1">
+            {rosterTooSmall ? (
+              <>
+                <span className="font-semibold">Roster too small for weekend rotation.</span>{' '}
+                With {N} dispatcher{N === 1 ? '' : 's'} and {Math.max(friPatterns, satPatterns, sunPatterns)} needed on each weekend day, nobody can get a weekend off. Hire more dispatchers (or lower weekend coverage targets) to unlock the rotation.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">Generate a {idealRotationWeeks}-week period for a full weekend rotation.</span>{' '}
+                With {N} dispatchers and {weekendOffSlotsPerWeek} weekend off-slot{weekendOffSlotsPerWeek === 1 ? '' : 's'} per week, it takes {idealRotationWeeks} weeks for everyone to get one Fri, one Sat, and one Sun off. You're currently on a {currentWeeks}-week period — extend the dates above to get the full cycle.
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Action bar */}
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
         {/* Schedule period — change dates inline; re-runs the generator
