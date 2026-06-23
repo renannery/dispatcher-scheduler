@@ -110,8 +110,9 @@ const SAT: DayTemplate = {
   shiftPatterns: [
     // Early A  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
     [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
-    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Early B  (8 AM–4 PM, 7 h + 1 h break at 11–12, blocks 3 h + 4 h —
+    //   covers the 3–4 PM gap that Early A leaves)
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split A  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Split B  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
@@ -153,6 +154,9 @@ const MON: DayTemplate = {
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon,
+    //   fills the 3–4 PM gap where Early ends and the Split takes a break)
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
