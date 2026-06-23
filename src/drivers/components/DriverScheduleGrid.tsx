@@ -1368,8 +1368,9 @@ export function DriverScheduleGrid() {
           The flag is honored on the NEXT generation; if you toggle a
           driver to pending AFTER generating, their old shifts persist
           until you regenerate. The banner doesn't try to differentiate
-          — just says "marked pending" and lets ops decide. */}
-      {pendingDrivers.length > 0 && (
+          — just says "marked pending" and lets ops decide.
+          Admin-only — its Confirm & add action is an edit. */}
+      {isAdmin && pendingDrivers.length > 0 && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
           <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
           <div className="flex-1 text-sm text-amber-900">
@@ -1426,7 +1427,7 @@ export function DriverScheduleGrid() {
       {/* Inline suggestions banner — only when there's any shortfall.
           Lets ops bump cap / max h-day / coverage scale and regenerate
           without walking back to the Period step. */}
-      {health.weeklyShortfallHours > 0 && (
+      {isAdmin && health.weeklyShortfallHours > 0 && (
         <SuggestionsBanner
           shortfallHours={health.weeklyShortfallHours}
           fullTimeCap={fullTimeCap}
@@ -1437,8 +1438,8 @@ export function DriverScheduleGrid() {
       )}
       {/* Hiring recommendation — only shown when the gap is big enough that
           adjusting cap/max likely won't close it. Below 20h/wk shortfall,
-          the suggestions banner above is the right tool. */}
-      {health.weeklyShortfallHours >= 20 && (
+          the suggestions banner above is the right tool. Admin-only. */}
+      {isAdmin && health.weeklyShortfallHours >= 20 && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
           <div className="flex-1 text-sm text-amber-900">

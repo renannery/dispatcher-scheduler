@@ -312,8 +312,9 @@ export function ScheduleGrid() {
           schedule is shorter than the math requires for everyone to cycle
           through one Fri + one Sat + one Sun off. Goes away once the
           period is long enough; shows a hire-more message when the
-          roster itself is too small to leave anyone off on weekends. */}
-      {(rotationShort || rosterTooSmall) && (
+          roster itself is too small to leave anyone off on weekends.
+          Admin-only — non-admins can't act on it (no period control). */}
+      {isAdmin && (rotationShort || rosterTooSmall) && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800 shadow-sm">
           <span className="mt-0.5 shrink-0 text-base">💡</span>
           <div className="flex-1">
