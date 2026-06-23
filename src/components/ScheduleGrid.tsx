@@ -455,11 +455,11 @@ export function ScheduleGrid() {
 
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
           const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
-          // Split-shift = a worked day with a mid-shift break >= 3 h.
-          // This includes both 0.5/1 h breaks the scheduler emits and
-          // longer breaks that arise from manual slot edits.
+          // Split-shift = a worked day with a mid-shift break >= 2 h.
+          // Anything 2 h+ feels disruptive enough that the dispatcher
+          // can't really use the gap for anything productive.
           const splits = ds.days.filter((d) =>
-            weekDateSet.has(d.date) && !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 3,
+            weekDateSet.has(d.date) && !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
           ).length
           return {
             name:  ds.dispatcher.name,
@@ -620,7 +620,7 @@ export function ScheduleGrid() {
                       {splits > 0 && (
                         <span
                           className="rounded-full bg-white/60 px-1 py-0 text-[10px] font-bold text-current/80"
-                          title={`${splits} split shift${splits === 1 ? '' : 's'} (break ≥ 3 h) this week`}
+                          title={`${splits} split shift${splits === 1 ? '' : 's'} (break ≥ 2 h) this week`}
                         >
                           ⤳{splits}
                         </span>
