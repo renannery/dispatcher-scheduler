@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 
-import { SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
 import type { Dispatcher, DispatcherLevel, DispatcherTimeOff, GeneratedSchedule, Step } from '@/types/schedule'
 import type { AbsenceReason } from '@/utils/absence'
 import { datesInRange } from '@/utils/absence'
@@ -45,6 +45,12 @@ interface SchedulerStore {
   absenceReasons: AbsenceReasonMap
   /** Persisted weekend-off rotation cursor — see driver store comment. */
   weekendRotationOffset: number
+  /**
+   * Per day-of-week (0=Sun..6=Sat) override of the 19-slot required-coverage
+   * array. Edited from the Period step's coverage grid; absent days fall
+   * through to the DAY_TEMPLATES baseline.
+   */
+  coverageOverrides: Record<number, number[]>
   schedule: GeneratedSchedule | null
   /** History stacks for the schedule view's edits + shuffle. Capped to keep
    *  memory bounded. New generate / hydrate clears both. */
@@ -58,6 +64,8 @@ interface SchedulerStore {
   toggleRecurringBlock: (id: string, dayOfWeek: number, slotIndex: number) => void
   setRecurringBlocks: (id: string, blocks: boolean[][]) => void
   setDateRange: (start: string, end: string) => void
+  setCoverageOverride: (dayOfWeek: number, slotIndex: number, value: number) => void
+  resetCoverageOverrides: () => void
   advanceWeekendRotation: (weeks: number) => void
   toggleFullDayOff: (dispatcherId: string, date: string) => void
   toggleBlockedSlot: (dispatcherId: string, date: string, slotIndex: number) => void
@@ -107,6 +115,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   timeOff: {},
   absenceReasons: {},
   weekendRotationOffset: 0,
+  coverageOverrides: {},
   schedule: null,
   scheduleUndoStack: [],
   scheduleRedoStack: [],
@@ -159,6 +168,23 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
     })),
 
   setDateRange: (startDate, endDate) => set({ startDate, endDate }),
+
+  setCoverageOverride: (dayOfWeek, slotIndex, value) =>
+    set((s) => {
+      const baseline = DAY_TEMPLATES[dayOfWeek]?.requiredCoverage ?? []
+      const current = s.coverageOverrides[dayOfWeek] ?? [...baseline]
+      const next = [...current]
+      next[slotIndex] = Math.max(0, Math.min(999, Math.floor(value || 0)))
+      // Drop the per-day override entirely when it matches the baseline,
+      // so `coverageOverrides` only contains real customisations.
+      const matchesBaseline = baseline.length === next.length && baseline.every((v, i) => v === next[i])
+      const out = { ...s.coverageOverrides }
+      if (matchesBaseline) delete out[dayOfWeek]
+      else out[dayOfWeek] = next
+      return { coverageOverrides: out }
+    }),
+
+  resetCoverageOverrides: () => set({ coverageOverrides: {} }),
 
   advanceWeekendRotation: (weeks) =>
     set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
@@ -318,6 +344,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+      coverageOverrides: data.coverageOverrides ?? {},
       schedule: data.schedule,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
@@ -330,6 +357,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       return {
         dispatchers: data.dispatchers ?? s.dispatchers,
         weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+        coverageOverrides: data.coverageOverrides ?? s.coverageOverrides,
         startDate: nextStart,
         endDate: nextEnd,
       }
@@ -343,6 +371,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       endDate: addDays(defaultStart, 6),
       timeOff: {},
       absenceReasons: {},
+      coverageOverrides: {},
       schedule: null,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
@@ -367,6 +396,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
     timeOff: state.timeOff,
     absenceReasons: state.absenceReasons,
     weekendRotationOffset: state.weekendRotationOffset,
+    coverageOverrides: state.coverageOverrides,
     schedule: state.schedule,
   }),
 }))

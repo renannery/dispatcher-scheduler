@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
+import { CoverageGridEditor } from '@/components/CoverageGridEditor'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 import { SLOTS } from '@/data/coverageTemplate'
@@ -22,7 +23,10 @@ export function PeriodPicker() {
     timeOff,
     absenceReasons,
     weekendRotationOffset,
+    coverageOverrides,
     setDateRange,
+    setCoverageOverride,
+    resetCoverageOverrides,
     setSchedule,
     setStep,
     toggleFullDayOff,
@@ -63,12 +67,11 @@ export function PeriodPicker() {
   })
 
   const totalDays = differenceInDays(parseISO(endDate), parseISO(startDate)) + 1
-  const totalWeeks = Math.ceil(totalDays / 7)
   const isValid = startDate && endDate && endDate >= startDate && totalDays >= 7
 
   const handleGenerate = () => {
     if (!isValid) return
-    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset)
+    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset, coverageOverrides)
     setSchedule(schedule)
     const weeksInSchedule = new Set(schedule.dates.map((d) => d.weekLabel)).size
     advanceWeekendRotation(weeksInSchedule)
@@ -143,37 +146,28 @@ export function PeriodPicker() {
         )}
       </div>
 
-      {/* Date range */}
-      <DateRangePicker
-        startDate={startDate}
-        endDate={endDate}
-        onChange={setDateRange}
-        label="Schedule period"
-      />
+      {/* Date range + coverage editor — mirrors the driver Period layout:
+          compact date picker (it already surfaces day/week counts in its
+          label), the per-slot coverage editor right below it, and a single
+          slim banner with the operating hours. */}
+      <div className="flex flex-col gap-5">
+        <DateRangePicker
+          startDate={startDate}
+          endDate={endDate}
+          onChange={setDateRange}
+          label="Schedule period"
+        />
 
-      {/* Period summary */}
+        <CoverageGridEditor
+          coverageOverrides={coverageOverrides}
+          onSetOverride={setCoverageOverride}
+          onReset={resetCoverageOverrides}
+        />
+      </div>
+
       {isValid && (
-        <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-4 text-center">
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <div className="text-2xl font-bold text-blue-700">{totalDays}</div>
-              <div className="text-xs text-blue-500">days</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-blue-700">{totalWeeks}</div>
-              <div className="text-xs text-blue-500">week{totalWeeks !== 1 ? 's' : ''}</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-blue-700">≤40h</div>
-              <div className="text-xs text-blue-500">per week</div>
-            </div>
-          </div>
-          <p className="mt-3 text-xs text-blue-600">
-            {format(parseISO(startDate), 'MMM d, yyyy')} → {format(parseISO(endDate), 'MMM d, yyyy')}
-          </p>
-          <p className="mt-1 text-xs text-blue-500">
-            Mon–Fri: 9 AM – 11 PM · Sat–Sun: 8 AM – 11 PM · work week Thu → Wed
-          </p>
+        <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-3 text-center text-xs text-blue-600">
+          Mon–Fri: 9 AM – 11 PM · Sat–Sun: 8 AM – 11 PM · work week Thu → Wed
         </div>
       )}
 

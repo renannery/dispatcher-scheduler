@@ -2,6 +2,7 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
   DAY_TEMPLATES,
+  effectiveCoverage,
   LONG_SHIFT_BREAK_MIN,
   MAX_BREAK_HARD_HOURS,
   MAX_BREAK_PREFERRED_HOURS,
@@ -273,6 +274,7 @@ export function generateSchedule(
   endDate: string,
   timeOff: DispatcherTimeOff,
   seed = 0,
+  coverageOverrides: Record<number, number[]> = {},
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -315,6 +317,7 @@ export function generateSchedule(
   const scheduleMap: Record<string, DispatcherDayEntry[]> = {}
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
+  const coverageRequired: Record<string, number[]> = {}
 
   let dayIndex = seed
 
@@ -508,7 +511,9 @@ export function generateSchedule(
     // break at is currently over-covered (slack to lend). This is what
     // lets michelle's Bridge 11a-5p become 9a-6p with a non-peak break
     // when 9-10a is missing a body and the dispatcher has the headroom.
-    coverageAwareSwapPass(assignments, template.requiredCoverage)
+    const dayRequired = effectiveCoverage(dow, coverageOverrides)
+    coverageAwareSwapPass(assignments, dayRequired)
+    coverageRequired[dateStr] = dayRequired
 
     // Dispatchers not assigned are off today
     const dayOff = [
@@ -560,7 +565,7 @@ export function generateSchedule(
     dayOfWeek: d.getDay(),
   }))
 
-  return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual }
+  return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual, coverageRequired }
 }
 
 // ---------------------------------------------------------------------------

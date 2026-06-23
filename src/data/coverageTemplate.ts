@@ -222,6 +222,19 @@ export const DAY_TEMPLATES: Record<number, DayTemplate> = {
   6: SAT,
 }
 
+/** Coverage targets for a given day-of-week, with per-day per-slot overrides
+ *  applied on top of the day template's baseline. Missing entries fall
+ *  through to the baseline. */
+export function effectiveCoverage(
+  dayOfWeek: number,
+  coverageOverrides: Record<number, number[]> = {},
+): number[] {
+  const base = DAY_TEMPLATES[dayOfWeek]?.requiredCoverage ?? []
+  const ov = coverageOverrides[dayOfWeek]
+  if (!ov) return base
+  return base.map((v, i) => (ov[i] !== undefined ? ov[i] : v))
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Break-shape rules
 // ───────────────────────────────────────────────────────────────────────────

@@ -126,7 +126,7 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, coverageOverrides, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
     useSchedulerStore()
   // Track undo/redo button enabled state. Subscribe via stack lengths so the
   // component re-renders the moment toggle changes them.
@@ -209,7 +209,7 @@ export function ScheduleGrid() {
   const regenSeed = useRef(0)
   const handleRegenerate = () => {
     regenSeed.current++
-    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current)
+    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -218,7 +218,7 @@ export function ScheduleGrid() {
   // clears the stacks (treated as a fresh start).
   const handleShuffle = () => {
     regenSeed.current++
-    const shuffled = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current)
+    const shuffled = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
     applyShuffledSchedule(shuffled)
   }
 
@@ -228,7 +228,7 @@ export function ScheduleGrid() {
   const handleDateRangeChange = (start: string, end: string) => {
     if (start === startDate && end === endDate) return
     setDateRange(start, end)
-    const fresh = generateSchedule(dispatchers, start, end, timeOff, weekendRotationOffset + regenSeed.current)
+    const fresh = generateSchedule(dispatchers, start, end, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -259,7 +259,7 @@ export function ScheduleGrid() {
       version: SCHEMA_VERSION,
       team: 'dispatchers',
       exportedAt: new Date().toISOString(),
-      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, schedule },
+      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, coverageOverrides, schedule },
     })
   }
 
@@ -621,7 +621,9 @@ export function ScheduleGrid() {
               ).length
               const off     = schedule.dispatcherSchedules.length - working
               const actual   = schedule.coverageActual[dateInfo.date] ?? []
-              const required = DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage ?? []
+              const required = schedule.coverageRequired?.[dateInfo.date]
+                ?? DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage
+                ?? []
               // Count short slots + total deficit hours (deficit weighted by
               // slot length so a 1 h shortfall counts more than a 0.5 h one).
               let gapCount = 0
@@ -715,19 +717,25 @@ export function ScheduleGrid() {
       {(() => {
         if (!drillDown) return null
         const { wl, kind } = drillDown
-        const weekDateSet = new Set(
-          schedule.dates.filter((d) => d.weekLabel === wl).map((d) => d.date),
+        const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
+        const weekDateSet = new Set(weekDates.map((d) => d.date))
+        // Short weekday label per date, e.g. "Thu" — derived from dayLabel
+        // which is formatted as "Thu, June 25th".
+        const dateToShort = new Map(
+          weekDates.map((d) => [d.date, d.dayLabel.split(',')[0]] as const),
         )
         type Row = {
           id: string; name: string; level: string; color: string
-          hours: number; daysWorked: number; daysOff: number
+          hours: number; daysWorked: number; daysOff: number; offLabels: string[]
         }
         const allRows: Row[] = schedule.dispatcherSchedules.map((ds) => {
           const hours = ds.weeklyHours[wl] ?? 0
           let daysWorked = 0
+          const offLabels: string[] = []
           for (const e of ds.days) {
             if (!weekDateSet.has(e.date)) continue
-            if (!e.isOff) daysWorked++
+            if (e.isOff) offLabels.push(dateToShort.get(e.date) ?? '')
+            else daysWorked++
           }
           return {
             id: ds.dispatcher.id,
@@ -737,6 +745,7 @@ export function ScheduleGrid() {
             hours,
             daysWorked,
             daysOff: 7 - daysWorked,
+            offLabels,
           }
         })
         let rows: Row[] = []
@@ -812,6 +821,7 @@ export function ScheduleGrid() {
                           </div>
                           <div className="mt-0.5 text-xs text-slate-500">
                             {r.daysWorked} day{r.daysWorked === 1 ? '' : 's'} worked · {r.daysOff} day{r.daysOff === 1 ? '' : 's'} off
+                            {r.offLabels.length > 0 && ` (${r.offLabels.join(', ')})`}
                           </div>
                         </div>
                         <div className={clsx('rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums', hoursStatusBg(r.hours))}>

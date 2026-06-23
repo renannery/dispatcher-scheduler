@@ -69,6 +69,10 @@ export interface GeneratedSchedule {
   dispatcherSchedules: DispatcherSchedule[]
   /** Actual coverage achieved per date per slot (for coverage row) */
   coverageActual: Record<string, number[]>
+  /** Effective required coverage per date (day-template baseline + per-day
+   *  per-slot overrides). Lets the UI render the same numbers the scheduler
+   *  used without re-deriving from the template. */
+  coverageRequired?: Record<string, number[]>
 }
 
 export type Step = 'names' | 'period' | 'schedule'

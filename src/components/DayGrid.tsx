@@ -28,7 +28,10 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
   const absenceReasons = useSchedulerStore((s) => s.absenceReasons)
   const toggleDispatcherSlot = useSchedulerStore((s) => s.toggleDispatcherSlot)
   const template = DAY_TEMPLATES[dayOfWeek]
-  const required = template?.requiredCoverage ?? SLOTS.map(() => 0)
+  // Prefer the per-date `coverageRequired` baked into the schedule (it
+  // reflects user overrides at generation time). Fall back to the template
+  // baseline for schedules generated before overrides shipped.
+  const required = schedule.coverageRequired?.[date] ?? template?.requiredCoverage ?? SLOTS.map(() => 0)
   const actual = schedule.coverageActual[date] ?? SLOTS.map(() => 0)
   const [showOff, setShowOff] = useState(false)
 
