@@ -2,12 +2,25 @@ import clsx from 'clsx'
 import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, RefreshCw, Search, Shield, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { DAY_TEMPLATES } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import { generateSchedule, hoursStatusBg, hoursStatusColor } from '@/utils/scheduler'
+import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DayGrid } from './DayGrid'
+
+// Per-slot start times (in minutes from midnight) computed from the SLOTS
+// definition — ops day opens at 8 AM. Mirrors the driver-side calculation
+// but accounts for dispatchers' mixed 0.5h/1h slot granularity.
+const OPS_OPEN_MIN = 8 * 60
+const SLOT_START_MIN = (() => {
+  let cum = OPS_OPEN_MIN
+  const out: number[] = []
+  for (const s of SLOTS) { out.push(cum); cum += s.hours * 60 }
+  return out
+})()
+const OPS_CLOSE_MIN = SLOT_START_MIN[SLOTS.length - 1] + SLOTS[SLOTS.length - 1].hours * 60
 
 // ---------------------------------------------------------------------------
 // PDF dropdown
@@ -118,6 +131,21 @@ export function ScheduleGrid() {
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  // Forces a re-render every wall-clock minute so the NowLine slides.
+  const [nowTick, setNowTick] = useState(0)
+  useEffect(() => {
+    const now = new Date()
+    const msToNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds()
+    let interval: number | undefined
+    const firstTimer = window.setTimeout(() => {
+      setNowTick((t) => t + 1)
+      interval = window.setInterval(() => setNowTick((t) => t + 1), 60_000)
+    }, msToNextMinute)
+    return () => {
+      window.clearTimeout(firstTimer)
+      if (interval !== undefined) window.clearInterval(interval)
+    }
+  }, [])
 
   const trimmedSearch = search.trim().toLowerCase()
   const matchedDispatcherIds = useMemo(() => {
@@ -132,6 +160,26 @@ export function ScheduleGrid() {
   if (!schedule) return null
 
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
+
+  // Per-minute tick that drives the current-time indicator. Aligning the
+  // first interval to the next wall-clock minute boundary makes the line
+  // jump exactly when the minute changes (not e.g. 47s late).
+  // Note: state hook lives outside this block — see useNowTick below.
+  void nowTick
+
+  // Today + slot/fraction within the dispatcher slot layout. -1 when
+  // outside ops hours (before 8 AM / after 11 PM) → no NowLine on any day.
+  const _now = caymanNow()
+  const nowMinOfDay = _now.hours * 60 + _now.minutes
+  const nowDateISO = _now.dateISO
+  const insideOps = nowMinOfDay >= OPS_OPEN_MIN && nowMinOfDay < OPS_CLOSE_MIN
+  const nowSlotIdx = insideOps
+    ? SLOT_START_MIN.findIndex((start, i) => start <= nowMinOfDay && nowMinOfDay < start + SLOTS[i].hours * 60)
+    : -1
+  const nowMinuteFrac = nowSlotIdx >= 0
+    ? (nowMinOfDay - SLOT_START_MIN[nowSlotIdx]) / (SLOTS[nowSlotIdx].hours * 60)
+    : 0
+  const nowLabel = `NOW · ${caymanTimeLabel()}`
 
   const toggleDay = (date: string) => {
     setExpandedDates((prev) => {
@@ -426,6 +474,9 @@ export function ScheduleGrid() {
                         dayLabel={dateInfo.dayLabel}
                         dayOfWeek={dateInfo.dayOfWeek}
                         dispatcherIdFilter={matchedDispatcherIds}
+                        nowSlotIdx={dateInfo.date === nowDateISO && nowSlotIdx >= 0 ? nowSlotIdx : undefined}
+                        nowMinuteFrac={dateInfo.date === nowDateISO && nowSlotIdx >= 0 ? nowMinuteFrac : undefined}
+                        nowLabel={dateInfo.date === nowDateISO && nowSlotIdx >= 0 ? nowLabel : undefined}
                       />
                     </div>
                   )}

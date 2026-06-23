@@ -8,7 +8,7 @@ import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_W
 import { MAX_BLOCKS_PER_DAY, MAX_BREAK_HOURS, MIN_BLOCK_HOURS, coverageStatus, violatesShape, workBlocks } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
-import { NowLine } from './NowLine'
+import { NowLine } from '@/components/NowLine'
 import { displayName, shortHour } from '../utils'
 
 // Work-week boundary: Thu (dow=4) starts a new week. Returns the

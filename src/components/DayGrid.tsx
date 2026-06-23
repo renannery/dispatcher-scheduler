@@ -1,10 +1,11 @@
 import clsx from 'clsx'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
 import { HoverHint } from '@/components/HoverHint'
+import { NowLine } from '@/components/NowLine'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 import { shortHour } from '@/utils/displayHelpers'
 import { coverageStatus } from '@/utils/scheduler'
@@ -16,9 +17,13 @@ interface Props {
   dayOfWeek: number
   /** When set, only dispatchers with these ids appear (overrides showOff toggle). */
   dispatcherIdFilter?: Set<string> | null
+  /** When set, draws a vertical "NOW" line at this slot+frac on this day. */
+  nowSlotIdx?: number
+  nowMinuteFrac?: number
+  nowLabel?: string
 }
 
-export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilter }: Props) {
+export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel }: Props) {
   const timeOff = useSchedulerStore((s) => s.timeOff)
   const absenceReasons = useSchedulerStore((s) => s.absenceReasons)
   const toggleDispatcherSlot = useSchedulerStore((s) => s.toggleDispatcherSlot)
@@ -49,8 +54,20 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
   })
   const hiddenOffCount = dispatcherIdFilter ? 0 : allRows.filter((r) => r.isOff).length
 
+  // Ref for the table so the NowLine can measure column positions via DOM.
+  const tableRef = useRef<HTMLTableElement | null>(null)
+
+  // Slots where actual coverage is short of the target — used to tint the
+  // column header red so ops can scan a day and spot understaffed slots.
+  const shortSlots = new Set<number>()
+  for (const si of visibleSlotIndices) {
+    if (coverageStatus(actual[si], required[si]) === 'short') shortSlots.add(si)
+  }
+
   return (
-    <div className="overflow-x-auto">
+    // `position: relative` so the NowLine (absolutely positioned) anchors
+    // to this wrapper's coordinate system instead of the page.
+    <div className="relative">
       {hiddenOffCount > 0 && (
         <div className="flex items-center justify-end px-4 py-1.5 text-[11px] text-slate-400">
           <button
@@ -62,7 +79,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
           </button>
         </div>
       )}
-      <table className="min-w-full border-separate border-spacing-0 text-xs">
+      <table ref={tableRef} className="min-w-full border-separate border-spacing-0 text-xs">
         {/* Slot header */}
         <thead>
           <tr>
@@ -72,11 +89,19 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
             {visibleSlotIndices.map((si) => (
               <th
                 key={si}
-                className="min-w-[54px] bg-slate-800 px-1 py-2 text-center font-medium text-slate-300 whitespace-nowrap"
-                title={`${SLOTS[si].label} (${SLOTS[si].hours}h)`}
+                data-slot={si}
+                className={clsx(
+                  'min-w-[54px] px-1 py-2 text-center font-medium whitespace-nowrap',
+                  shortSlots.has(si)
+                    ? 'bg-red-900 text-red-200'
+                    : 'bg-slate-800 text-slate-300',
+                )}
+                title={`${SLOTS[si].label} (${SLOTS[si].hours}h)${shortSlots.has(si) ? ` — short by ${required[si] - actual[si]}` : ''}`}
               >
                 <div className="text-[10px]">{shortHour(SLOTS[si].label)}</div>
-                <div className="text-[9px] text-slate-500">{SLOTS[si].hours}h</div>
+                <div className={clsx('text-[9px]', shortSlots.has(si) ? 'text-red-300' : 'text-slate-500')}>
+                  {SLOTS[si].hours}h
+                </div>
               </th>
             ))}
             <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">
@@ -264,6 +289,16 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
           </tr>
         </tfoot>
       </table>
+      {/* Current-time indicator — only rendered when the parent decided
+          today falls within ops hours and this is today's column. */}
+      {nowSlotIdx !== undefined && nowMinuteFrac !== undefined && nowLabel && (
+        <NowLine
+          tableRef={tableRef}
+          slotIdx={nowSlotIdx}
+          minuteFrac={nowMinuteFrac}
+          label={nowLabel}
+        />
+      )}
     </div>
   )
 }
