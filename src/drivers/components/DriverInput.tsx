@@ -3,6 +3,7 @@ import { CalendarClock, Clock, Search, ShoppingBasket, Upload, UserPlus, X } fro
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 
+import { CloudLoadEntry } from '@/components/CloudLoadEntry'
 import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
 
 import { DRIVER_SLOTS } from '../coverageTemplate'
@@ -174,6 +175,10 @@ export function DriverInput() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
+      {/* Quick jump back to the live cloud-saved schedule — shown only
+          when one exists, hidden when cloud isn't configured. */}
+      <CloudLoadEntry teams={['drivers']} />
+
       <div className="flex flex-col gap-3">
         <label className="text-sm font-medium text-slate-600">Add driver</label>
 

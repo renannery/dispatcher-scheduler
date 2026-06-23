@@ -6,6 +6,7 @@ import { SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { DispatcherLevel } from '@/types/schedule'
 
+import { CloudLoadEntry } from './CloudLoadEntry'
 import { RecurringBlocksEditor } from './RecurringBlocksEditor'
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,10 @@ export function DispatcherInput() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
+
+      {/* Quick jump back to the live cloud-saved schedule — shown only
+          when one exists, hidden when cloud isn't configured. */}
+      <CloudLoadEntry teams={['dispatchers']} />
 
       {/* ── Add dispatcher form ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
