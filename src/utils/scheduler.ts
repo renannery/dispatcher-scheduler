@@ -3,7 +3,9 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 import {
   DAY_TEMPLATES,
   MAX_BREAK_PREFERRED_HOURS,
+  midShiftBreakSlots,
   patternMaxBreakHours,
+  PEAK_SLOT_INDICES,
   SLOTS,
 } from '@/data/coverageTemplate'
 import type {
@@ -152,8 +154,10 @@ export function generateSchedule(
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
 
     // Pre-compute pattern metadata (once per day)
+    const peakSlotSet = new Set(PEAK_SLOT_INDICES)
     const patternMeta = template.shiftPatterns.map((raw, idx) => {
       const bool = raw.map((v) => v === 1)
+      const breakSlots = midShiftBreakSlots(bool)
       return {
         idx,
         bool,
@@ -162,16 +166,21 @@ export function generateSchedule(
         last: lastActiveSlot(bool),
         isMorning: firstActiveSlot(bool) <= MORNING_SLOT_THRESHOLD,
         maxBreak: patternMaxBreakHours(bool, SLOTS),
+        // True when this pattern's mid-shift break overlaps lunch (12-2 PM)
+        // or dinner (5-8 PM) peak slots. Such patterns are *allowed* but
+        // sorted AFTER peak-safe ones so the picker uses them only when no
+        // peak-safe option remains — i.e., as flexibility for the leftover
+        // dispatcher rather than a default.
+        hasPeakBreak: breakSlots.some((i) => peakSlotSet.has(i)),
       }
     })
 
-    // Sort patterns: morning first, then LONGEST shifts first so they get
-    // assigned to the least-loaded dispatcher (who's first in the sorted
-    // working pool). Break-size penalty (over the preferred 2 h cap) is
-    // last — keeps the 3 h Tue Late fallback out of the way without
-    // pushing long patterns to the end of the queue, which used to give
-    // the worst-balanced dispatcher the 9 h shift.
+    // Sort patterns: morning first, then PEAK-SAFE first (peak-break shifts
+    // sort after equivalent peak-safe ones), then LONGEST shifts first so
+    // they go to the least-loaded dispatcher. Break-size penalty (over the
+    // 2 h preferred cap) is the last tiebreak.
     const byLengthThenBreak = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
+      if (a.hasPeakBreak !== b.hasPeakBreak) return a.hasPeakBreak ? 1 : -1
       if (a.hours !== b.hours) return b.hours - a.hours
       const aOverPref = a.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
       const bOverPref = b.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0

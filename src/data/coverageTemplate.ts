@@ -11,9 +11,13 @@
  *   6 h < work < 8 h     → ≥ 30 min break
  *   work ≥ 8 h           → ≥ 1 h break
  *   Mid-shift break ≤ MAX_BREAK_HARD_HOURS (3 h)    — 2 h preferred, 3 h fallback
- *   Mid-shift break MUST NOT overlap any PEAK_SLOT  — lunch (12–2 PM) and
- *     dinner (5–8 PM) must always be staffed at full intent
  * Max work per day = 9 h.
+ *
+ * Peak-time breaks (lunch 12–2 PM / dinner 5–8 PM) are *allowed* in
+ * patterns — the picker decides whether to use them. Coverage targets
+ * still need to be met overall; the picker prefers peak-safe patterns
+ * unless using a peak-break variant earns extra morning/late coverage
+ * from the same dispatcher. See PEAK_SLOT_INDICES below for the set.
  *
  * Where a break inside a pattern would reduce coverage below required,
  * the required number is adjusted down by 1 for that slot.
@@ -87,7 +91,7 @@ const FRI: DayTemplate = {
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (10 AM–4 PM, 6 h single block — covers mid-morning + lunch + afternoon)
     [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
@@ -157,7 +161,7 @@ const MON: DayTemplate = {
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon,
     //   fills the 3–4 PM gap where Early ends and the Split takes a break)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
+    //Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -174,7 +178,7 @@ const TUE: DayTemplate = {
   shiftPatterns: [
     // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–9:30 PM, ~8 h, 2 h break 2–4 PM — trimmed from 9.5 h)
@@ -196,7 +200,7 @@ const WED: DayTemplate = {
     // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
+    //Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -288,7 +292,7 @@ function totalWorkHours(pattern: number[] | boolean[], slots: { hours: number }[
 
 /** Returns the slot indices that fall inside any mid-shift break (off-slots
  *  between work blocks). Leading and trailing off-slots are excluded. */
-function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
+export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
   let firstOn = -1, lastOn = -1
   for (let i = 0; i < pattern.length; i++) {
     if (pattern[i]) { if (firstOn < 0) firstOn = i; lastOn = i }
@@ -300,16 +304,16 @@ function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
 }
 
 // Build-time assertion: every pattern must satisfy the shape rules.
+// Peak-time breaks are no longer rejected here — the picker decides
+// whether to use peak-break patterns based on real coverage need.
 ;(() => {
   const violations: string[] = []
-  const peakSet = new Set(PEAK_SLOT_INDICES)
   for (const day of Object.values(DAY_TEMPLATES)) {
     day.shiftPatterns.forEach((pat, idx) => {
       const brk = patternMaxBreakHours(pat, day.slots)
       const blocks = patternWorkBlocks(pat, day.slots)
       const minBlock = blocks.length === 0 ? 0 : Math.min(...blocks)
       const work = totalWorkHours(pat, day.slots)
-      const peakBreaks = midShiftBreakSlots(pat).filter((i) => peakSet.has(i))
       if (brk > MAX_BREAK_HARD_HOURS) {
         violations.push(`${day.dayName} #${idx}: ${brk}h break > ${MAX_BREAK_HARD_HOURS}h hard cap`)
       }
@@ -320,9 +324,6 @@ function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
         violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break, has ${brk}h`)
       } else if (work > 6 && work < 8 && brk < MED_SHIFT_BREAK_MIN) {
         violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break, has ${brk}h`)
-      }
-      if (peakBreaks.length > 0) {
-        violations.push(`${day.dayName} #${idx}: break overlaps peak slot(s) ${peakBreaks.join(',')} (lunch 12–2 PM / dinner 5–8 PM)`)
       }
     })
   }
