@@ -179,7 +179,7 @@ export function ScheduleGrid() {
   void nowTick
 
   // Today + slot/fraction within the dispatcher slot layout. -1 when
-  // outside ops hours (before 8 AM / after 11 PM) → no NowLine on any day.
+  // outside ops hours (before 8 AM / after 11:30 PM) → no NowLine on any day.
   const _now = caymanNow()
   const nowMinOfDay = _now.hours * 60 + _now.minutes
   const nowDateISO = _now.dateISO

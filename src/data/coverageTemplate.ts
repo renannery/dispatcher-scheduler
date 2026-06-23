@@ -1,8 +1,8 @@
 /**
- * Coverage template — 19 time slots per day.
+ * Coverage template — 20 time slots per day.
  *
- * Mon–Fri: 9 AM – 11 PM  (slot 0 = 8–9 AM, coverage = 0 → hidden in UI)
- * Sat–Sun: 8 AM – 11 PM  (slot 0 = 8–9 AM, coverage > 0)
+ * Mon–Fri: 9 AM – 11:30 PM  (slot 0 = 8–9 AM, coverage = 0 → hidden in UI)
+ * Sat–Sun: 8 AM – 11:30 PM  (slot 0 = 8–9 AM, coverage > 0)
  *
  * Shape rules enforced in every pattern (build-time assertion at the bottom
  * of this file fails the import on violation):
@@ -29,7 +29,7 @@
  *  9: 3–4 PM  10: 4–5 PM   11: 5–6 PM
  * 12: 6–6:30  13: 6:30–7   14: 7–8 PM
  * 15: 8–8:30  16: 8:30–9   17: 9–10 PM
- * 18: 10–11 PM
+ * 18: 10–11 PM   19: 11–11:30 PM
  */
 import type { DayTemplate } from '@/types/schedule'
 
@@ -53,161 +53,169 @@ export const SLOTS = [
   { label: '8:30–9 PM',     hours: 0.5 },  // 16
   { label: '9–10 PM',       hours: 1   },  // 17
   { label: '10–11 PM',      hours: 1   },  // 18
+  { label: '11–11:30 PM',   hours: 0.5 },  // 19
 ]
 
 // ─── THURSDAY (dayOfWeek=4) ─────────────────────────────────────────────────
 const THU: DayTemplate = {
   dayOfWeek: 4, dayName: 'Thursday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 2, 2, 3, 3, 2, 3, 1],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 2, 2, 3, 3, 2, 3, 1, 1],
   //                                              ↑  ↑ adjusted down 1 (staggered late breaks)
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 
 // ─── FRIDAY (dayOfWeek=5) ───────────────────────────────────────────────────
 const FRI: DayTemplate = {
   dayOfWeek: 5, dayName: 'Friday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    0, 2, 2, 2, 3, 3, 2, 2, 2, 2, 3, 4, 3, 3, 4, 3, 2, 3, 3],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    0, 2, 2, 2, 3, 3, 2, 2, 2, 2, 3, 4, 3, 3, 4, 3, 2, 3, 3, 1],
   //                                    ↑ adjusted (Early A on lunch break)
   //                                                      ↑  ↑ adjusted (Late B on break)
   //                                                               ↑ adjusted (Late A on break)
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (10 AM–4 PM, 6 h single block — covers mid-morning + lunch + afternoon)
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 
 // ─── SATURDAY (dayOfWeek=6) ─────────────────────────────────────────────────
 const SAT: DayTemplate = {
   dayOfWeek: 6, dayName: 'Saturday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    2, 2, 2, 2, 4, 4, 4, 2, 2, 1, 1, 4, 4, 4, 4, 3, 3, 2, 1],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    2, 2, 2, 2, 4, 4, 4, 2, 2, 1, 1, 4, 4, 4, 4, 3, 3, 2, 1, 1],
   //                                                           ↑  ↑ adjusted (Late A on break)
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
-    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (8 AM–4 PM, 7 h + 1 h break at 11–12, blocks 3 h + 4 h —
     //   covers the 3–4 PM gap that Early A leaves)
-    [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split A  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Split B  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 
 // ─── SUNDAY (dayOfWeek=0) ───────────────────────────────────────────────────
 const SUN: DayTemplate = {
   dayOfWeek: 0, dayName: 'Sunday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    2, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    2, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3, 1],
   //                                                            ↑ adjusted (Early A on lunch)
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (8 AM–3 PM, 6 h + 1 h break at 11 AM–12 PM, blocks 3 h + 3 h)
-    [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30, blocks 3 h + 3.5 h)
-    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (3 PM–9 PM, 6 h single block — covers afternoon + dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late B   (4 PM–10 PM, 6 h single block — covers dinner peak + evening)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late C   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late C   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 
 // ─── MONDAY (dayOfWeek=1) ───────────────────────────────────────────────────
 const MON: DayTemplate = {
   dayOfWeek: 1, dayName: 'Monday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    0, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 3, 3, 3, 3, 1, 2, 2],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    0, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 3, 3, 3, 3, 1, 2, 2, 1],
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon,
     //   fills the 3–4 PM gap where Early ends and the Split takes a break)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     //Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 
 // ─── TUESDAY (dayOfWeek=2) ──────────────────────────────────────────────────
 const TUE: DayTemplate = {
   dayOfWeek: 2, dayName: 'Tuesday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1],
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–9:30 PM, ~8 h, 2 h break 2–4 PM — trimmed from 9.5 h)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late     (11 AM–2 PM + 5 PM–11 PM, 9 h, 3 h break 2–5 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late     (11 AM–2 PM + 5 PM–11:30 PM, 9.5 h, 3 h break 2–5 PM — covers closer)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
 // ─── WEDNESDAY (dayOfWeek=3) ────────────────────────────────────────────────
 const WED: DayTemplate = {
   dayOfWeek: 3, dayName: 'Wednesday', slots: SLOTS,
-  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18
-  requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2],
+  //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+  requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2, 1],
   //                                       ↑ adjusted (Early A on lunch break)
+  //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     //Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Late B   (5 PM–11 PM, 6 h single block — covers dinner + late)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
   ],
 }
 

@@ -167,7 +167,7 @@ export function PeriodPicker() {
 
       {isValid && (
         <div className="rounded-xl border border-blue-100 bg-blue-50 px-5 py-3 text-center text-xs text-blue-600">
-          Mon–Fri: 9 AM – 11 PM · Sat–Sun: 8 AM – 11 PM · work week Thu → Wed
+          Mon–Fri: 9 AM – 11:30 PM · Sat–Sun: 8 AM – 11:30 PM · work week Thu → Wed
         </div>
       )}
 

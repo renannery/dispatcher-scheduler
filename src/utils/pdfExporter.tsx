@@ -23,7 +23,7 @@ const SLOT_CLOCK: number[] = (() => {
     times.push(t)
     t += slot.hours
   }
-  times.push(t)  // end of last slot → 23 = 11 PM
+  times.push(t)  // end of last slot → 23.5 = 11:30 PM
   return times
 })()
 
@@ -183,7 +183,7 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
               <Text style={SA.hdrTitle}>Dispatcher Schedule</Text>
               <Text style={SA.hdrPeriod}>{period}</Text>
               <Text style={SA.hdrMeta}>
-                Mon–Fri 9 AM–11 PM · Sat–Sun 8 AM–11 PM · work week Thu→Wed
+                Mon–Fri 9 AM–11:30 PM · Sat–Sun 8 AM–11:30 PM · work week Thu→Wed
               </Text>
             </View>
           </View>
