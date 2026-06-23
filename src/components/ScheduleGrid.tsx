@@ -9,6 +9,7 @@ import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DateRangePicker } from '@/components/DateRangePicker'
+import { SavedScheduleBadge } from '@/components/SavedScheduleBadge'
 import { DayGrid } from './DayGrid'
 
 // Per-slot start times (in minutes from midnight) computed from the SLOTS
@@ -331,6 +332,18 @@ export function ScheduleGrid() {
 
       {/* Action bar */}
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        {/* Saved-version pill + Save button — backed by Supabase, hidden
+            entirely when env vars aren't set. Sits at the top of the bar so
+            the user always sees which version is live in the shared store. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <SavedScheduleBadge
+            team="dispatchers"
+            collectSnapshot={() => ({
+              dispatchers, startDate, endDate, timeOff, absenceReasons,
+              weekendRotationOffset, coverageOverrides, schedule,
+            })}
+          />
+        </div>
         {/* Schedule period — change dates inline; re-runs the generator
             (Cmd+Z reverts). Dispatcher count next to it for quick context. */}
         <div className="flex flex-wrap items-end gap-x-5 gap-y-2">

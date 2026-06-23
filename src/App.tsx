@@ -6,6 +6,8 @@ import { useDriverStore } from '@/drivers/store'
 import { SchedulerPage } from '@/pages/SchedulerPage'
 import { TeamChooser } from '@/pages/TeamChooser'
 import { useSchedulerStore } from '@/store/schedulerStore'
+import { cloudEnabled, fetchSavedSnapshot } from '@/utils/cloudStorage'
+import type { DispatcherSnapshotData, DriverSnapshotData } from '@/utils/snapshot'
 
 type Team = 'dispatchers' | 'drivers'
 const STORAGE_KEY = 'scheduler.team'
@@ -19,6 +21,35 @@ export default function App() {
   useEffect(() => {
     if (team) localStorage.setItem(STORAGE_KEY, team)
     else localStorage.removeItem(STORAGE_KEY)
+  }, [team])
+
+  // Auto-load the saved cloud schedule when the user lands on a team page
+  // with no local state yet. If they already have a local roster or
+  // schedule, we leave it alone so the cloud version doesn't clobber
+  // in-flight work — the badge in the schedule page still surfaces the
+  // saved version and offers a manual Save / Load.
+  const hydrateDispatcher = useSchedulerStore((s) => s.hydrateFromSnapshot)
+  const hydrateDriver = useDriverStore((s) => s.hydrateFromSnapshot)
+  useEffect(() => {
+    if (!team || !cloudEnabled) return
+    // Read store state at trigger time so we don't re-fetch every time
+    // the store mutates (we'd just hydrate ourselves on top of ourselves).
+    const dispatcherStore = useSchedulerStore.getState()
+    const driverStore = useDriverStore.getState()
+    const empty = team === 'dispatchers'
+      ? dispatcherStore.dispatchers.length === 0 && !dispatcherStore.schedule
+      : driverStore.drivers.length === 0 && !driverStore.schedule
+    if (!empty) return
+    let cancelled = false
+    fetchSavedSnapshot(team)
+      .then((env) => {
+        if (cancelled || !env) return
+        if (team === 'dispatchers') hydrateDispatcher(env.data as DispatcherSnapshotData)
+        else hydrateDriver(env.data as DriverSnapshotData)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [team])
 
   // Warn before unload when there's a non-trivial schedule in-flight.

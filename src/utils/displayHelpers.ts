@@ -19,3 +19,12 @@ export function longDay(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date + (date.includes('T') ? '' : 'T00:00:00')) : date
   return format(d, 'EEE, MMMM do')
 }
+
+/** Two ISO dates → "Jun 25 → Jul 29" (year omitted unless they differ). */
+export function fmtRangeShort(startISO: string, endISO: string): string {
+  const s = new Date(startISO + 'T00:00:00')
+  const e = new Date(endISO + 'T00:00:00')
+  const sameYear = s.getFullYear() === e.getFullYear()
+  const fmt = sameYear ? 'MMM d' : 'MMM d, yyyy'
+  return `${format(s, fmt)} → ${format(e, fmt)}`
+}

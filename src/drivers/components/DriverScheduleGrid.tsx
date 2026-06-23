@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
+import { SavedScheduleBadge } from '@/components/SavedScheduleBadge'
 
 import { DRIVER_SLOTS, effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { CoverageGridEditor } from './CoverageGridEditor'
@@ -1521,7 +1522,20 @@ export function DriverScheduleGrid() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        {/* Saved-version pill + Save button — backed by Supabase, hidden
+            entirely when env vars aren't set. Sits at the top of the bar so
+            the user always sees which version is live in the shared store. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <SavedScheduleBadge
+            team="drivers"
+            collectSnapshot={() => ({
+              drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+              minHoursPerDay, maxHoursPerDay, timeOff, absenceReasons, weekendRotationOffset, schedule,
+            })}
+          />
+        </div>
+        <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-col gap-2">
           <DateRangePicker
             startDate={startDate}
@@ -1631,6 +1645,7 @@ export function DriverScheduleGrid() {
             <Download className="h-4 w-4" />
             XLS
           </button>
+        </div>
         </div>
       </div>
 
