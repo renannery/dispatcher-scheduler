@@ -6,6 +6,7 @@ import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { HoverHint } from '@/components/HoverHint'
 import { SavedScheduleBadge } from '@/components/SavedScheduleBadge'
+import { useIsAdmin } from '@/store/adminStore'
 
 import { DRIVER_SLOTS, effectiveCoverage, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS } from '../coverageTemplate'
 import { CoverageGridEditor } from './CoverageGridEditor'
@@ -1011,6 +1012,7 @@ export function DriverScheduleGrid() {
     redoScheduleEdit,
     applyShuffledSchedule,
   } = useDriverStore()
+  const isAdmin = useIsAdmin()
   // Track undo/redo button enabled state. We can't use the canUndo/canRedo
   // selectors directly here because they're functions, so subscribe via the
   // stack lengths instead — those re-render the component when toggle hits.
@@ -1524,66 +1526,80 @@ export function DriverScheduleGrid() {
 
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
         {/* Saved-version pill + Save button — backed by Supabase, hidden
-            entirely when env vars aren't set. Sits at the top of the bar so
-            the user always sees which version is live in the shared store. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <SavedScheduleBadge
-            team="drivers"
-            collectSnapshot={() => ({
-              drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
-              minHoursPerDay, maxHoursPerDay, timeOff, absenceReasons, weekendRotationOffset, schedule,
-            })}
-          />
-        </div>
+            entirely when env vars aren't set OR when the viewer isn't admin
+            (Save is an edit action). */}
+        {isAdmin && (
+          <div className="flex flex-wrap items-center gap-2">
+            <SavedScheduleBadge
+              team="drivers"
+              collectSnapshot={() => ({
+                drivers, startDate, endDate, fullTimeCap, partTimeCap, coverageScale, coverageOverrides,
+                minHoursPerDay, maxHoursPerDay, timeOff, absenceReasons, weekendRotationOffset, schedule,
+              })}
+            />
+          </div>
+        )}
         <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-col gap-2">
-          <DateRangePicker
-            startDate={startDate}
-            endDate={endDate}
-            onChange={handleDateRangeChange}
-            label="Schedule period"
-            compact
-            showStats
-          />
+          {isAdmin ? (
+            <DateRangePicker
+              startDate={startDate}
+              endDate={endDate}
+              onChange={handleDateRangeChange}
+              label="Schedule period"
+              compact
+              showStats
+            />
+          ) : (
+            <div className="text-sm font-medium text-slate-700">
+              Schedule period:{' '}
+              <span className="font-semibold">
+                {startDate} → {endDate}
+              </span>
+            </div>
+          )}
           {/* Inline cap editors — turns the static "FT cap Xh · PT cap Yh"
               line into editable steppers so ops can fix a wrong cap
               (e.g. PT 29h that should have been 30h) without walking
-              back to the Period step. Number inputs commit on blur or
-              Enter via handleApplyEdits which regenerates in one shot. */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-            <span><span className="font-semibold text-slate-700">{drivers.length}</span> drivers</span>
-            <span className="text-slate-300">·</span>
-            <CapStepper
-              label="FT cap"
-              value={fullTimeCap}
-              min={20}
-              max={LEGAL_WEEKLY_MAX_HOURS}
-              onCommit={(v) =>
-                handleApplyEdits({ fullTimeCap: v, maxHoursPerDay, coverageScale, partTimeCap })
+              back to the Period step. Admin-only — caps are sensitive
+              numbers and adjusting them triggers a regen. */}
+          {isAdmin && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+              <span><span className="font-semibold text-slate-700">{drivers.length}</span> drivers</span>
+              <span className="text-slate-300">·</span>
+              <CapStepper
+                label="FT cap"
+                value={fullTimeCap}
+                min={20}
+                max={LEGAL_WEEKLY_MAX_HOURS}
+                onCommit={(v) =>
+                  handleApplyEdits({ fullTimeCap: v, maxHoursPerDay, coverageScale, partTimeCap })
+                }
+              />
+              <span className="text-slate-300">·</span>
+              <CapStepper
+                label="PT cap"
+                value={schedule.partTimeCap}
+                min={10}
+                max={LEGAL_PT_WEEKLY_MAX_HOURS}
+                onCommit={(v) =>
+                  handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale, partTimeCap: v })
+                }
+              />
+            </div>
+          )}
+          {/* Inline coverage-scale knob — admin-only, regenerates the
+              schedule. Same control as Period step. */}
+          {isAdmin && (
+            <CoverageScaleAdjuster
+              coverageScale={coverageScale}
+              onApply={(nextScale) =>
+                handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale: nextScale })
               }
             />
-            <span className="text-slate-300">·</span>
-            <CapStepper
-              label="PT cap"
-              value={schedule.partTimeCap}
-              min={10}
-              max={LEGAL_PT_WEEKLY_MAX_HOURS}
-              onCommit={(v) =>
-                handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale, partTimeCap: v })
-              }
-            />
-          </div>
-          {/* Inline coverage-scale knob — same control as Period step, also
-              available in the suggestions banner. Surfaced here so ops can
-              tweak coverage demand and regenerate without leaving the
-              schedule view. Apply button only enabled when scale ≠ current. */}
-          <CoverageScaleAdjuster
-            coverageScale={coverageScale}
-            onApply={(nextScale) =>
-              handleApplyEdits({ fullTimeCap, maxHoursPerDay, coverageScale: nextScale })
-            }
-          />
+          )}
         </div>
+        {isAdmin && (
         <div className="flex gap-2">
           {/* Undo / Redo — only enabled when there's something on the stack.
               Keyboard shortcuts are Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z (or Y),
@@ -1646,6 +1662,7 @@ export function DriverScheduleGrid() {
             XLS
           </button>
         </div>
+        )}
         </div>
       </div>
 

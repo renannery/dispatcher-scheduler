@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import { useRef, useState, useMemo } from 'react'
 
 import { HoverHint } from '@/components/HoverHint'
+import { useIsAdmin } from '@/store/adminStore'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
 import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE, effectiveCoverage } from '../coverageTemplate'
@@ -68,6 +69,7 @@ interface Props {
 
 export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFilter, nowSlotIdx, nowMinuteFrac, nowLabel, onEditDriver, onEditCoverage }: Props) {
   const toggleDriverSlot = useDriverStore((s) => s.toggleDriverSlot)
+  const isAdmin = useIsAdmin()
   const timeOff = useDriverStore((s) => s.timeOff)
   const absenceReasons = useDriverStore((s) => s.absenceReasons)
   const fullTimeCap = useDriverStore((s) => s.fullTimeCap)
@@ -210,7 +212,9 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 <div className={clsx('text-[9px]', shortSlots.has(si) ? 'text-red-300' : 'text-slate-500')}>1h</div>
               </th>
             ))}
-            <th className="sticky right-0 top-0 z-30 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
+            {isAdmin && (
+              <th className="sticky right-0 top-0 z-30 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">Hrs</th>
+            )}
           </tr>
           {/*
             Second sticky row: per-slot coverage pills. Sticks at `top-11`
@@ -261,9 +265,11 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 </th>
               )
             })}
-            <th className="sticky right-0 top-11 z-30 min-w-[60px] bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
-              {actual.reduce((s, a) => s + a, 0)}h
-            </th>
+            {isAdmin && (
+              <th className="sticky right-0 top-11 z-30 min-w-[60px] bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
+                {actual.reduce((s, a) => s + a, 0)}h
+              </th>
+            )}
           </tr>
           {/* Sticky shopper coverage row — only when this day has any
               shopper activity. Same alignment under the driver coverage
@@ -295,12 +301,14 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                   </th>
                 )
               })}
-              <th className="sticky right-0 top-[68px] z-30 min-w-[60px] bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
-                {shopperCov.reduce((s, a) => s + a, 0)}
-                {shopperRequired.some(v => v > 0) && (
-                  <span className="opacity-50">/{shopperRequired.reduce((s, a) => s + a, 0)}</span>
-                )}h
-              </th>
+              {isAdmin && (
+                <th className="sticky right-0 top-[68px] z-30 min-w-[60px] bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
+                  {shopperCov.reduce((s, a) => s + a, 0)}
+                  {shopperRequired.some(v => v > 0) && (
+                    <span className="opacity-50">/{shopperRequired.reduce((s, a) => s + a, 0)}</span>
+                  )}h
+                </th>
+              )}
             </tr>
           )}
         </thead>
@@ -389,8 +397,9 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                           purple = LEGAL OVERTIME (>45h/wk)
                           red    = over user's soft cap (when cap < 45)
                           amber  = close to cap (≥92%)
-                          slate  = normal */}
-                    {(() => {
+                          slate  = normal
+                        Admin-only. */}
+                    {isAdmin && (() => {
                       // Per-type legal weekly max: FT 45h, PT 30h.
                       const legalMax = ds.driver.employmentType === 'full' ? LEGAL_WEEKLY_MAX_HOURS : LEGAL_PT_WEEKLY_MAX_HOURS
                       const isLegalOT = weekH > legalMax
@@ -413,20 +422,20 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                         </HoverHint>
                       )
                     })()}
-                    {/* Days-off pill for the current work-week. Color hints:
-                          0 off → amber (no rest day this week — schedule risk)
-                          1 off → slate (normal)
-                          2+ off → blue (extra rest, often the weekend-off perk) */}
-                    <HoverHint label={`${offDays} day${offDays === 1 ? '' : 's'} off this work-week (Thu→Wed)`}>
-                      <span className={clsx(
-                        'rounded px-1.5 text-[9px] font-bold tabular-nums',
-                        offDays === 0 ? 'bg-amber-100 text-amber-700' :
-                        offDays === 1 ? 'bg-slate-100 text-slate-600' :
-                        'bg-blue-100 text-blue-700',
-                      )}>
-                        {offDays}d off
-                      </span>
-                    </HoverHint>
+                    {/* Days-off pill for the current work-week. Admin-only —
+                        rolls up to weekly utilization which is admin info. */}
+                    {isAdmin && (
+                      <HoverHint label={`${offDays} day${offDays === 1 ? '' : 's'} off this work-week (Thu→Wed)`}>
+                        <span className={clsx(
+                          'rounded px-1.5 text-[9px] font-bold tabular-nums',
+                          offDays === 0 ? 'bg-amber-100 text-amber-700' :
+                          offDays === 1 ? 'bg-slate-100 text-slate-600' :
+                          'bg-blue-100 text-blue-700',
+                        )}>
+                          {offDays}d off
+                        </span>
+                      </HoverHint>
+                    )}
                     {/* Daily overtime badge — shown when the day's shift exceeds 9h legal max */}
                     {!isOff && entry && (entry.totalHours ?? 0) > LEGAL_DAILY_MAX_HOURS && (
                       <HoverHint label={`Daily overtime: ${entry.totalHours?.toFixed(1)}h (${(entry.totalHours! - LEGAL_DAILY_MAX_HOURS).toFixed(1)}h over the 9h legal max)`}>
@@ -499,16 +508,19 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                     <td
                       key={si}
                       className={clsx(
-                        'group cursor-pointer px-0.5 py-1',
+                        'group px-0.5 py-1',
+                        isAdmin && 'cursor-pointer',
                         // Red column tint when this slot is short on
                         // driver coverage — makes it obvious where to
                         // click to add hours. Skip on shopper rows to
                         // keep their purple band visually coherent.
                         shortSlots.has(si) && !isShopperRow && 'bg-red-50/70',
                       )}
-                      onClick={() => toggleDriverSlot(ds.driver.id, date, si)}
+                      onClick={isAdmin ? () => toggleDriverSlot(ds.driver.id, date, si) : undefined}
                       title={
-                        blocked
+                        !isAdmin
+                          ? working ? `Working — ${DRIVER_SLOTS[si].label}` : ''
+                          : blocked
                           ? `Blocked off — ${DRIVER_SLOTS[si].label} (click to override)`
                           : working
                             ? `Remove ${DRIVER_SLOTS[si].label}`
@@ -538,28 +550,30 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                   )
                 })}
 
-                <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
-                  {isOff ? (
-                    <span className="text-slate-400">—</span>
-                  ) : (() => {
-                    const h = entry?.totalHours ?? 0
-                    // Highlight the legal-cap boundary: at exactly 9h
-                    // (legal daily max) → yellow pill so ops sees it's
-                    // pushing the line. Over 9h → red pill = real
-                    // overtime, needs payroll attention.
-                    const tone =
-                      h > LEGAL_DAILY_MAX_HOURS
-                        ? 'bg-red-100 text-red-700 ring-1 ring-red-400'
-                      : h === LEGAL_DAILY_MAX_HOURS
-                        ? 'bg-amber-100 text-amber-700'
-                      : 'text-slate-700'
-                    return (
-                      <span className={clsx('font-semibold tabular-nums rounded px-1.5', tone)}>
-                        {h.toFixed(0)}h
-                      </span>
-                    )
-                  })()}
-                </td>
+                {isAdmin && (
+                  <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
+                    {isOff ? (
+                      <span className="text-slate-400">—</span>
+                    ) : (() => {
+                      const h = entry?.totalHours ?? 0
+                      // Highlight the legal-cap boundary: at exactly 9h
+                      // (legal daily max) → yellow pill so ops sees it's
+                      // pushing the line. Over 9h → red pill = real
+                      // overtime, needs payroll attention.
+                      const tone =
+                        h > LEGAL_DAILY_MAX_HOURS
+                          ? 'bg-red-100 text-red-700 ring-1 ring-red-400'
+                        : h === LEGAL_DAILY_MAX_HOURS
+                          ? 'bg-amber-100 text-amber-700'
+                        : 'text-slate-700'
+                      return (
+                        <span className={clsx('font-semibold tabular-nums rounded px-1.5', tone)}>
+                          {h.toFixed(0)}h
+                        </span>
+                      )
+                    })()}
+                  </td>
+                )}
               </tr>
             )
           })}
@@ -604,9 +618,11 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                 </td>
               )
             })}
-            <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
-              {actual.reduce((s, a) => s + a, 0)}h
-            </td>
+            {isAdmin && (
+              <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
+                {actual.reduce((s, a) => s + a, 0)}h
+              </td>
+            )}
           </tr>
 
           {/* Separate row for shoppers — they're a distinct operational
@@ -642,12 +658,14 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                   </td>
                 )
               })}
+              {isAdmin && (
               <td className="sticky right-0 bg-purple-50 px-3 py-1.5 text-right text-[10px] font-semibold text-purple-600">
                 {shopperCov.reduce((s, a) => s + a, 0)}
                 {shopperRequired.some(v => v > 0) && (
                   <span className="opacity-50">/{shopperRequired.reduce((s, a) => s + a, 0)}</span>
                 )}h
               </td>
+              )}
             </tr>
           )}
         </tfoot>

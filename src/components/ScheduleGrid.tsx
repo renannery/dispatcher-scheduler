@@ -10,6 +10,7 @@ import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { SavedScheduleBadge } from '@/components/SavedScheduleBadge'
+import { useIsAdmin } from '@/store/adminStore'
 import { DayGrid } from './DayGrid'
 
 // Per-slot start times (in minutes from midnight) computed from the SLOTS
@@ -129,6 +130,7 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
 export function ScheduleGrid() {
   const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, coverageOverrides, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
     useSchedulerStore()
+  const isAdmin = useIsAdmin()
   // Track undo/redo button enabled state. Subscribe via stack lengths so the
   // component re-renders the moment toggle changes them.
   const undoCount = useSchedulerStore((s) => s.scheduleUndoStack.length)
@@ -335,30 +337,43 @@ export function ScheduleGrid() {
         {/* Saved-version pill + Save button — backed by Supabase, hidden
             entirely when env vars aren't set. Sits at the top of the bar so
             the user always sees which version is live in the shared store. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <SavedScheduleBadge
-            team="dispatchers"
-            collectSnapshot={() => ({
-              dispatchers, startDate, endDate, timeOff, absenceReasons,
-              weekendRotationOffset, coverageOverrides, schedule,
-            })}
-          />
-        </div>
+        {isAdmin && (
+          <div className="flex flex-wrap items-center gap-2">
+            <SavedScheduleBadge
+              team="dispatchers"
+              collectSnapshot={() => ({
+                dispatchers, startDate, endDate, timeOff, absenceReasons,
+                weekendRotationOffset, coverageOverrides, schedule,
+              })}
+            />
+          </div>
+        )}
         {/* Schedule period — change dates inline; re-runs the generator
-            (Cmd+Z reverts). Dispatcher count next to it for quick context. */}
+            (Cmd+Z reverts). Dispatcher count next to it for quick context.
+            Date picker is admin-only (editing dates is an edit action). */}
         <div className="flex flex-wrap items-end gap-x-5 gap-y-2">
-          <DateRangePicker
-            startDate={startDate}
-            endDate={endDate}
-            onChange={handleDateRangeChange}
-            label="Schedule period"
-            compact
-            showStats
-          />
+          {isAdmin ? (
+            <DateRangePicker
+              startDate={startDate}
+              endDate={endDate}
+              onChange={handleDateRangeChange}
+              label="Schedule period"
+              compact
+              showStats
+            />
+          ) : (
+            <div className="text-sm font-medium text-slate-700">
+              Schedule period:{' '}
+              <span className="font-semibold">
+                {startDate} → {endDate}
+              </span>
+            </div>
+          )}
           <div className="pb-1 text-xs text-slate-500">
             <span className="font-semibold text-slate-700">{dispatchers.length}</span> dispatchers
           </div>
         </div>
+        {isAdmin && (
         <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">peak wk</span>
@@ -437,6 +452,7 @@ export function ScheduleGrid() {
           </button>
         </div>
         </div>
+        )}
       </div>
 
       {/* Dispatcher search — filters pill list and day-grid rows */}
@@ -514,6 +530,7 @@ export function ScheduleGrid() {
               <div className="flex items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">{wl}</h3>
+                  {isAdmin && (
                   <div className="text-xs text-slate-500">
                     <button
                       type="button"
@@ -548,9 +565,11 @@ export function ScheduleGrid() {
                       </>
                     )}
                   </div>
+                  )}
                   {/* Days-off pills — clickable to open drill-down modal.
                       2d off = target (emerald), 1d off = shortfall (amber),
-                      3+d off = under-utilized. */}
+                      3+d off = under-utilized. Hidden for non-admins. */}
+                  {isAdmin && (
                   <div className="flex items-center gap-1 text-xs">
                     {dayOffBuckets['1d'] > 0 && (
                       <button
@@ -597,26 +616,31 @@ export function ScheduleGrid() {
                       </button>
                     )}
                   </div>
+                  )}
                 </div>
                 <div className="flex shrink-0 gap-2 text-xs text-slate-400">
-                  <button
-                    onClick={() => setShowAllPills((prev) => {
-                      const next = new Set(prev)
-                      if (next.has(wl)) next.delete(wl)
-                      else next.add(wl)
-                      return next
-                    })}
-                    className="hover:text-blue-600"
-                  >
-                    {pillsExpanded ? 'hide hours' : 'show hours'}
-                  </button>
-                  <span>·</span>
+                  {isAdmin && (
+                    <>
+                      <button
+                        onClick={() => setShowAllPills((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(wl)) next.delete(wl)
+                          else next.add(wl)
+                          return next
+                        })}
+                        className="hover:text-blue-600"
+                      >
+                        {pillsExpanded ? 'hide hours' : 'show hours'}
+                      </button>
+                      <span>·</span>
+                    </>
+                  )}
                   <button onClick={expandAll}  className="hover:text-blue-600">expand all</button>
                   <span>·</span>
                   <button onClick={collapseAll} className="hover:text-blue-600">collapse</button>
                 </div>
               </div>
-              {pillsExpanded && (
+              {isAdmin && pillsExpanded && (
                 <div className="flex flex-wrap gap-1.5">
                   {filteredPills.length === 0 && (
                     <span className="text-xs text-slate-400">No dispatchers match &quot;{trimmedSearch}&quot;.</span>

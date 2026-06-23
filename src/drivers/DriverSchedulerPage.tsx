@@ -6,6 +6,8 @@ import { useDriverStore } from './store'
 import { DriverInput } from './components/DriverInput'
 import { DriverPeriodPicker } from './components/DriverPeriodPicker'
 import { DriverScheduleGrid } from './components/DriverScheduleGrid'
+import { AdminLock } from '@/components/AdminLock'
+import { useIsAdmin } from '@/store/adminStore'
 
 interface StepMeta {
   id: DriverStep
@@ -93,7 +95,12 @@ interface Props {
 }
 
 export function DriverSchedulerPage({ onChangeTeam }: Props) {
-  const { step, reset, drivers, schedule } = useDriverStore()
+  const { step: rawStep, reset, drivers, schedule, setStep } = useDriverStore()
+  const isAdmin = useIsAdmin()
+  const step = isAdmin ? rawStep : 'schedule'
+  if (!isAdmin && rawStep !== 'schedule') {
+    queueMicrotask(() => setStep('schedule'))
+  }
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -109,13 +116,14 @@ export function DriverSchedulerPage({ onChangeTeam }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <AdminLock />
             <button
               onClick={onChangeTeam}
               className="text-xs text-slate-400 underline transition hover:text-blue-600"
             >
               Switch team
             </button>
-            {(step !== 'names' || drivers.length > 0) && (
+            {isAdmin && (step !== 'names' || drivers.length > 0) && (
               <button
                 onClick={reset}
                 className="text-xs text-slate-400 underline transition hover:text-red-500"
@@ -135,9 +143,11 @@ export function DriverSchedulerPage({ onChangeTeam }: Props) {
           step === 'schedule' ? 'max-w-[1600px]' : 'max-w-3xl',
         )}
       >
-        <div className="mb-10">
-          <StepBar current={step} />
-        </div>
+        {isAdmin && (
+          <div className="mb-10">
+            <StepBar current={step} />
+          </div>
+        )}
 
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-slate-900">{STEP_TITLES[step]}</h2>

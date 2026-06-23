@@ -1,9 +1,11 @@
 import clsx from 'clsx'
 import { Calendar, CheckCircle2, Users } from 'lucide-react'
 
+import { AdminLock } from '@/components/AdminLock'
 import { DispatcherInput } from '@/components/DispatcherInput'
 import { PeriodPicker } from '@/components/PeriodPicker'
 import { ScheduleGrid } from '@/components/ScheduleGrid'
+import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { Step } from '@/types/schedule'
 
@@ -111,7 +113,16 @@ interface Props {
 }
 
 export function SchedulerPage({ onChangeTeam }: Props) {
-  const { step, reset, dispatchers, schedule } = useSchedulerStore()
+  const { step: rawStep, reset, dispatchers, schedule, setStep } = useSchedulerStore()
+  const isAdmin = useIsAdmin()
+  // Non-admin viewers always land on the read-only schedule view. They
+  // can't edit the roster or change the period — those steps require
+  // admin. If they're somehow on a different step, force-jump.
+  const step = isAdmin ? rawStep : 'schedule'
+  if (!isAdmin && rawStep !== 'schedule') {
+    // Sync the persisted step so refresh stays on schedule.
+    queueMicrotask(() => setStep('schedule'))
+  }
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -128,13 +139,14 @@ export function SchedulerPage({ onChangeTeam }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <AdminLock />
             <button
               onClick={onChangeTeam}
               className="text-xs text-slate-400 underline transition hover:text-blue-600"
             >
               Switch team
             </button>
-            {(step !== 'names' || dispatchers.length > 0) && (
+            {isAdmin && (step !== 'names' || dispatchers.length > 0) && (
               <button
                 onClick={reset}
                 className="text-xs text-slate-400 underline transition hover:text-red-500"
@@ -154,10 +166,12 @@ export function SchedulerPage({ onChangeTeam }: Props) {
           step === 'schedule' ? 'max-w-[1600px]' : 'max-w-3xl',
         )}
       >
-        {/* Step bar */}
-        <div className="mb-10">
-          <StepBar current={step} />
-        </div>
+        {/* Step bar — hidden for non-admins (they only see the schedule view). */}
+        {isAdmin && (
+          <div className="mb-10">
+            <StepBar current={step} />
+          </div>
+        )}
 
         {/* Step heading */}
         <div className="mb-8">

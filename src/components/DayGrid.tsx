@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import { useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
 import { HoverHint } from '@/components/HoverHint'
@@ -27,6 +28,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
   const timeOff = useSchedulerStore((s) => s.timeOff)
   const absenceReasons = useSchedulerStore((s) => s.absenceReasons)
   const toggleDispatcherSlot = useSchedulerStore((s) => s.toggleDispatcherSlot)
+  const isAdmin = useIsAdmin()
   const template = DAY_TEMPLATES[dayOfWeek]
   // Prefer the per-date `coverageRequired` baked into the schedule (it
   // reflects user overrides at generation time). Fall back to the template
@@ -107,15 +109,17 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                 </div>
               </th>
             ))}
-            <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">
-              Hrs
-            </th>
+            {isAdmin && (
+              <th className="sticky right-0 z-10 min-w-[60px] bg-slate-800 px-3 py-2 text-right font-semibold text-slate-300">
+                Hrs
+              </th>
+            )}
           </tr>
         </thead>
 
         <tbody>
           {visibleRows.length === 0 && dispatcherIdFilter && (
-            <tr><td colSpan={visibleSlotIndices.length + 2} className="px-3 py-3 text-center text-xs text-slate-400">
+            <tr><td colSpan={visibleSlotIndices.length + (isAdmin ? 2 : 1)} className="px-3 py-3 text-center text-xs text-slate-400">
               No dispatchers match the search on this day.
             </td></tr>
           )}
@@ -148,7 +152,7 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     )}>
                       {ds.dispatcher.level === 'Senior' ? 'SR' : ds.dispatcher.level === 'Regular' ? 'RG' : 'TR'}
                     </span>
-                    {(() => {
+                    {isAdmin && (() => {
                       const weekH = ds.weeklyHours[weekLabel] ?? 0
                       const offDays = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
                       // Hours pill — colors signal load against the 45 h cap.
@@ -211,15 +215,18 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     <td
                       key={si}
                       className={clsx(
-                        'group cursor-pointer px-0.5 py-1',
+                        'group px-0.5 py-1',
+                        isAdmin && 'cursor-pointer',
                         // Red column tint when this slot is short. Matches the
                         // header tint above so the full column reads as a
                         // shortfall at a glance.
                         shortSlots.has(si) && 'bg-red-50/70',
                       )}
-                      onClick={() => toggleDispatcherSlot(ds.dispatcher.id, date, si)}
+                      onClick={isAdmin ? () => toggleDispatcherSlot(ds.dispatcher.id, date, si) : undefined}
                       title={
-                        blocked
+                        !isAdmin
+                          ? working ? `Working — ${SLOTS[si].label}` : ''
+                          : blocked
                           ? `Blocked off — ${SLOTS[si].label} (click to override)`
                           : working
                             ? `Remove ${SLOTS[si].label}`
@@ -249,16 +256,18 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                   )
                 })}
 
-                {/* Daily hours */}
-                <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
-                  {isOff ? (
-                    <span className="text-slate-400">—</span>
-                  ) : (
-                    <span className="font-semibold text-slate-700">
-                      {entry?.totalHours?.toFixed(1)}h
-                    </span>
-                  )}
-                </td>
+                {/* Daily hours — admin-only column */}
+                {isAdmin && (
+                  <td className="sticky right-0 bg-inherit px-3 py-1.5 text-right">
+                    {isOff ? (
+                      <span className="text-slate-400">—</span>
+                    ) : (
+                      <span className="font-semibold text-slate-700">
+                        {entry?.totalHours?.toFixed(1)}h
+                      </span>
+                    )}
+                  </td>
+                )}
               </tr>
             )
           })}
@@ -298,9 +307,11 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                 </td>
               )
             })}
-            <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
-              {actual.reduce((s, a, i) => s + a * SLOTS[i].hours, 0).toFixed(1)}h
-            </td>
+            {isAdmin && (
+              <td className="sticky right-0 bg-slate-100 px-3 py-1.5 text-right text-[10px] text-slate-500">
+                {actual.reduce((s, a, i) => s + a * SLOTS[i].hours, 0).toFixed(1)}h
+              </td>
+            )}
           </tr>
         </tfoot>
       </table>
