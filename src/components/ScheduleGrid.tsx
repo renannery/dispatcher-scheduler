@@ -737,36 +737,41 @@ export function ScheduleGrid() {
       })}
 
       {/* Bottom actions */}
-      <div className="flex items-center justify-between pt-2">
-        <button
-          onClick={() => setStep('period')}
-          className="rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-        >
-          ← Back
-        </button>
-        <div className="flex gap-2">
+      {/* Bottom nav: Back + duplicate export buttons — admin-only. Back
+          goes to the (admin-only) Period step and the exports leak hours,
+          so the whole row hides for non-admin viewers. */}
+      {isAdmin && (
+        <div className="flex items-center justify-between pt-2">
           <button
-            onClick={handleExportJson}
-            title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
-            className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            onClick={() => setStep('period')}
+            className="rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
           >
-            <FileJson className="h-4 w-4" />
-            Snapshot
+            ← Back
           </button>
-          <PdfMenu
-            dispatchers={dispatchers}
-            loading={pdfLoading}
-            onSelect={handlePdfSelect}
-          />
-          <button
-            onClick={() => exportScheduleToXLS(schedule)}
-            className="flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
-          >
-            <Download className="h-4 w-4" />
-            Download XLS
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleExportJson}
+              title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
+              className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <FileJson className="h-4 w-4" />
+              Snapshot
+            </button>
+            <PdfMenu
+              dispatchers={dispatchers}
+              loading={pdfLoading}
+              onSelect={handlePdfSelect}
+            />
+            <button
+              onClick={() => exportScheduleToXLS(schedule)}
+              className="flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
+            >
+              <Download className="h-4 w-4" />
+              Download XLS
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Drill-down modal — opens when a week's stat or days-off pill is
           clicked. Computes filtered rows from `drillDown.kind` against the
