@@ -510,7 +510,18 @@ export function ScheduleGrid() {
               const off     = schedule.dispatcherSchedules.length - working
               const actual   = schedule.coverageActual[dateInfo.date] ?? []
               const required = DAY_TEMPLATES[dateInfo.dayOfWeek]?.requiredCoverage ?? []
-              const hasGap   = required.some((r, i) => (actual[i] ?? 0) < r)
+              // Count short slots + total deficit hours (deficit weighted by
+              // slot length so a 1 h shortfall counts more than a 0.5 h one).
+              let gapCount = 0
+              let gapHours = 0
+              for (let i = 0; i < required.length; i++) {
+                const deficit = required[i] - (actual[i] ?? 0)
+                if (deficit > 0) {
+                  gapCount++
+                  gapHours += deficit * SLOTS[i].hours
+                }
+              }
+              const hasGap = gapCount > 0
 
               return (
                 <div key={dateInfo.date} className="border-t border-slate-100 first:border-0">
@@ -524,8 +535,11 @@ export function ScheduleGrid() {
                     <span className="min-w-[140px] text-sm font-semibold text-slate-800">{dateInfo.dayLabel}</span>
                     <span className="text-xs text-slate-500">{working} working · {off} off</span>
                     {hasGap && (
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">
-                        ⚠ coverage gap
+                      <span
+                        className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600"
+                        title={`${gapCount} slot${gapCount === 1 ? '' : 's'} under target — total deficit ${gapHours.toFixed(1)}h across the day`}
+                      >
+                        ⚠ {gapCount} gap{gapCount === 1 ? '' : 's'} ({gapHours.toFixed(gapHours % 1 === 0 ? 0 : 1)}h)
                       </span>
                     )}
                   </button>
