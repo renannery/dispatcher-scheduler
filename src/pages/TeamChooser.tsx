@@ -54,7 +54,7 @@ export function TeamChooser({ onPick }: Props) {
     <div className="min-h-screen bg-slate-100">
       <main className="mx-auto flex max-w-3xl flex-col items-center px-6 pt-20 pb-10">
         <div className="mb-10 text-center">
-          <h1 className="text-3xl font-bold text-slate-900">Schedule Generator</h1>
+          <h1 className="text-3xl font-bold text-slate-900">Bento Scheduler</h1>
           <p className="mt-2 text-slate-500">Pick which team you're scheduling for.</p>
         </div>
 
