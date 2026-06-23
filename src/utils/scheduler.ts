@@ -2,9 +2,14 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
   DAY_TEMPLATES,
+  LONG_SHIFT_BREAK_MIN,
+  MAX_BREAK_HARD_HOURS,
   MAX_BREAK_PREFERRED_HOURS,
+  MED_SHIFT_BREAK_MIN,
   midShiftBreakSlots,
+  MIN_BLOCK_HOURS,
   patternMaxBreakHours,
+  patternWorkBlocks,
   PEAK_SLOT_INDICES,
   SLOTS,
 } from '@/data/coverageTemplate'
@@ -72,6 +77,174 @@ function lastActiveSlot(pattern: boolean[]): number {
  */
 const NIGHT_SLOT_THRESHOLD = 17  // 9 PM
 const MORNING_SLOT_THRESHOLD = 2 // starts ≤ 10 AM
+
+// ---------------------------------------------------------------------------
+// Coverage-aware swap pass — runs after the main greedy assignment to
+// extend single-block shifts into peak-break splits when it closes a
+// real coverage gap on the morning/late edge. A peak-time break is only
+// allowed when the peak slot is currently over-covered (slack to lend).
+// ---------------------------------------------------------------------------
+
+const PEAK_SLOT_SET_INTERNAL = new Set(PEAK_SLOT_INDICES)
+
+/** True when this shift bitmap satisfies every dispatcher shape rule
+ *  (min 3h block, max 1 break, break-by-length, ≤9h daily). */
+function isValidShiftShape(slots: boolean[]): boolean {
+  const blocks = patternWorkBlocks(slots, SLOTS)
+  if (blocks.length === 0) return false
+  if (blocks.length > 2) return false // at most one break per shift
+  if (blocks.length > 1 && Math.min(...blocks) < MIN_BLOCK_HOURS) return false
+  const totalWork = blocks.reduce((s, h) => s + h, 0)
+  if (totalWork > 9) return false
+  const maxBreak = patternMaxBreakHours(slots, SLOTS)
+  if (maxBreak > MAX_BREAK_HARD_HOURS) return false
+  if (totalWork >= 8 && maxBreak < LONG_SHIFT_BREAK_MIN) return false
+  if (totalWork > 6 && totalWork < 8 && maxBreak < MED_SHIFT_BREAK_MIN) return false
+  return true
+}
+
+/** Net coverage gain of replacing oldSlots with newSlots, where `cov` is
+ *  the current per-slot coverage. Gains count for under-target slots and
+ *  losses count when dropping at-target slots below target. Over-target
+ *  slots can be lent freely (no penalty). */
+function computeCoverageGain(
+  oldSlots: boolean[],
+  newSlots: boolean[],
+  cov: number[],
+  req: number[],
+): number {
+  let net = 0
+  for (let i = 0; i < oldSlots.length; i++) {
+    const old = oldSlots[i] ? 1 : 0
+    const nw = newSlots[i] ? 1 : 0
+    if (old === nw) continue
+    if (old === 0 && nw === 1) {
+      // Adding coverage: gain if slot is under target
+      if (cov[i] < req[i]) net += 1
+      // small penalty for over-covering (still counts a tiny bit so we don't
+      // expand into already-saturated slots for no reason)
+      else net -= 0.1
+    } else {
+      // Removing coverage: loss only if it pushes us below target
+      const after = cov[i] - 1
+      if (after < req[i]) net -= 2
+    }
+  }
+  return net
+}
+
+/** Attempts to extend a single-block shift into a peak-break split that
+ *  closes a morning/late coverage gap. Returns the new bitmap or null. */
+function trySwapForCoverage(
+  slots: boolean[],
+  cov: number[],
+  req: number[],
+): boolean[] | null {
+  const blocks = patternWorkBlocks(slots, SLOTS)
+  // Only attempt swaps on simple single-block shifts. Multi-block patterns
+  // already have a break placed by the template designer.
+  if (blocks.length !== 1) return null
+  const totalWork = blocks[0]
+  if (totalWork >= 9) return null // already at daily max
+
+  const firstOn = slots.findIndex((v) => v)
+  const lastOn = (() => { for (let i = slots.length - 1; i >= 0; i--) if (slots[i]) return i; return -1 })()
+  if (firstOn < 0 || lastOn < 0) return null
+
+  // Find contiguous adjacent under-covered slots we could extend into.
+  const morningGain: number[] = []
+  for (let j = firstOn - 1; j >= 0; j--) {
+    if (cov[j] < req[j]) morningGain.unshift(j)
+    else break
+  }
+  const eveningGain: number[] = []
+  for (let j = lastOn + 1; j < slots.length; j++) {
+    if (cov[j] < req[j]) eveningGain.push(j)
+    else break
+  }
+  if (morningGain.length === 0 && eveningGain.length === 0) return null
+
+  // Try each side independently, prefer the side with more gap to close.
+  const sides = [
+    { ext: morningGain, hours: morningGain.reduce((s, j) => s + SLOTS[j].hours, 0) },
+    { ext: eveningGain, hours: eveningGain.reduce((s, j) => s + SLOTS[j].hours, 0) },
+  ].filter((s) => s.ext.length > 0).sort((a, b) => b.hours - a.hours)
+
+  for (const side of sides) {
+    // Build the extended shift (no break yet)
+    const extended = [...slots]
+    side.ext.forEach((j) => (extended[j] = true))
+    const extFirstOn = extended.findIndex((v) => v)
+    let extLastOn = -1
+    for (let i = extended.length - 1; i >= 0; i--) if (extended[i]) { extLastOn = i; break }
+
+    // Quick win: if extension keeps total ≤ 6 h we don't need any break.
+    const extWork = slotHours(extended)
+    if (extWork <= 6 && isValidShiftShape(extended) && computeCoverageGain(slots, extended, cov, req) > 0) {
+      return extended
+    }
+
+    // Otherwise we need a break. Required break duration by shift length.
+    const needBreak = extWork > 8 ? LONG_SHIFT_BREAK_MIN
+                    : extWork > 6 ? MED_SHIFT_BREAK_MIN
+                    : 0
+
+    // Try every contiguous break position that keeps both blocks ≥ 3 h
+    // and respects the peak-slot rule (peak slot in the break must be
+    // currently over-covered — we can only LEND slack we have).
+    let best: boolean[] | null = null
+    let bestGain = 0
+    for (let bs = extFirstOn + 1; bs < extLastOn; bs++) {
+      for (let bl = 1; bl <= 4; bl++) {
+        const be = bs + bl - 1
+        if (be >= extLastOn) break
+        // Build the break slot list
+        const breakSlots: number[] = []
+        let bh = 0
+        for (let k = bs; k <= be; k++) {
+          breakSlots.push(k)
+          bh += SLOTS[k].hours
+        }
+        if (bh < needBreak - 0.01) continue
+        // Peak-break check: only allow when over-covered now AND staying
+        // at or above target after this dispatcher steps off the slot.
+        const peakIssue = breakSlots.some((s) => PEAK_SLOT_SET_INTERNAL.has(s) && cov[s] - 1 < req[s])
+        if (peakIssue) continue
+        const candidate = [...extended]
+        breakSlots.forEach((s) => (candidate[s] = false))
+        if (!isValidShiftShape(candidate)) continue
+        const gain = computeCoverageGain(slots, candidate, cov, req)
+        if (gain > bestGain) {
+          best = candidate
+          bestGain = gain
+        }
+      }
+    }
+    if (best) return best
+  }
+  return null
+}
+
+/** Iterate the day's assignments and apply at most one swap per dispatcher
+ *  that improves coverage. Mutates the assignments array in place. */
+function coverageAwareSwapPass(
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
+  required: number[],
+): void {
+  const cov = new Array(SLOTS.length).fill(0)
+  for (const { pattern } of assignments) {
+    pattern.forEach((on, si) => { if (on) cov[si]++ })
+  }
+  for (let i = 0; i < assignments.length; i++) {
+    const orig = assignments[i].pattern
+    const swapped = trySwapForCoverage(orig, cov, required)
+    if (!swapped) continue
+    // Apply swap + update running coverage
+    orig.forEach((v, k) => { if (v) cov[k]-- })
+    swapped.forEach((v, k) => { if (v) cov[k]++ })
+    assignments[i].pattern = swapped
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Main generator
@@ -329,6 +502,13 @@ export function generateSchedule(
       assignments.push({ dispatcher, pattern: p.bool })
       usedIds.add(dispatcher.id)
     }
+
+    // Coverage-aware swap pass: extend single-block shifts into peak-break
+    // splits when adjacent slots are under-covered AND the peak slot we'd
+    // break at is currently over-covered (slack to lend). This is what
+    // lets michelle's Bridge 11a-5p become 9a-6p with a non-peak break
+    // when 9-10a is missing a body and the dispatcher has the headroom.
+    coverageAwareSwapPass(assignments, template.requiredCoverage)
 
     // Dispatchers not assigned are off today
     const dayOff = [
