@@ -32,6 +32,13 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
     (i) => required[i] > 0 || actual[i] > 0,
   )
 
+  // Work-week (Thu→Wed) the current day belongs to. Used to compute the
+  // per-dispatcher hours pill and days-off pill shown next to the name.
+  const weekLabel = schedule.dates.find((d) => d.date === date)?.weekLabel ?? ''
+  const weekDateSet = new Set(
+    schedule.dates.filter((d) => d.weekLabel === weekLabel).map((d) => d.date),
+  )
+
   const allRows = schedule.dispatcherSchedules.map((ds) => {
     const entry = ds.days.find((d) => d.date === date)
     return { ds, entry, isOff: !entry || entry.isOff }
@@ -113,6 +120,37 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     )}>
                       {ds.dispatcher.level === 'Senior' ? 'SR' : ds.dispatcher.level === 'Regular' ? 'RG' : 'TR'}
                     </span>
+                    {(() => {
+                      const weekH = ds.weeklyHours[weekLabel] ?? 0
+                      const offDays = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
+                      // Hours pill — colors signal load against the 45 h cap.
+                      const hoursClass =
+                        weekH > 45 ? 'bg-red-100 text-red-700 ring-1 ring-red-400' :
+                        weekH >= 36 ? 'bg-emerald-100 text-emerald-700' :
+                        weekH > 0 ? 'bg-amber-100 text-amber-700' :
+                        'bg-slate-100 text-slate-400'
+                      // Days-off pill — 2 d off = target, 1 d = shortfall,
+                      // 3+ d = under-utilized (usually time-off / blocked).
+                      const offClass =
+                        offDays === 0 ? 'bg-red-100 text-red-700' :
+                        offDays === 1 ? 'bg-amber-100 text-amber-700' :
+                        offDays === 2 ? 'bg-emerald-100 text-emerald-700' :
+                        'bg-slate-100 text-slate-500'
+                      return (
+                        <>
+                          <HoverHint label={`Week of ${weekLabel}: ${weekH.toFixed(1)}h / 45h cap`}>
+                            <span className={clsx('rounded px-1.5 text-[9px] font-bold tabular-nums', hoursClass)}>
+                              {weekH.toFixed(0)}h
+                            </span>
+                          </HoverHint>
+                          <HoverHint label={`${offDays} day${offDays === 1 ? '' : 's'} off this work-week (Thu→Wed)`}>
+                            <span className={clsx('rounded px-1.5 text-[9px] font-bold tabular-nums', offClass)}>
+                              {offDays}d off
+                            </span>
+                          </HoverHint>
+                        </>
+                      )
+                    })()}
                     {isOff && (() => {
                       const r = absenceReasons[ds.dispatcher.id]?.[date]
                       if (r) {
