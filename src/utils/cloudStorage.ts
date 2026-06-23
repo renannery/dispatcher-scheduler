@@ -1,34 +1,24 @@
 /**
  * Cloud storage for the team's "current" saved schedule.
  *
- * Backed by a single Supabase Postgres table:
- *
- *   create table schedules (
- *     team text primary key,
- *     data jsonb not null,
- *     start_date date not null,
- *     end_date date not null,
- *     updated_at timestamptz not null default now()
- *   );
- *
- *   alter table schedules enable row level security;
- *   create policy "anon read"  on schedules for select to anon using (true);
- *   create policy "anon write" on schedules for insert to anon with check (true);
- *   create policy "anon update" on schedules for update to anon using (true);
+ * Backed by a single GitHub Gist with one file per team
+ * (`dispatchers.json`, `drivers.json`), each containing a serialized
+ * SnapshotEnvelope.
  *
  * Env vars (set in Vercel + .env.local):
- *   VITE_SUPABASE_URL
- *   VITE_SUPABASE_ANON_KEY
+ *   VITE_GIST_ID     — the gist's id (the hash in its URL)
+ *   VITE_GIST_TOKEN  — a fine-grained PAT with "Gists - Read and write"
  *
- * Both are public (the anon key is meant to be embedded in the client);
- * the protection is the table-level RLS policies above. If you later add
- * auth, tighten the policies and require a session.
+ * Both end up in the bundle, so anyone who loads the app can read or
+ * overwrite the saved schedule. This is UX-level convenience, not real
+ * access control. Keep the PAT scoped to *just* gist read/write to
+ * limit blast radius if the bundle ever leaks publicly; revoke and
+ * rotate the token if that happens. For real auth: move data behind
+ * an authenticated API.
  *
  * If either env var is missing, every call here resolves to a "disabled"
  * result so the app keeps working as a local-only tool.
  */
-
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 import {
   type SnapshotEnvelope,
@@ -37,98 +27,117 @@ import {
   type TeamKind,
 } from './snapshot'
 
-const url  = import.meta.env.VITE_SUPABASE_URL  as string | undefined
-const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+const GIST_ID    = (import.meta.env.VITE_GIST_ID    as string | undefined)?.trim()
+const GIST_TOKEN = (import.meta.env.VITE_GIST_TOKEN as string | undefined)?.trim()
 
-export const cloudEnabled = !!(url && anon)
+export const cloudEnabled = !!(GIST_ID && GIST_TOKEN)
 
-let client: SupabaseClient | null = null
-function getClient(): SupabaseClient | null {
-  if (!cloudEnabled) return null
-  if (!client) client = createClient(url!, anon!, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  return client
+const API = 'https://api.github.com/gists'
+
+const teamFilename = (team: TeamKind) => `${team}.json`
+
+interface GistFile {
+  filename: string
+  content?: string
+  truncated?: boolean
+  /** Raw URL for fetching content when files are >1 MB and `truncated`. */
+  raw_url?: string
+}
+interface GistResponse {
+  id: string
+  files: Record<string, GistFile>
+  updated_at: string
 }
 
-/** Metadata for a saved schedule (no data blob) — fast pill render. */
+async function gistGet(): Promise<GistResponse> {
+  const r = await fetch(`${API}/${GIST_ID}`, {
+    headers: {
+      Authorization: `Bearer ${GIST_TOKEN}`,
+      Accept:        'application/vnd.github+json',
+    },
+    // Bypass aggressive browser HTTP cache so a Save → reload round-trip
+    // returns the just-written content.
+    cache: 'no-store',
+  })
+  if (!r.ok) throw new Error(`Gist GET failed (${r.status}): ${await r.text()}`)
+  return r.json()
+}
+
+async function gistPatch(files: Record<string, { content: string }>): Promise<GistResponse> {
+  const r = await fetch(`${API}/${GIST_ID}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization:   `Bearer ${GIST_TOKEN}`,
+      Accept:          'application/vnd.github+json',
+      'Content-Type':  'application/json',
+    },
+    body: JSON.stringify({ files }),
+  })
+  if (!r.ok) throw new Error(`Gist PATCH failed (${r.status}): ${await r.text()}`)
+  return r.json()
+}
+
+/** Read the saved envelope for a team, or null if no save exists yet. */
+export async function fetchSavedSnapshot(team: TeamKind): Promise<SnapshotEnvelope | null> {
+  if (!cloudEnabled) return null
+  const gist  = await gistGet()
+  const file  = gist.files[teamFilename(team)]
+  if (!file) return null
+  let content = file.content
+  // If GitHub truncated the inline content (>1 MB), fall back to the
+  // raw URL. The dispatcher snapshot easily exceeds this once you have
+  // multiple weeks + per-day per-slot bitmaps, so we always handle it.
+  if ((!content || file.truncated) && file.raw_url) {
+    const r = await fetch(file.raw_url, { cache: 'no-store' })
+    if (!r.ok) throw new Error(`Gist raw fetch failed (${r.status})`)
+    content = await r.text()
+  }
+  if (!content) return null
+  try {
+    return JSON.parse(content) as SnapshotEnvelope
+  } catch (e) {
+    throw new Error(`Gist file for ${team} is not valid JSON: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
+/** Metadata for the saved schedule — fast pill render. */
 export interface SavedScheduleMeta {
   team: TeamKind
   startDate: string
   endDate: string
-  updatedAt: string  // ISO timestamp
+  updatedAt: string  // ISO timestamp (from envelope.exportedAt)
 }
 
-interface SchedulesRow {
-  team: TeamKind
-  data: SnapshotEnvelope
-  start_date: string
-  end_date: string
-  updated_at: string
-}
-
-/** Returns just the metadata (date range + updated_at) for the pill. */
 export async function fetchSavedMetadata(team: TeamKind): Promise<SavedScheduleMeta | null> {
-  const c = getClient()
-  if (!c) return null
-  const { data, error } = await c
-    .from('schedules')
-    .select('team, start_date, end_date, updated_at')
-    .eq('team', team)
-    .maybeSingle<Pick<SchedulesRow, 'team' | 'start_date' | 'end_date' | 'updated_at'>>()
-  if (error) throw new Error(`Supabase fetchSavedMetadata: ${error.message}`)
-  if (!data) return null
+  const env = await fetchSavedSnapshot(team)
+  if (!env) return null
   return {
-    team: data.team,
-    startDate: data.start_date,
-    endDate: data.end_date,
-    updatedAt: data.updated_at,
+    team,
+    startDate: env.data.startDate,
+    endDate:   env.data.endDate,
+    updatedAt: env.exportedAt,
   }
 }
 
-/** Returns the full saved snapshot envelope for hydration. */
-export async function fetchSavedSnapshot(team: TeamKind): Promise<SnapshotEnvelope | null> {
-  const c = getClient()
-  if (!c) return null
-  const { data, error } = await c
-    .from('schedules')
-    .select('data')
-    .eq('team', team)
-    .maybeSingle<{ data: SnapshotEnvelope }>()
-  if (error) throw new Error(`Supabase fetchSavedSnapshot: ${error.message}`)
-  return data?.data ?? null
-}
-
-/** Upsert the team's current snapshot. Last-write-wins. */
+/** Overwrite the team's saved schedule. Last-write-wins. */
 export async function saveSnapshot(
   team: TeamKind,
   snapshotData: SnapshotData,
 ): Promise<SavedScheduleMeta> {
-  const c = getClient()
-  if (!c) throw new Error('Cloud storage is disabled — set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
+  if (!cloudEnabled) throw new Error('Cloud storage is disabled — set VITE_GIST_ID and VITE_GIST_TOKEN.')
   const envelope: SnapshotEnvelope = {
-    version: SCHEMA_VERSION,
+    version:    SCHEMA_VERSION,
     team,
     exportedAt: new Date().toISOString(),
-    data: snapshotData,
+    data:       snapshotData,
   }
-  const row = {
-    team,
-    data: envelope,
-    start_date: snapshotData.startDate,
-    end_date: snapshotData.endDate,
-    updated_at: new Date().toISOString(),
-  }
-  const { data, error } = await c
-    .from('schedules')
-    .upsert(row, { onConflict: 'team' })
-    .select('team, start_date, end_date, updated_at')
-    .single<Pick<SchedulesRow, 'team' | 'start_date' | 'end_date' | 'updated_at'>>()
-  if (error) throw new Error(`Supabase saveSnapshot: ${error.message}`)
+  await gistPatch({
+    [teamFilename(team)]: { content: JSON.stringify(envelope, null, 2) },
+  })
   return {
-    team: data.team,
-    startDate: data.start_date,
-    endDate: data.end_date,
-    updatedAt: data.updated_at,
+    team,
+    startDate: snapshotData.startDate,
+    endDate:   snapshotData.endDate,
+    updatedAt: envelope.exportedAt,
   }
 }

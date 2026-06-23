@@ -24,7 +24,7 @@ interface Props {
 }
 
 /** Compact "saved version" pill + Save button, mounted in each schedule
- *  page toolbar. Hidden when Supabase env vars aren't set so local-only
+ *  page toolbar. Hidden when cloud env vars aren't set so local-only
  *  installs don't see broken UI. */
 export function SavedScheduleBadge({ team, collectSnapshot, onSavedDiscovered }: Props) {
   const [meta, setMeta] = useState<SavedScheduleMeta | null>(null)

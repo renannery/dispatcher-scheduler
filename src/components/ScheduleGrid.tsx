@@ -335,9 +335,10 @@ export function ScheduleGrid() {
 
       {/* Action bar */}
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        {/* Saved-version pill + Save button — backed by Supabase, hidden
-            entirely when env vars aren't set. Sits at the top of the bar so
-            the user always sees which version is live in the shared store. */}
+        {/* Saved-version pill + Save button — backed by a GitHub Gist
+            (docs/cloud-setup.md), hidden entirely when env vars aren't set.
+            Sits at the top of the bar so the user always sees which
+            version is live in the shared store. */}
         {isAdmin && (
           <div className="flex flex-wrap items-center gap-2">
             <SavedScheduleBadge

@@ -1526,9 +1526,9 @@ export function DriverScheduleGrid() {
       )}
 
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-        {/* Saved-version pill + Save button — backed by Supabase, hidden
-            entirely when env vars aren't set OR when the viewer isn't admin
-            (Save is an edit action). */}
+        {/* Saved-version pill + Save button — backed by a GitHub Gist
+            (docs/cloud-setup.md), hidden when env vars aren't set OR
+            when the viewer isn't admin (Save is an edit action). */}
         {isAdmin && (
           <div className="flex flex-wrap items-center gap-2">
             <SavedScheduleBadge
