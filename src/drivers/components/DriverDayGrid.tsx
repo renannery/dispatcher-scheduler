@@ -158,8 +158,10 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
     //
     // `position: relative` so the NowLine (rendered as an absolutely-
     // positioned child) anchors to this wrapper's coordinate system,
-    // not the document body.
-    <div className="relative">
+    // not the document body. `overflow-x-auto` lets the wide hour grid
+    // scroll horizontally on narrow viewports instead of breaking the
+    // page layout.
+    <div className="relative overflow-x-auto">
       {/* Toggle for hidden OFF rows (only when there are any and no external filter) */}
       {hiddenOffCount > 0 && (
         <div className="flex items-center justify-end px-4 py-1.5 text-[11px] text-slate-400">

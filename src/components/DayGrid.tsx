@@ -72,7 +72,11 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
   return (
     // `position: relative` so the NowLine (absolutely positioned) anchors
     // to this wrapper's coordinate system instead of the page.
-    <div className="relative">
+    // `overflow-x-auto` lets the table scroll horizontally on narrow
+    // viewports — the 20-slot grid + sticky name/hrs columns is wider
+    // than the page on tablets / phones, especially with the admin-only
+    // Hrs column visible.
+    <div className="relative overflow-x-auto">
       {hiddenOffCount > 0 && (
         <div className="flex items-center justify-end px-4 py-1.5 text-[11px] text-slate-400">
           <button
