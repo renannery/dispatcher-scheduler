@@ -207,7 +207,13 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                   return (
                     <td
                       key={si}
-                      className="group cursor-pointer px-0.5 py-1"
+                      className={clsx(
+                        'group cursor-pointer px-0.5 py-1',
+                        // Red column tint when this slot is short. Matches the
+                        // header tint above so the full column reads as a
+                        // shortfall at a glance.
+                        shortSlots.has(si) && 'bg-red-50/70',
+                      )}
                       onClick={() => toggleDispatcherSlot(ds.dispatcher.id, date, si)}
                       title={
                         blocked
@@ -266,7 +272,13 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
               const r = required[si]
               const status = coverageStatus(a, r)
               return (
-                <td key={si} className="px-0.5 py-1 text-center">
+                <td
+                  key={si}
+                  className={clsx(
+                    'px-0.5 py-1 text-center',
+                    shortSlots.has(si) && 'bg-red-50/70',
+                  )}
+                >
                   <div
                     className={clsx(
                       'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
