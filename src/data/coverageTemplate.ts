@@ -60,6 +60,9 @@ const THU: DayTemplate = {
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //   morning gap + lunch peak + early dinner peak in a single shift)
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
@@ -84,6 +87,9 @@ const FRI: DayTemplate = {
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (10 AM–4 PM, 6 h single block — covers mid-morning + lunch + afternoon)
     [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //   morning gap + lunch peak + early dinner peak in a single shift)
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
@@ -164,8 +170,9 @@ const TUE: DayTemplate = {
   shiftPatterns: [
     // Early A  (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (10 AM–4 PM, 6 h single block)
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //   morning gap + lunch peak + early dinner peak in a single shift)
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–9:30 PM, ~8 h, 2 h break 2–4 PM — trimmed from 9.5 h)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
     // Late     (11 AM–2 PM + 5 PM–11 PM, 9 h, 3 h break 2–5 PM)
@@ -182,6 +189,9 @@ const WED: DayTemplate = {
   shiftPatterns: [
     // Early    (9 AM–3 PM, 6 h single block — covers morning + lunch peak)
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
+    //   morning gap + lunch peak + early dinner peak in a single shift)
+    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Bridge   (11 AM–5 PM, 6 h single block — covers lunch + afternoon)
