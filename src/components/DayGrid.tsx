@@ -63,10 +63,13 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
   const tableRef = useRef<HTMLTableElement | null>(null)
 
   // Slots where actual coverage is short of the target — used to tint the
-  // column header red so ops can scan a day and spot understaffed slots.
+  // column header + body cells red so ops can scan a day and spot
+  // understaffed slots. Any under-coverage qualifies (not just patterns
+  // outside the 15% tolerance band) — per user, missing one body is
+  // already a problem worth flagging in red.
   const shortSlots = new Set<number>()
   for (const si of visibleSlotIndices) {
-    if (coverageStatus(actual[si], required[si]) === 'short') shortSlots.add(si)
+    if (actual[si] < required[si]) shortSlots.add(si)
   }
 
   return (
@@ -309,21 +312,25 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
               const a = actual[si]
               const r = required[si]
               const status = coverageStatus(a, r)
+              // Any under-coverage (including the 1-body "mild" tier)
+              // gets the red treatment per user — missing one body is
+              // worth flagging, not just "off by 2+".
+              const isUnder = shortSlots.has(si)
               return (
                 <td
                   key={si}
                   className={clsx(
                     'px-0.5 py-1 text-center',
-                    shortSlots.has(si) && 'bg-red-50/70',
+                    isUnder && 'bg-red-50/70',
                   )}
                 >
                   <div
                     className={clsx(
                       'mx-auto inline-flex h-5 min-w-[28px] items-center justify-center rounded text-[10px] font-bold',
-                      status === 'ok'    && 'bg-emerald-100 text-emerald-700',
-                      status === 'mild'  && 'bg-amber-100 text-amber-700',
-                      status === 'short' && 'bg-red-100 text-red-700 ring-1 ring-red-400',
-                      status === 'over'  && 'bg-slate-100 text-slate-400',
+                      isUnder ? 'bg-red-100 text-red-700 ring-1 ring-red-400'
+                      : status === 'ok'    ? 'bg-emerald-100 text-emerald-700'
+                      : status === 'mild'  ? 'bg-amber-100 text-amber-700'
+                      : 'bg-slate-100 text-slate-400', // status === 'over'
                     )}
                     title={`Actual: ${a} | Required: ${r}`}
                   >
