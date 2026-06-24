@@ -245,6 +245,51 @@ function trySwapForCoverage(
   return null
 }
 
+/** Stretch shifts to fill single-body gaps. For each under-covered slot,
+ *  find an assignment whose pattern is adjacent (covers slot ±1) and
+ *  whose extension is shape-valid AND keeps the dispatcher's weekly
+ *  hours under the cap. Mirrors the user's manual "extend the closer
+ *  to slot 19" / "let an existing morning shift cover the missing 11
+ *  AM slot" — closed 5 gaps with +2.5h on one of their test weeks.
+ *  Runs BEFORE trim so any incidental over-cov can still be reclaimed. */
+function stretchToFillGaps(
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
+  required: number[],
+  weekHours: Record<string, Record<string, number>>,
+  wLabel: string,
+): void {
+  const cov = new Array(SLOTS.length).fill(0)
+  for (const { pattern } of assignments) {
+    pattern.forEach((on, i) => { if (on) cov[i]++ })
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let si = 0; si < cov.length; si++) {
+      if (cov[si] >= required[si]) continue
+      for (const a of assignments) {
+        if (a.pattern[si]) continue
+        const hasPrev = si > 0 && a.pattern[si - 1]
+        const hasNext = si < a.pattern.length - 1 && a.pattern[si + 1]
+        if (!hasPrev && !hasNext) continue
+        const trial = [...a.pattern]
+        trial[si] = true
+        if (!isValidShiftShape(trial)) continue
+        const newHours = slotHours(trial)
+        // weekHours is pre-shift (today's hours added at accumulation step
+        // after all passes), so the cap check is pre-shift + this day's
+        // post-stretch shift.
+        if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + newHours > WEEKLY_CAP_HOURS) continue
+        a.pattern = trial
+        cov[si]++
+        changed = true
+        break
+      }
+      if (changed) break
+    }
+  }
+}
+
 /** Trim over-covered slots to exact requirement. For each slot where
  *  actual cov > required, find an assignment whose pattern can drop
  *  that slot without (a) falling below the 5 h daily floor, (b) breaking
@@ -1043,6 +1088,12 @@ export function generateSchedule(
         }
       }
     }
+
+    // Stretch shifts to fill single-body gaps by extending an adjacent
+    // dispatcher's tail/head by 0.5-1h. Mirrors the manual closer
+    // extensions (Thu shamika → slot 19, Fri resgie → slot 19, etc).
+    // Runs BEFORE trim so any incidental over-cov can still be reclaimed.
+    stretchToFillGaps(assignments, dayRequired, weekHours, wLabel)
 
     // Trim over-covered slots down to the requirement. Runs LAST so it
     // sees the full final coverage from picker + swap + rescue + must-work.
