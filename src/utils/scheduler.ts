@@ -479,16 +479,14 @@ export function generateSchedule(
     const runningCov = new Array(SLOTS.length).fill(0)
 
     // ── Smart pattern ordering + drop ──────────────────────────────────
-    // Compute a "uniqueness" score per pattern: how many REQUIRED slots
-    // it's the ONLY pattern in the pool to cover. Late B is uniquely
-    // responsible for the closing slots (18, 19) — so it MUST go first
-    // in the picker, otherwise the picker may exhaust eligible
-    // dispatchers on filler patterns and leave the closer uncovered.
-    //
-    // Drop only happens when there are more patterns than working
-    // dispatchers; we drop the LEAST unique patterns. Either way, the
-    // surviving patterns are then re-sorted unique-first so the picker
-    // visits them in the right priority.
+    // "Uniqueness" = slots where THIS pattern is the only one in the
+    // pool covering a required slot, OR where the pool's covering
+    // patterns are still short of the requirement (req > coverers).
+    // The 2nd clause matters when two patterns share a critical slot
+    // (e.g. Late C + Late D both covering Sun 10-11 PM at req=3) —
+    // without it, both score 0 and get demoted/dropped, leaving the
+    // slot uncovered. Drop only fires when patterns > working
+    // dispatchers; lowest-scoring + shortest go first.
     const coverageCount = new Array(SLOTS.length).fill(0)
     for (const pp of sortedPatterns) {
       pp.bool.forEach((on, i) => { if (on) coverageCount[i]++ })
@@ -496,21 +494,19 @@ export function generateSchedule(
     const scoredPatterns = sortedPatterns.map((pp) => {
       let unique = 0
       for (let i = 0; i < pp.bool.length; i++) {
-        if (pp.bool[i] && coverageCount[i] === 1 && dayRequired[i] > 0) unique++
+        if (!pp.bool[i] || dayRequired[i] === 0) continue
+        if (coverageCount[i] === 1) unique++
+        else if (coverageCount[i] < dayRequired[i]) unique++
       }
       return { p: pp, unique }
     })
     let prioritizedPatterns = sortedPatterns
     const patternsToDrop = Math.max(0, sortedPatterns.length - sortedWorking.length)
     if (patternsToDrop > 0) {
-      // Drop the patternsToDrop with LOWEST uniqueness (ties → shortest).
       const dropSort = [...scoredPatterns].sort((a, b) => a.unique - b.unique || a.p.hours - b.p.hours)
       const dropped = new Set(dropSort.slice(0, patternsToDrop).map((x) => x.p))
       prioritizedPatterns = sortedPatterns.filter((pp) => !dropped.has(pp))
     }
-    // Final picker order: uniqueness DESC (critical patterns first),
-    // then morning-first (so night-rest constraints don't block them),
-    // then length DESC, then break ASC.
     prioritizedPatterns = [...prioritizedPatterns].sort((a, b) => {
       const ua = scoredPatterns.find((x) => x.p === a)!.unique
       const ub = scoredPatterns.find((x) => x.p === b)!.unique
@@ -675,25 +671,39 @@ export function generateSchedule(
         pattern.forEach((on, i) => { if (on) cov[i]++ })
       }
       for (const d of mustWork) {
-        // Pick the shortest fully-legal pattern that minimises new
-        // over-coverage (preference order: smallest excess → shorter
-        // hours → earlier start). Over-coverage cap is intentionally
-        // bypassed here — preventing a 3rd day off outranks it.
-        let pick: { p: typeof patternMeta[number]; over: number } | null = null
+        // Score every legal pattern by NET coverage benefit:
+        //   score = (gap-fills) - (over-coverage past req)
+        // Pick max score (positive = net coverage win). If every
+        // pattern scores negative, the LEAST-negative wins — that's
+        // the smallest over-coverage hit needed to keep this person
+        // off the 3rd-off list. Rescue pass already ran, so the
+        // gap-fills available here are the ones that exceed
+        // MAX_OVER_COVERAGE elsewhere in the same pattern — a real
+        // trade we're consciously accepting. Tiebreaks: prefer
+        // shorter shifts to limit the hours hit when neutral.
+        let pick: { p: typeof patternMeta[number]; score: number } | null = null
         for (const p of patternMeta) {
           if (p.isMorning && workedNightYesterday(d.id)) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
           if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
-          let over = 0
+          let fill = 0, over = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
             const newCov = cov[i] + 1
+            if (cov[i] < dayRequired[i]) fill++
             if (newCov > dayRequired[i]) over += newCov - dayRequired[i]
           }
-          if (!pick || over < pick.over || (over === pick.over && p.hours < pick.p.hours)) {
-            pick = { p, over }
-          }
+          // Fill weighted 2× over: closing one gap is worth two units
+          // of over-coverage. Captures the user's "I want gaps covered,
+          // not just more hours" rule — only assign over-cap patterns
+          // when they genuinely close coverage.
+          const score = fill * 2 - over
+          const better =
+            !pick ||
+            score > pick.score ||
+            (score === pick.score && p.hours < pick.p.hours)
+          if (better) pick = { p, score }
         }
         if (pick) {
           assignments.push({ dispatcher: d, pattern: pick.p.bool })
