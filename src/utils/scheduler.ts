@@ -245,6 +245,42 @@ function trySwapForCoverage(
   return null
 }
 
+/** Trim over-covered slots to exact requirement. For each slot where
+ *  actual cov > required, find an assignment whose pattern can drop
+ *  that slot without (a) falling below the 5 h daily floor, (b) breaking
+ *  min-block / break-shape rules (delegated to isValidShiftShape), or
+ *  (c) creating an under-cov elsewhere (we only drop the over-cov slot,
+ *  so other slots are untouched). Greedy, re-scans from slot 0 on each
+ *  successful drop. Mirrors the user's manual "trim until req is hit"
+ *  workflow that closed gaps while removing ~9% of total hours. */
+function trimToExactCoverage(
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
+  required: number[],
+): void {
+  const cov = new Array(SLOTS.length).fill(0)
+  for (const { pattern } of assignments) {
+    pattern.forEach((on, i) => { if (on) cov[i]++ })
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let si = 0; si < cov.length; si++) {
+      if (cov[si] <= required[si]) continue
+      for (const a of assignments) {
+        if (!a.pattern[si]) continue
+        const trial = [...a.pattern]
+        trial[si] = false
+        if (!isValidShiftShape(trial)) continue
+        a.pattern = trial
+        cov[si]--
+        changed = true
+        break
+      }
+      if (changed) break
+    }
+  }
+}
+
 /** Iterate the day's assignments and apply at most one swap per dispatcher
  *  that improves coverage. Mutates the assignments array in place. */
 function coverageAwareSwapPass(
@@ -927,6 +963,10 @@ export function generateSchedule(
         // time-off / 45 h cap.
       }
     }
+
+    // Trim over-covered slots down to the requirement. Runs LAST so it
+    // sees the full final coverage from picker + swap + rescue + must-work.
+    trimToExactCoverage(assignments, dayRequired)
 
     // Any leftover unassigned working dispatchers ARE off today — count
     // that toward their weekly off-day tally so the next day's
