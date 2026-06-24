@@ -520,9 +520,22 @@ export function generateSchedule(
       // Over-coverage cap: skip the whole pattern if it would push ANY
       // already-covered slot past required + MAX_OVER_COVERAGE. Avoids
       // 4/1 / 5/3 / 5/1 stacking that the user explicitly called out.
+      // Over-coverage cap is TIERED:
+      //   - Default cap: req + MAX_OVER_COVERAGE (req+1). User's hard
+      //     rule — never 5/1, 5/3.
+      //   - When the pattern ALSO closes a deficit elsewhere, the cap
+      //     loosens by one (req+2) for incidentally-covered low-req
+      //     slots. This lets evening closers run when they bring a
+      //     missing body to a critical late slot but happen to stack
+      //     a low-req slot like 8:30-9 PM. Never req+3.
+      let fillsDeficit = false
+      for (let i = 0; i < p.bool.length; i++) {
+        if (p.bool[i] && runningCov[i] < dayRequired[i]) { fillsDeficit = true; break }
+      }
+      const cap = MAX_OVER_COVERAGE + (fillsDeficit ? 1 : 0)
       let overShoots = false
       for (let i = 0; i < p.bool.length; i++) {
-        if (p.bool[i] && runningCov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) {
+        if (p.bool[i] && runningCov[i] + 1 > dayRequired[i] + cap) {
           overShoots = true; break
         }
       }
@@ -613,21 +626,22 @@ export function generateSchedule(
         if (totalDeficit === 0) break
         if (rescuePool.length === 0) break
 
-        // Score every (pattern × dispatcher) combo by how many missing
-        // required-slots it would fill if assigned. Pick the best.
-        // A pattern is invalid if it would push ANY slot above
-        // (required + MAX_OVER_COVERAGE) — keeps the 4/1, 5/3 stacking
-        // out of the rescue too.
+        // Score every (pattern × dispatcher) combo by net coverage
+        // benefit: fill - over. Hard ceiling at req+3 so rescue can't
+        // pile bodies indefinitely on a low-req slot just because the
+        // pattern also closes a critical late-evening gap. fill > 0
+        // is the gating condition.
         let best: { p: typeof patternMeta[number]; dIdx: number; score: number } | null = null
         for (const p of patternMeta) {
-          let score = 0
-          let overShoots = false
+          let fill = 0, over = 0, blown = false
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
-            if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) { overShoots = true; break }
-            if (deficit[i] > 0) score++
+            if (deficit[i] > 0) fill++
+            if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) over++
+            if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE + 2) { blown = true; break }
           }
-          if (overShoots || score === 0) continue
+          if (fill === 0 || blown) continue
+          const score = fill - over
           for (let i = 0; i < rescuePool.length; i++) {
             const d = rescuePool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue

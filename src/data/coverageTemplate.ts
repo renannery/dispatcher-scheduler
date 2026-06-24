@@ -105,6 +105,9 @@ const FRI: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
+    //   Fri slot 19 (req=1) + slot 18 (req=3) can stack 2 bodies)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -152,6 +155,10 @@ const SUN: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late C   (5 PM–11:30 PM, 6.5 h single block — closer)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    // Late D   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
+    //   Sun slots 17/18 (req=3, only Late C otherwise) can stack a 2nd
+    //   body. Uniqueness scoring credits both C+D for slot 18 deficit.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -173,6 +180,9 @@ const MON: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
+    //   Mon dinner-peak + closer slots can stack a 2nd body)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
   ],
 }
 
