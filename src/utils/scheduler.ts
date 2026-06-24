@@ -7,11 +7,9 @@ import {
   MAX_BREAK_HARD_HOURS,
   MAX_BREAK_PREFERRED_HOURS,
   MED_SHIFT_BREAK_MIN,
-  midShiftBreakSlots,
   MIN_BLOCK_HOURS,
   patternMaxBreakHours,
   patternWorkBlocks,
-  PEAK_SLOT_INDICES,
   SLOTS,
 } from '@/data/coverageTemplate'
 import type {
@@ -79,14 +77,17 @@ function lastActiveSlot(pattern: boolean[]): number {
 const NIGHT_SLOT_THRESHOLD = 17  // 9 PM
 const MORNING_SLOT_THRESHOLD = 2 // starts ≤ 10 AM
 
+/** Hard over-coverage ceiling per slot. With required=R the slot can have
+ *  at most R+1 dispatchers — never 4/1, never 5/3. Keeps the picker from
+ *  piling people onto a slot we don't actually need them at. */
+const MAX_OVER_COVERAGE = 1
+
 // ---------------------------------------------------------------------------
 // Coverage-aware swap pass — runs after the main greedy assignment to
 // extend single-block shifts into peak-break splits when it closes a
 // real coverage gap on the morning/late edge. A peak-time break is only
 // allowed when the peak slot is currently over-covered (slack to lend).
 // ---------------------------------------------------------------------------
-
-const PEAK_SLOT_SET_INTERNAL = new Set(PEAK_SLOT_INDICES)
 
 /** True when this shift bitmap satisfies every dispatcher shape rule
  *  (min 3h block, max 1 break, break-by-length, ≤9h daily). */
@@ -207,10 +208,12 @@ function trySwapForCoverage(
           bh += SLOTS[k].hours
         }
         if (bh < needBreak - 0.01) continue
-        // Peak-break check: only allow when over-covered now AND staying
-        // at or above target after this dispatcher steps off the slot.
-        const peakIssue = breakSlots.some((s) => PEAK_SLOT_SET_INTERNAL.has(s) && cov[s] - 1 < req[s])
-        if (peakIssue) continue
+        // Only constraint: the dispatcher stepping off this slot can't
+        // push it BELOW required coverage. Peak slots no longer get any
+        // special protection — the user's directive is "as long as the
+        // numbers match, peak breaks are fine."
+        const dropsBelow = breakSlots.some((s) => cov[s] - 1 < req[s])
+        if (dropsBelow) continue
         const candidate = [...extended]
         breakSlots.forEach((s) => (candidate[s] = false))
         if (!isValidShiftShape(candidate)) continue
@@ -342,10 +345,8 @@ export function generateSchedule(
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
 
     // Pre-compute pattern metadata (once per day)
-    const peakSlotSet = new Set(PEAK_SLOT_INDICES)
     const patternMeta = template.shiftPatterns.map((raw, idx) => {
       const bool = raw.map((v) => v === 1)
-      const breakSlots = midShiftBreakSlots(bool)
       return {
         idx,
         bool,
@@ -354,21 +355,15 @@ export function generateSchedule(
         last: lastActiveSlot(bool),
         isMorning: firstActiveSlot(bool) <= MORNING_SLOT_THRESHOLD,
         maxBreak: patternMaxBreakHours(bool, SLOTS),
-        // True when this pattern's mid-shift break overlaps lunch (12-2 PM)
-        // or dinner (5-8 PM) peak slots. Such patterns are *allowed* but
-        // sorted AFTER peak-safe ones so the picker uses them only when no
-        // peak-safe option remains — i.e., as flexibility for the leftover
-        // dispatcher rather than a default.
-        hasPeakBreak: breakSlots.some((i) => peakSlotSet.has(i)),
       }
     })
 
-    // Sort patterns: morning first, then PEAK-SAFE first (peak-break shifts
-    // sort after equivalent peak-safe ones), then LONGEST shifts first so
-    // they go to the least-loaded dispatcher. Break-size penalty (over the
-    // 2 h preferred cap) is the last tiebreak.
+    // Sort patterns: morning first, then LONGEST shifts first so they go
+    // to the least-loaded dispatcher. Break-size penalty (over the 2 h
+    // preferred cap) is the last tiebreak. Peak-time breaks no longer get
+    // a sort penalty — coverage targets + the over-coverage cap (req+1)
+    // are the constraints that matter.
     const byLengthThenBreak = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
-      if (a.hasPeakBreak !== b.hasPeakBreak) return a.hasPeakBreak ? 1 : -1
       if (a.hours !== b.hours) return b.hours - a.hours
       const aOverPref = a.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
       const bOverPref = b.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
@@ -475,6 +470,12 @@ export function generateSchedule(
     const assignments: Array<{ dispatcher: (typeof dispatchers)[0]; pattern: boolean[] }> = []
     let seniorAssigned = false
 
+    // Day's required coverage — needed up here so the picker can enforce
+    // the over-coverage cap (no slot > required + 1). Used again later
+    // by the swap pass + rescue.
+    const dayRequired = effectiveCoverage(dow, coverageOverrides)
+    const runningCov = new Array(SLOTS.length).fill(0)
+
     // ── Smart pattern ordering + drop ──────────────────────────────────
     // Compute a "uniqueness" score per pattern: how many REQUIRED slots
     // it's the ONLY pattern in the pool to cover. Late B is uniquely
@@ -486,7 +487,6 @@ export function generateSchedule(
     // dispatchers; we drop the LEAST unique patterns. Either way, the
     // surviving patterns are then re-sorted unique-first so the picker
     // visits them in the right priority.
-    const dayRequiredForDrop = effectiveCoverage(dow, coverageOverrides)
     const coverageCount = new Array(SLOTS.length).fill(0)
     for (const pp of sortedPatterns) {
       pp.bool.forEach((on, i) => { if (on) coverageCount[i]++ })
@@ -494,7 +494,7 @@ export function generateSchedule(
     const scoredPatterns = sortedPatterns.map((pp) => {
       let unique = 0
       for (let i = 0; i < pp.bool.length; i++) {
-        if (pp.bool[i] && coverageCount[i] === 1 && dayRequiredForDrop[i] > 0) unique++
+        if (pp.bool[i] && coverageCount[i] === 1 && dayRequired[i] > 0) unique++
       }
       return { p: pp, unique }
     })
@@ -519,6 +519,17 @@ export function generateSchedule(
     })
 
     for (const p of prioritizedPatterns) {
+      // Over-coverage cap: skip the whole pattern if it would push ANY
+      // already-covered slot past required + MAX_OVER_COVERAGE. Avoids
+      // 4/1 / 5/3 / 5/1 stacking that the user explicitly called out.
+      let overShoots = false
+      for (let i = 0; i < p.bool.length; i++) {
+        if (p.bool[i] && runningCov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) {
+          overShoots = true; break
+        }
+      }
+      if (overShoots) continue
+
       // Morning patterns exclude dispatchers who worked night yesterday.
       // Also exclude any dispatcher whose blocks overlap this pattern, and
       // any whose current weekly hours + this shift would push past the cap.
@@ -559,6 +570,7 @@ export function generateSchedule(
       if (dispatcher.level === 'Senior') seniorAssigned = true
       assignments.push({ dispatcher, pattern: p.bool })
       usedIds.add(dispatcher.id)
+      p.bool.forEach((on, i) => { if (on) runningCov[i]++ })
     }
 
     // Coverage-aware swap pass: extend single-block shifts into peak-break
@@ -566,9 +578,8 @@ export function generateSchedule(
     // break at is currently over-covered (slack to lend). This is what
     // lets michelle's Bridge 11a-5p become 9a-6p with a non-peak break
     // when 9-10a is missing a body and the dispatcher has the headroom.
-    const dayRequired = effectiveCoverage(dow, coverageOverrides)
-    // Snapshot pre-shift week hours so the swap can do a cap check —
-    // weekHours hasn't been bumped by today's assignments yet.
+    // dayRequired was computed earlier (before the picker) so the
+    // over-coverage cap could use it. Just pass it through.
     const preShiftWeekHours: Record<string, number> = {}
     for (const d of dispatchers) preShiftWeekHours[d.id] = weekHours[d.id][wLabel] ?? 0
     coverageAwareSwapPass(assignments, dayRequired, preShiftWeekHours)
@@ -601,13 +612,19 @@ export function generateSchedule(
 
         // Score every (pattern × dispatcher) combo by how many missing
         // required-slots it would fill if assigned. Pick the best.
+        // A pattern is invalid if it would push ANY slot above
+        // (required + MAX_OVER_COVERAGE) — keeps the 4/1, 5/3 stacking
+        // out of the rescue too.
         let best: { p: typeof patternMeta[number]; dIdx: number; score: number } | null = null
         for (const p of patternMeta) {
           let score = 0
+          let overShoots = false
           for (let i = 0; i < p.bool.length; i++) {
-            if (p.bool[i] && deficit[i] > 0) score++
+            if (!p.bool[i]) continue
+            if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) { overShoots = true; break }
+            if (deficit[i] > 0) score++
           }
-          if (score === 0) continue
+          if (overShoots || score === 0) continue
           for (let i = 0; i < electedOffPool.length; i++) {
             const d = electedOffPool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue
