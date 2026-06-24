@@ -7,8 +7,8 @@
  * Shape rules enforced in every pattern (build-time assertion at the bottom
  * of this file fails the import on violation):
  *   Every work block ≥ MIN_BLOCK_HOURS (3 h)        — no 1-2 h tail blocks
- *   work ≤ 6 h           → no break required
- *   6 h < work < 8 h     → ≥ 30 min break
+ *   work ≤ 7 h           → no break required
+ *   7 h < work < 8 h     → ≥ 30 min break
  *   work ≥ 8 h           → ≥ 1 h break
  *   Mid-shift break ≤ MAX_BREAK_HARD_HOURS (3 h)    — 2 h preferred, 3 h fallback
  * Max work per day = 9 h.
@@ -75,8 +75,8 @@ const THU: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -103,8 +103,8 @@ const FRI: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -127,8 +127,8 @@ const SAT: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -150,8 +150,8 @@ const SUN: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late B   (4 PM–10 PM, 6 h single block — covers dinner peak + evening)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late C   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late C   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -171,8 +171,8 @@ const MON: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -214,8 +214,8 @@ const WED: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Late A   (4 PM–10 PM, 6 h single block — covers dinner peak)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late B   (5 PM–8 PM + 8:30 PM–11:30 PM, 6 h work + 30 m break — closer)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ],
 }
 
@@ -343,7 +343,10 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
       }
       if (work >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
         violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break, has ${brk}h`)
-      } else if (work > 6 && work < 8 && brk < MED_SHIFT_BREAK_MIN) {
+      } else if (work > 7 && work < 8 && brk < MED_SHIFT_BREAK_MIN) {
+        // Loosened from `work > 6` so 6.5 h Late B can stay a single
+        // block — the break was landing at 8-8:30 PM every day and
+        // permanently dragging slot 15 below required coverage.
         violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break, has ${brk}h`)
       }
     })

@@ -39,9 +39,12 @@ const WEEKLY_CAP_HOURS = 45
 
 /** Soft target the picker tries to keep everyone under, even when there's
  *  spare cap room. Dispatchers are on fixed monthly salary so a tight
- *  band keeps weekly hours equitable. Only relaxed when no eligible
- *  dispatcher fits — then we fall back to the legal 45 h cap. */
-const SOFT_WEEKLY_TARGET = 38
+ *  band keeps weekly hours equitable. Set to 42 h (≈the floor the user
+ *  wants every dispatcher near) so the picker fills closer to that
+ *  before deprioritizing them — was 38 which left most dispatchers in
+ *  the 30-36 h band. Only relaxed when no eligible dispatcher fits —
+ *  then we fall back to the legal 45 h cap. */
+const SOFT_WEEKLY_TARGET = 42
 
 function slotHours(slots: boolean[]): number {
   return slots.reduce((sum, on, i) => sum + (on ? SLOTS[i].hours : 0), 0)
@@ -585,30 +588,35 @@ export function generateSchedule(
     coverageAwareSwapPass(assignments, dayRequired, preShiftWeekHours)
     coverageRequired[dateStr] = dayRequired
 
-    // ── Zero-coverage rescue pass ──────────────────────────────────────
-    // Hard constraint: never leave a required slot at 0 coverage.
-    // If the main + swap passes left gaps (typically because the picker
-    // ran out of eligible candidates for a late pattern), pull an
-    // elected-off dispatcher back into duty. Overrides the
-    // 2-days-off-per-week target but still respects the 45 h legal cap
-    // and the night-rest / time-off constraints.
+    // ── Coverage rescue pass ───────────────────────────────────────────
+    // Hard constraint: never leave a required slot under-covered if we
+    // have any off-pool dispatcher who could legally fill it.
+    //
+    // Pool: everyone NOT currently assigned — elected-off AND unassigned
+    // working (the leftover dispatcher when patternsNeeded < availablePool
+    // and the picker only assigned one-per-pattern). Filling from the
+    // unassigned-working pool is the cheapest path to lift weekly hours
+    // from 30-36 h into the 40+ band the user wants.
     //
     // Each iteration picks the (dispatcher, pattern) combo that fills
-    // the MOST uncovered required slots in one go — that way a Bridge
-    // shift covers slots 9-10 simultaneously instead of forcing a
-    // second rescue iteration.
+    // the MOST under-covered required slots in one go. Respects 45 h
+    // legal cap, time-off, night-rest, and the over-coverage cap
+    // (req + MAX_OVER_COVERAGE).
     {
       const cov = new Array(SLOTS.length).fill(0)
       for (const { pattern } of assignments) {
         pattern.forEach((on, i) => { if (on) cov[i]++ })
       }
-      const electedOffPool = availablePool.filter((d) => electedOffIds.has(d.id))
+      const rescuePool = [
+        ...availablePool.filter((d) => electedOffIds.has(d.id)),
+        ...sortedWorking.filter((d) => !usedIds.has(d.id)),
+      ]
       for (let safety = 0; safety < 50; safety++) {
         // Build the deficit vector: how many MORE bodies each slot needs.
         const deficit = dayRequired.map((req, i) => Math.max(0, req - cov[i]))
         const totalDeficit = deficit.reduce((s, d) => s + d, 0)
         if (totalDeficit === 0) break
-        if (electedOffPool.length === 0) break
+        if (rescuePool.length === 0) break
 
         // Score every (pattern × dispatcher) combo by how many missing
         // required-slots it would fill if assigned. Pick the best.
@@ -625,8 +633,8 @@ export function generateSchedule(
             if (deficit[i] > 0) score++
           }
           if (overShoots || score === 0) continue
-          for (let i = 0; i < electedOffPool.length; i++) {
-            const d = electedOffPool[i]
+          for (let i = 0; i < rescuePool.length; i++) {
+            const d = rescuePool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
             if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
@@ -637,15 +645,19 @@ export function generateSchedule(
         if (!best) break
 
         // Rescue the best combo.
-        const d = electedOffPool[best.dIdx]
+        const d = rescuePool[best.dIdx]
         assignments.push({ dispatcher: d, pattern: best.p.bool })
         usedIds.add(d.id)
         best.p.bool.forEach((on, j) => { if (on) cov[j]++ })
-        weekOffDays[d.id][wLabel] = Math.max(0, (weekOffDays[d.id][wLabel] ?? 1) - 1)
-        totalElectedOff[d.id] = Math.max(0, totalElectedOff[d.id] - 1)
-        if (isWeekend) weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
-        electedOffIds.delete(d.id)
-        electedOffPool.splice(best.dIdx, 1)
+        // Roll back off-day accounting only for elected-off dispatchers —
+        // unassigned working ones never had it bumped in the first place.
+        if (electedOffIds.has(d.id)) {
+          weekOffDays[d.id][wLabel] = Math.max(0, (weekOffDays[d.id][wLabel] ?? 1) - 1)
+          totalElectedOff[d.id] = Math.max(0, totalElectedOff[d.id] - 1)
+          if (isWeekend) weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
+          electedOffIds.delete(d.id)
+        }
+        rescuePool.splice(best.dIdx, 1)
       }
     }
 
