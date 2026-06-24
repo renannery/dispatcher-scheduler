@@ -449,8 +449,17 @@ export function generateSchedule(
     // Phase B — fairness pick: how many in availablePool to elect OFF today.
     // The day needs at most `patternsNeeded` dispatchers; everyone past that
     // is potentially off. Cap each dispatcher at MAX_DAYS_OFF_PER_WEEK total.
+    //
+    // On Fri/Sat/Sun, ALWAYS elect at least 1 person off — user wants the
+    // weekend rotation to touch the heavy days too, not park 7 dispatchers
+    // there every week. Templates have ~10 patterns each on those days
+    // (more than the 7-person roster), so without this nudge nobody ever
+    // gets a weekend off.
     const patternsNeeded = template.shiftPatterns.length
-    const desiredElectedOff = Math.max(0, availablePool.length - patternsNeeded)
+    let desiredElectedOff = Math.max(0, availablePool.length - patternsNeeded)
+    if (isWeekend && availablePool.length >= 2) {
+      desiredElectedOff = Math.max(desiredElectedOff, 1)
+    }
 
     const eligibleForOff = availablePool.filter(
       (d) => (weekOffDays[d.id][wLabel] ?? 0) < MAX_DAYS_OFF_PER_WEEK,
@@ -694,10 +703,18 @@ export function generateSchedule(
       for (const { pattern } of assignments) {
         pattern.forEach((on, i) => { if (on) cov[i]++ })
       }
-      const rescuePool = [
-        ...availablePool.filter((d) => electedOffIds.has(d.id)),
-        ...sortedWorking.filter((d) => !usedIds.has(d.id)),
-      ]
+      // On weekends, elected-off stays elected-off — rescue can only
+      // pull from the unassigned-working pool. Otherwise the rescue
+      // would immediately un-elect the weekend off-day we just
+      // assigned, defeating the rotation. (Weekday rescues can still
+      // pull from elected-off because we have plenty of weekdays to
+      // cycle through and we'd rather close a gap.)
+      const rescuePool = isWeekend
+        ? sortedWorking.filter((d) => !usedIds.has(d.id))
+        : [
+            ...availablePool.filter((d) => electedOffIds.has(d.id)),
+            ...sortedWorking.filter((d) => !usedIds.has(d.id)),
+          ]
       for (let safety = 0; safety < 50; safety++) {
         // Build the deficit vector: how many MORE bodies each slot needs.
         const deficit = dayRequired.map((req, i) => Math.max(0, req - cov[i]))
