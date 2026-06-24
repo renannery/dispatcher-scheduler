@@ -655,10 +655,14 @@ export function generateSchedule(
       const remainingCov = [...coverageCount]
       for (const cand of dropSort) {
         if (dropped.size >= patternsToDrop) break
-        // Would dropping cand leave any required slot with 0 cover?
+        // Would dropping cand leave any required slot under-covered?
+        // Was `< 1` (only protected against 0 cover) which let one of
+        // {Early A, Early B} drop on Sun where both are needed (req=2,
+        // both cover slot 0). Now `< dayRequired[i]` so mandatory
+        // patterns survive.
         let unsafe = false
         for (let i = 0; i < cand.p.bool.length; i++) {
-          if (cand.p.bool[i] && dayRequired[i] > 0 && remainingCov[i] - 1 < 1) { unsafe = true; break }
+          if (cand.p.bool[i] && dayRequired[i] > 0 && remainingCov[i] - 1 < dayRequired[i]) { unsafe = true; break }
         }
         if (unsafe) continue
         dropped.add(cand.p)
@@ -688,17 +692,43 @@ export function generateSchedule(
     while (remainingPatterns.size > 0) {
       let p: typeof prioritizedPatterns[number] | null = null
       let bestScore = -Infinity
+      // Precompute, for each slot, how many *remaining* patterns cover
+      // it. A slot whose deficit equals or exceeds that count has
+      // mandatory coverage: every covering pattern MUST be picked or
+      // the slot can't fill. Used to boost critical patterns in the
+      // scoring below. Caught on Sun 8-10 AM (req=2) where only Early
+      // A + Early B cover slot 0; without this boost the picker would
+      // pick Early A then jump to a long Split, leaving slot 0 at 1/2.
+      const altCountPerSlot = new Array(SLOTS.length).fill(0)
       for (const cand of remainingPatterns) {
-        let fill = 0, over = 0
+        for (let i = 0; i < cand.bool.length; i++) {
+          if (cand.bool[i]) altCountPerSlot[i]++
+        }
+      }
+      for (const cand of remainingPatterns) {
+        let fill = 0, over = 0, criticality = 0
         for (let i = 0; i < cand.bool.length; i++) {
           if (!cand.bool[i]) continue
-          if (runningCov[i] < dayRequired[i]) fill++
-          else if (runningCov[i] >= dayRequired[i]) over++
+          if (runningCov[i] < dayRequired[i]) {
+            fill++
+            const deficit = dayRequired[i] - runningCov[i]
+            // Mandatory or near-mandatory: deficit can only be filled by
+            // a small set of patterns. Boost massively so critical
+            // patterns get picked while dispatchers still remain.
+            // `<= deficit + 1` catches both strict-mandatory (only N
+            // patterns cover an N-deficit slot — all must be picked)
+            // and near-mandatory (N+1 patterns for N-deficit — one slack,
+            // but the picker often eats that slack on a long high-fill
+            // pattern and runs out of dispatchers before the slot fills).
+            // Caught on Fri 11-11:30 PM (req=1, 2 covering patterns) —
+            // neither was picked early without this broader boost.
+            if (altCountPerSlot[i] <= deficit + 1) criticality += 1000
+          } else if (runningCov[i] >= dayRequired[i]) over++
         }
         // fill*10 - over: a fresh deficit-fill is worth ten over-cov
         // bodies. Subtract the static-priority index so equally-scored
         // patterns fall back to the smart-drop / uniqueness ordering.
-        const score = fill * 10 - over - (staticOrder.get(cand) ?? 0) * 0.01
+        const score = fill * 10 - over - (staticOrder.get(cand) ?? 0) * 0.01 + criticality
         if (score > bestScore) { bestScore = score; p = cand }
       }
       if (!p) break
