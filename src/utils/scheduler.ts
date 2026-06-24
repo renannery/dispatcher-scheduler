@@ -231,6 +231,9 @@ function trySwapForCoverage(
 function coverageAwareSwapPass(
   assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
   required: number[],
+  /** Pre-shift weekly hours per dispatcher id. Used to reject swaps
+   *  that would push the dispatcher past the 45 h legal cap. */
+  preShiftWeekHours?: Record<string, number>,
 ): void {
   const cov = new Array(SLOTS.length).fill(0)
   for (const { pattern } of assignments) {
@@ -240,6 +243,15 @@ function coverageAwareSwapPass(
     const orig = assignments[i].pattern
     const swapped = trySwapForCoverage(orig, cov, required)
     if (!swapped) continue
+    // Cap check: the original shift's hours were already in weekHours
+    // counted upstream; the SWAP adds (newHours - oldHours). Reject the
+    // swap if that delta pushes the dispatcher past the legal cap.
+    if (preShiftWeekHours) {
+      const id = assignments[i].dispatcher.id
+      const delta = slotHours(swapped) - slotHours(orig)
+      const projected = (preShiftWeekHours[id] ?? 0) + slotHours(swapped)
+      if (delta > 0 && projected > WEEKLY_CAP_HOURS) continue
+    }
     // Apply swap + update running coverage
     orig.forEach((v, k) => { if (v) cov[k]-- })
     swapped.forEach((v, k) => { if (v) cov[k]++ })
@@ -436,10 +448,6 @@ export function generateSchedule(
       if (isWeekend) weekendOffTotal[id] += 1
     }
 
-    const offToday: typeof dispatchers = [
-      ...availablePool.filter((d) => electedOffIds.has(d.id)),
-      ...blockedToday,
-    ]
     const cappedDispatchers = cappedToday
     const workingPool = availablePool.filter((d) => !electedOffIds.has(d.id))
 
@@ -467,7 +475,50 @@ export function generateSchedule(
     const assignments: Array<{ dispatcher: (typeof dispatchers)[0]; pattern: boolean[] }> = []
     let seniorAssigned = false
 
-    for (const p of sortedPatterns) {
+    // ── Smart pattern ordering + drop ──────────────────────────────────
+    // Compute a "uniqueness" score per pattern: how many REQUIRED slots
+    // it's the ONLY pattern in the pool to cover. Late B is uniquely
+    // responsible for the closing slots (18, 19) — so it MUST go first
+    // in the picker, otherwise the picker may exhaust eligible
+    // dispatchers on filler patterns and leave the closer uncovered.
+    //
+    // Drop only happens when there are more patterns than working
+    // dispatchers; we drop the LEAST unique patterns. Either way, the
+    // surviving patterns are then re-sorted unique-first so the picker
+    // visits them in the right priority.
+    const dayRequiredForDrop = effectiveCoverage(dow, coverageOverrides)
+    const coverageCount = new Array(SLOTS.length).fill(0)
+    for (const pp of sortedPatterns) {
+      pp.bool.forEach((on, i) => { if (on) coverageCount[i]++ })
+    }
+    const scoredPatterns = sortedPatterns.map((pp) => {
+      let unique = 0
+      for (let i = 0; i < pp.bool.length; i++) {
+        if (pp.bool[i] && coverageCount[i] === 1 && dayRequiredForDrop[i] > 0) unique++
+      }
+      return { p: pp, unique }
+    })
+    let prioritizedPatterns = sortedPatterns
+    const patternsToDrop = Math.max(0, sortedPatterns.length - sortedWorking.length)
+    if (patternsToDrop > 0) {
+      // Drop the patternsToDrop with LOWEST uniqueness (ties → shortest).
+      const dropSort = [...scoredPatterns].sort((a, b) => a.unique - b.unique || a.p.hours - b.p.hours)
+      const dropped = new Set(dropSort.slice(0, patternsToDrop).map((x) => x.p))
+      prioritizedPatterns = sortedPatterns.filter((pp) => !dropped.has(pp))
+    }
+    // Final picker order: uniqueness DESC (critical patterns first),
+    // then morning-first (so night-rest constraints don't block them),
+    // then length DESC, then break ASC.
+    prioritizedPatterns = [...prioritizedPatterns].sort((a, b) => {
+      const ua = scoredPatterns.find((x) => x.p === a)!.unique
+      const ub = scoredPatterns.find((x) => x.p === b)!.unique
+      if (ua !== ub) return ub - ua
+      if (a.isMorning !== b.isMorning) return a.isMorning ? -1 : 1
+      if (a.hours !== b.hours) return b.hours - a.hours
+      return a.maxBreak - b.maxBreak
+    })
+
+    for (const p of prioritizedPatterns) {
       // Morning patterns exclude dispatchers who worked night yesterday.
       // Also exclude any dispatcher whose blocks overlap this pattern, and
       // any whose current weekly hours + this shift would push past the cap.
@@ -479,7 +530,11 @@ export function generateSchedule(
         if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) return false
         return true
       })
-      if (eligible.length === 0) break
+      // Continue (not break) so a later pattern still gets a chance even
+      // when this one has zero eligible candidates — otherwise Late B
+      // gets silently skipped when an earlier pattern's filter rejects
+      // everyone, leaving the closing slots uncovered.
+      if (eligible.length === 0) continue
 
       // Hours-balance preference: prefer dispatchers whose post-shift weekly
       // hours stay at or below the soft target (38 h). This stops one
@@ -512,14 +567,78 @@ export function generateSchedule(
     // lets michelle's Bridge 11a-5p become 9a-6p with a non-peak break
     // when 9-10a is missing a body and the dispatcher has the headroom.
     const dayRequired = effectiveCoverage(dow, coverageOverrides)
-    coverageAwareSwapPass(assignments, dayRequired)
+    // Snapshot pre-shift week hours so the swap can do a cap check —
+    // weekHours hasn't been bumped by today's assignments yet.
+    const preShiftWeekHours: Record<string, number> = {}
+    for (const d of dispatchers) preShiftWeekHours[d.id] = weekHours[d.id][wLabel] ?? 0
+    coverageAwareSwapPass(assignments, dayRequired, preShiftWeekHours)
     coverageRequired[dateStr] = dayRequired
 
-    // Dispatchers not assigned are off today
+    // ── Zero-coverage rescue pass ──────────────────────────────────────
+    // Hard constraint: never leave a required slot at 0 coverage.
+    // If the main + swap passes left gaps (typically because the picker
+    // ran out of eligible candidates for a late pattern), pull an
+    // elected-off dispatcher back into duty. Overrides the
+    // 2-days-off-per-week target but still respects the 45 h legal cap
+    // and the night-rest / time-off constraints.
+    //
+    // Each iteration picks the (dispatcher, pattern) combo that fills
+    // the MOST uncovered required slots in one go — that way a Bridge
+    // shift covers slots 9-10 simultaneously instead of forcing a
+    // second rescue iteration.
+    {
+      const cov = new Array(SLOTS.length).fill(0)
+      for (const { pattern } of assignments) {
+        pattern.forEach((on, i) => { if (on) cov[i]++ })
+      }
+      const electedOffPool = availablePool.filter((d) => electedOffIds.has(d.id))
+      for (let safety = 0; safety < 50; safety++) {
+        // Build the deficit vector: how many MORE bodies each slot needs.
+        const deficit = dayRequired.map((req, i) => Math.max(0, req - cov[i]))
+        const totalDeficit = deficit.reduce((s, d) => s + d, 0)
+        if (totalDeficit === 0) break
+        if (electedOffPool.length === 0) break
+
+        // Score every (pattern × dispatcher) combo by how many missing
+        // required-slots it would fill if assigned. Pick the best.
+        let best: { p: typeof patternMeta[number]; dIdx: number; score: number } | null = null
+        for (const p of patternMeta) {
+          let score = 0
+          for (let i = 0; i < p.bool.length; i++) {
+            if (p.bool[i] && deficit[i] > 0) score++
+          }
+          if (score === 0) continue
+          for (let i = 0; i < electedOffPool.length; i++) {
+            const d = electedOffPool[i]
+            if (p.isMorning && workedNightYesterday(d.id)) continue
+            const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+            if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
+            if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+            if (!best || score > best.score) best = { p, dIdx: i, score }
+          }
+        }
+        if (!best) break
+
+        // Rescue the best combo.
+        const d = electedOffPool[best.dIdx]
+        assignments.push({ dispatcher: d, pattern: best.p.bool })
+        usedIds.add(d.id)
+        best.p.bool.forEach((on, j) => { if (on) cov[j]++ })
+        weekOffDays[d.id][wLabel] = Math.max(0, (weekOffDays[d.id][wLabel] ?? 1) - 1)
+        totalElectedOff[d.id] = Math.max(0, totalElectedOff[d.id] - 1)
+        if (isWeekend) weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
+        electedOffIds.delete(d.id)
+        electedOffPool.splice(best.dIdx, 1)
+      }
+    }
+
+    // Dispatchers not assigned are off today. Built AFTER the rescue
+    // pass so rescued dispatchers correctly move out of the off pool.
     const dayOff = [
       ...sortedWorking.filter((d) => !usedIds.has(d.id)),
       ...cappedDispatchers,
-      ...offToday,
+      ...availablePool.filter((d) => electedOffIds.has(d.id)),
+      ...blockedToday,
     ]
 
     // Accumulate coverage and build schedule entries
