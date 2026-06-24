@@ -33,14 +33,17 @@ type PdfAction =
   | { type: 'admin' }
   | { type: 'team' }
   | { type: 'individual'; dispatcherId: string; name: string }
+  | { type: 'individual-compact'; dispatcherId: string; name: string }
 
 interface PdfMenuProps {
   dispatchers: { id: string; name: string; color: string }[]
   loading: boolean
   onSelect: (action: PdfAction) => void
+  /** Non-admin mode shows only individual options (no Admin/Team). */
+  individualOnly?: boolean
 }
 
-function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
+function PdfMenu({ dispatchers, loading, onSelect, individualOnly }: PdfMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -71,51 +74,61 @@ function PdfMenu({ dispatchers, loading, onSelect }: PdfMenuProps) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1.5 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-          {/* Admin */}
-          <button
-            onClick={() => pick({ type: 'admin' })}
-            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
-          >
-            <Shield className="h-4 w-4 text-blue-600 shrink-0" />
-            <div>
-              <div className="font-semibold text-slate-800">Admin</div>
-              <div className="text-xs text-slate-400">All dispatchers + hours</div>
-            </div>
-          </button>
+        <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[80vh] w-60 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+          {/* Admin + Team — admin-only */}
+          {!individualOnly && (
+            <>
+              <button
+                onClick={() => pick({ type: 'admin' })}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
+              >
+                <Shield className="h-4 w-4 text-blue-600 shrink-0" />
+                <div>
+                  <div className="font-semibold text-slate-800">Admin</div>
+                  <div className="text-xs text-slate-400">All dispatchers + hours + coverage</div>
+                </div>
+              </button>
+              <button
+                onClick={() => pick({ type: 'team' })}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
+              >
+                <Users className="h-4 w-4 text-emerald-600 shrink-0" />
+                <div>
+                  <div className="font-semibold text-slate-800">Team</div>
+                  <div className="text-xs text-slate-400">All dispatchers, no hours</div>
+                </div>
+              </button>
+              <div className="mx-4 border-t border-slate-100 my-1" />
+            </>
+          )}
 
-          {/* Team */}
-          <button
-            onClick={() => pick({ type: 'team' })}
-            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-slate-50"
-          >
-            <Users className="h-4 w-4 text-emerald-600 shrink-0" />
-            <div>
-              <div className="font-semibold text-slate-800">Team</div>
-              <div className="text-xs text-slate-400">All dispatchers, no hours</div>
-            </div>
-          </button>
-
-          {/* Individual divider */}
-          <div className="mx-4 border-t border-slate-100 my-1" />
           <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-            Individual
+            {individualOnly ? 'Your schedule' : 'Individual'}
           </div>
 
           {dispatchers.map((d) => (
-            <button
-              key={d.id}
-              onClick={() => pick({ type: 'individual', dispatcherId: d.id, name: d.name })}
-              className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition hover:bg-slate-50"
-            >
-              <div
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                style={{ backgroundColor: d.color }}
+            <div key={d.id} className="flex items-stretch border-b border-slate-50 last:border-0">
+              <button
+                onClick={() => pick({ type: 'individual', dispatcherId: d.id, name: d.name })}
+                className="flex flex-1 items-center gap-3 px-4 py-2 text-left text-sm transition hover:bg-slate-50"
+                title="Full schedule (letter size)"
               >
-                {d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
-              </div>
-              <span className="text-slate-700">{d.name}</span>
-            </button>
+                <div
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                  style={{ backgroundColor: d.color }}
+                >
+                  {d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                </div>
+                <span className="text-slate-700">{d.name}</span>
+              </button>
+              <button
+                onClick={() => pick({ type: 'individual-compact', dispatcherId: d.id, name: d.name })}
+                title="Phone-friendly compact version"
+                className="flex items-center gap-1 px-2.5 text-[10px] font-bold text-violet-700 hover:bg-violet-50"
+              >
+                📱
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -270,9 +283,10 @@ export function ScheduleGrid() {
     setPdfLoading(true)
     try {
       const mod = await import('@/utils/pdfExporter')
-      if (action.type === 'admin')      await mod.exportAdminPDF(schedule)
-      if (action.type === 'team')       await mod.exportTeamPDF(schedule)
-      if (action.type === 'individual') await mod.exportIndividualPDF(schedule, action.dispatcherId)
+      if (action.type === 'admin')              await mod.exportAdminPDF(schedule)
+      if (action.type === 'team')               await mod.exportTeamPDF(schedule)
+      if (action.type === 'individual')         await mod.exportIndividualPDF(schedule, action.dispatcherId)
+      if (action.type === 'individual-compact') await mod.exportIndividualCompactPDF(schedule, action.dispatcherId)
     } finally {
       setPdfLoading(false)
     }
@@ -467,6 +481,17 @@ export function ScheduleGrid() {
           </button>
         </div>
         </div>
+        )}
+        {/* Non-admin: still let dispatchers grab their own PDF. */}
+        {!isAdmin && (
+          <div className="flex justify-end">
+            <PdfMenu
+              dispatchers={dispatchers}
+              loading={pdfLoading}
+              onSelect={handlePdfSelect}
+              individualOnly
+            />
+          </div>
         )}
       </div>
 

@@ -2,6 +2,7 @@ import { Document, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer
 import { format, parseISO } from 'date-fns'
 
 import { SLOTS } from '@/data/coverageTemplate'
+import { shortHour } from '@/utils/displayHelpers'
 import type { DispatcherLevel, DispatcherSchedule, GeneratedSchedule } from '@/types/schedule'
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,29 @@ const SA = StyleSheet.create({
                 borderBottomWidth: 1, borderBottomColor: T.slate100 },
   dayLblTxt: { fontSize: 8.5, fontFamily: 'Helvetica-Bold', color: T.slate500 },
 
+  // Hour-label header row — sits above the per-dispatcher bars so you
+  // can tell what time each slot represents (matches the on-screen
+  // DayGrid hour header). hourLeft mirrors the dot+name+level pill
+  // widths in dRow so the cell strip aligns with the bar above.
+  hourRow:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
+                paddingVertical: 3, backgroundColor: T.slate50,
+                borderBottomWidth: 0.5, borderBottomColor: T.slate200 },
+  hourLeft:  { width: 7 + 5 + 44 + 21 },  // dDot + name + level pill
+  hourStrip: { flex: 1, flexDirection: 'row', marginHorizontal: 7 },
+  hourCell:  { flex: 1, alignItems: 'center' },
+  hourTxt:   { fontSize: 5.5, color: T.slate500, fontFamily: 'Helvetica-Bold' },
+  hourRight: { width: 44 },
+
+  // Coverage row — actual / required at the bottom of each day
+  covRow:    { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
+                paddingVertical: 3, backgroundColor: T.slate100,
+                borderTopWidth: 0.5, borderTopColor: T.slate200 },
+  covLeft:   { width: 7 + 5 + 44 + 21, fontSize: 6.5, color: T.slate500, fontFamily: 'Helvetica-Bold' },
+  covStrip:  { flex: 1, flexDirection: 'row', marginHorizontal: 7 },
+  covCell:   { flex: 1, alignItems: 'center', justifyContent: 'center', height: 11 },
+  covTxt:    { fontSize: 6, fontFamily: 'Helvetica-Bold' },
+  covRight:  { width: 44 },
+
   // Dispatcher row
   dRow:      { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
                 paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: T.slate50 },
@@ -235,51 +259,92 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                 </View>
 
                 {/* Day groups */}
-                {days.map((di) => (
-                  <View key={di.date} style={SA.dayGroup} wrap={false}>
-                    <View style={SA.dayLblRow}>
-                      <Text style={SA.dayLblTxt}>{di.dayLabel}</Text>
-                    </View>
-                    {schedule.dispatcherSchedules.map((ds) => {
-                      const entry = ds.days.find((d) => d.date === di.date)
-                      if (!entry) return null
-                      const lc = levelColors(ds.dispatcher.level)
-                      return (
-                        <View key={ds.dispatcher.id} style={SA.dRow}>
-                          <View style={[SA.dDot, { backgroundColor: ds.dispatcher.color }]} />
-                          <Text style={SA.dName}>{ds.dispatcher.name.split(' ')[0]}</Text>
-                          <View style={[SA.dLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
-                            <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
-                          </View>
-                          <View style={SA.barWrap}>
-                            <View style={SA.bar}>
-                              {entry.slots.map((on, i) => (
-                                <View key={i} style={[SA.cell, {
-                                  backgroundColor: on ? ds.dispatcher.color : T.slate100,
-                                  borderTopLeftRadius:     i === 0     ? 2 : 0,
-                                  borderBottomLeftRadius:  i === 0     ? 2 : 0,
-                                  borderTopRightRadius:    i === n - 1 ? 2 : 0,
-                                  borderBottomRightRadius: i === n - 1 ? 2 : 0,
-                                }]} />
-                              ))}
+                {days.map((di) => {
+                  const required = schedule.coverageRequired?.[di.date] ?? []
+                  const actual   = schedule.coverageActual?.[di.date]   ?? []
+                  return (
+                    <View key={di.date} style={SA.dayGroup} wrap={false}>
+                      <View style={SA.dayLblRow}>
+                        <Text style={SA.dayLblTxt}>{di.dayLabel}</Text>
+                      </View>
+                      {/* Hour-label header */}
+                      <View style={SA.hourRow}>
+                        <View style={SA.hourLeft} />
+                        <View style={SA.hourStrip}>
+                          {SLOTS.map((s, i) => (
+                            <View key={i} style={SA.hourCell}>
+                              <Text style={SA.hourTxt}>{shortHour(s.label)}</Text>
                             </View>
-                            {!entry.isOff && (
-                              <Text style={SA.shiftTxt}>{shiftStr(entry.slots)}</Text>
-                            )}
-                          </View>
-                          <View style={SA.dRight}>
-                            {entry.isOff
-                              ? <Text style={SA.dOff}>OFF</Text>
-                              : <Text style={[SA.dHours, { color: ds.dispatcher.color }]}>
-                                  {entry.totalHours.toFixed(1)}h
-                                </Text>
-                            }
-                          </View>
+                          ))}
                         </View>
-                      )
-                    })}
-                  </View>
-                ))}
+                        <View style={SA.hourRight} />
+                      </View>
+                      {schedule.dispatcherSchedules.map((ds) => {
+                        const entry = ds.days.find((d) => d.date === di.date)
+                        if (!entry) return null
+                        const lc = levelColors(ds.dispatcher.level)
+                        return (
+                          <View key={ds.dispatcher.id} style={SA.dRow}>
+                            <View style={[SA.dDot, { backgroundColor: ds.dispatcher.color }]} />
+                            <Text style={SA.dName}>{ds.dispatcher.name.split(' ')[0]}</Text>
+                            <View style={[SA.dLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
+                              <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
+                            </View>
+                            <View style={SA.barWrap}>
+                              <View style={SA.bar}>
+                                {entry.slots.map((on, i) => (
+                                  <View key={i} style={[SA.cell, {
+                                    backgroundColor: on ? ds.dispatcher.color : T.slate100,
+                                    borderTopLeftRadius:     i === 0     ? 2 : 0,
+                                    borderBottomLeftRadius:  i === 0     ? 2 : 0,
+                                    borderTopRightRadius:    i === n - 1 ? 2 : 0,
+                                    borderBottomRightRadius: i === n - 1 ? 2 : 0,
+                                  }]} />
+                                ))}
+                              </View>
+                              {!entry.isOff && (
+                                <Text style={SA.shiftTxt}>{shiftStr(entry.slots)}</Text>
+                              )}
+                            </View>
+                            <View style={SA.dRight}>
+                              {entry.isOff
+                                ? <Text style={SA.dOff}>OFF</Text>
+                                : <Text style={[SA.dHours, { color: ds.dispatcher.color }]}>
+                                    {entry.totalHours.toFixed(1)}h
+                                  </Text>
+                              }
+                            </View>
+                          </View>
+                        )
+                      })}
+                      {/* Coverage row — actual / required per slot */}
+                      {required.length > 0 && (
+                        <View style={SA.covRow}>
+                          <Text style={SA.covLeft}>Coverage</Text>
+                          <View style={SA.covStrip}>
+                            {SLOTS.map((_, i) => {
+                              const a = actual[i] ?? 0
+                              const r = required[i] ?? 0
+                              const under = r > 0 && a < r
+                              const over = r > 0 && a > r + 1
+                              const ok = r > 0 && a >= r && a <= r + 1
+                              const bg = under ? '#fee2e2' : ok ? '#d1fae5' : over ? '#f1f5f9' : 'transparent'
+                              const fg = under ? '#b91c1c' : ok ? '#047857' : T.slate400
+                              return (
+                                <View key={i} style={[SA.covCell, { backgroundColor: bg }]}>
+                                  <Text style={[SA.covTxt, { color: fg }]}>
+                                    {r > 0 ? `${a}/${r}` : ''}
+                                  </Text>
+                                </View>
+                              )
+                            })}
+                          </View>
+                          <View style={SA.covRight} />
+                        </View>
+                      )}
+                    </View>
+                  )
+                })}
               </View>
             )
           })}
@@ -450,6 +515,102 @@ function IndividualDoc({ ds, schedule }: IndividualDocProps) {
 }
 
 // ---------------------------------------------------------------------------
+// ── COMPACT INDIVIDUAL PDF (phone-friendly card list, one page if it fits) ─
+// ---------------------------------------------------------------------------
+
+const SC = StyleSheet.create({
+  // Mobile-portrait-ish proportions so dispatchers can read it on a phone
+  // without zooming. A6 = 105 × 148 mm — close to a phone screen.
+  page:      { backgroundColor: T.slate50, padding: 10 },
+
+  hdr:       { backgroundColor: T.blue700, borderRadius: 6, padding: 10, marginBottom: 8 },
+  hdrRow:    { flexDirection: 'row', alignItems: 'center' },
+  avatar:    { width: 32, height: 32, borderRadius: 16, alignItems: 'center',
+                justifyContent: 'center', marginRight: 8 },
+  avTxt:     { color: T.white, fontSize: 12, fontFamily: 'Helvetica-Bold' },
+  name:      { color: T.white, fontSize: 13, fontFamily: 'Helvetica-Bold' },
+  period:    { color: T.blue200, fontSize: 7.5, marginTop: 1 },
+
+  wHead:     { backgroundColor: T.slate100, padding: 5, borderRadius: 4,
+                marginTop: 4, marginBottom: 2,
+                flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  wLbl:      { fontSize: 8.5, fontFamily: 'Helvetica-Bold', color: T.slate800 },
+  wHrs:      { fontSize: 8, color: T.slate500 },
+
+  dayRow:    { flexDirection: 'row', alignItems: 'center',
+                paddingHorizontal: 6, paddingVertical: 4,
+                borderBottomWidth: 0.5, borderBottomColor: T.slate100 },
+  dayLbl:    { width: 56, fontSize: 8, fontFamily: 'Helvetica-Bold', color: T.slate700 },
+  dayShift:  { flex: 1, fontSize: 8, color: T.slate700 },
+  dayHrs:    { width: 36, fontSize: 8, fontFamily: 'Helvetica-Bold', textAlign: 'right' },
+  off:       { fontSize: 8, color: T.slate400, fontStyle: 'italic' },
+})
+
+interface CompactDocProps {
+  ds: DispatcherSchedule
+  schedule: GeneratedSchedule
+}
+
+function CompactDoc({ ds, schedule }: CompactDocProps) {
+  const { dispatcher } = ds
+  const period = `${format(parseISO(schedule.startDate), 'MMM d')} – ${format(
+    parseISO(schedule.endDate), 'MMM d, yyyy',
+  )}`
+  const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
+
+  return (
+    <Document>
+      <Page size="A6" style={SC.page}>
+        {/* Header */}
+        <View style={SC.hdr}>
+          <View style={SC.hdrRow}>
+            <View style={[SC.avatar, { backgroundColor: dispatcher.color }]}>
+              <Text style={SC.avTxt}>{initials(dispatcher.name)}</Text>
+            </View>
+            <View>
+              <Text style={SC.name}>{dispatcher.name}</Text>
+              <Text style={SC.period}>{period}</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Per-week list of day-rows */}
+        {weekLabels.map((wl) => {
+          const days = schedule.dates.filter((d) => d.weekLabel === wl)
+          const wh   = ds.weeklyHours[wl] ?? 0
+          return (
+            <View key={wl} wrap={false}>
+              <View style={SC.wHead}>
+                <Text style={SC.wLbl}>{wl}</Text>
+                <Text style={SC.wHrs}>{wh.toFixed(1)}h</Text>
+              </View>
+              {days.map((di) => {
+                const entry = ds.days.find((d) => d.date === di.date)
+                if (!entry) return null
+                // Drop the year + month — phone screens are narrow.
+                // dayLabel = "Thu, June 25th" → "Thu 25"
+                const dayShort = di.dayLabel.replace(/, [A-Z][a-z]+ /, ' ').replace(/(st|nd|rd|th)$/, '')
+                return (
+                  <View key={di.date} style={SC.dayRow}>
+                    <Text style={SC.dayLbl}>{dayShort}</Text>
+                    {entry.isOff
+                      ? <Text style={[SC.dayShift, SC.off]}>off</Text>
+                      : <Text style={SC.dayShift}>{shiftStr(entry.slots)}</Text>}
+                    <Text style={[SC.dayHrs, { color: entry.isOff ? T.slate400 : dispatcher.color }]}>
+                      {entry.isOff ? '—' : `${entry.totalHours.toFixed(1)}h`}
+                    </Text>
+                  </View>
+                )
+              })}
+            </View>
+          )
+        })}
+      </Page>
+    </Document>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Public export functions (lazy-loadable — call via dynamic import)
 // ---------------------------------------------------------------------------
 
@@ -476,4 +637,15 @@ export async function exportIndividualPDF(
   const blob = await pdf(<IndividualDoc ds={ds} schedule={schedule} />).toBlob()
   const safe = ds.dispatcher.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
   await triggerDownload(blob, `schedule_${safe}_${periodFilename(schedule)}.pdf`)
+}
+
+export async function exportIndividualCompactPDF(
+  schedule: GeneratedSchedule,
+  dispatcherId: string,
+): Promise<void> {
+  const ds = schedule.dispatcherSchedules.find((d) => d.dispatcher.id === dispatcherId)
+  if (!ds) return
+  const blob = await pdf(<CompactDoc ds={ds} schedule={schedule} />).toBlob()
+  const safe = ds.dispatcher.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+  await triggerDownload(blob, `schedule_${safe}_phone_${periodFilename(schedule)}.pdf`)
 }
