@@ -737,7 +737,7 @@ export function smoothTransitions(args: {
     const candidates = assignments
       .filter((a) => {
         if (a.pattern[i]) return false
-        const { start, end, breaks } = shiftBoundaries(a.pattern)
+        const { start, breaks } = shiftBoundaries(a.pattern)
         if (start < 0) return false
         return breaks.some((b) => b.start <= i && i <= b.end)
       })
@@ -1001,7 +1001,7 @@ export function generateSchedule(
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
   const coverageRequired: Record<string, number[]> = {}
-  const coverageWarnings: Record<string, { peak: PeakKey; reason: string }[]> = {}
+  const coverageWarnings: NonNullable<GeneratedSchedule['coverageWarnings']> = {}
 
   let dayIndex = seed
 
