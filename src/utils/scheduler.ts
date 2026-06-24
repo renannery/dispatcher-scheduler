@@ -892,12 +892,16 @@ export function generateSchedule(
 
     // Dispatchers not assigned are off today. Built AFTER the rescue
     // pass so rescued dispatchers correctly move out of the off pool.
+    // The final !usedIds filter is defensive — must-work + rescue can
+    // assign dispatchers who were also in electedOffIds without
+    // clearing the set, producing duplicate scheduleMap entries
+    // (work + OFF) for the same date.
     const dayOff = [
       ...sortedWorking.filter((d) => !usedIds.has(d.id)),
       ...cappedDispatchers,
       ...availablePool.filter((d) => electedOffIds.has(d.id)),
       ...blockedToday,
-    ]
+    ].filter((d) => !usedIds.has(d.id))
 
     // Accumulate coverage and build schedule entries
     const actualCov = new Array(SLOTS.length).fill(0)
