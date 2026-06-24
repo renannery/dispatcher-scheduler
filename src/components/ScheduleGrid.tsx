@@ -278,12 +278,17 @@ export function ScheduleGrid() {
     }
   }
 
-  // Peak weekly hours per dispatcher for the action bar
+  // Peak weekly hours per dispatcher for the action bar, plus the
+  // period-total split-shift count (worked day with a mid-shift break
+  // ≥ 2 h — disruptive enough that the gap can't be used productively).
   const totalsByPerson = schedule.dispatcherSchedules.map((ds) => ({
     name:  ds.dispatcher.name,
     color: ds.dispatcher.color,
     level: ds.dispatcher.level,
     hours: Math.max(0, ...Object.values(ds.weeklyHours)),
+    totalSplits: ds.days.filter(
+      (d) => !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
+    ).length,
   }))
 
   // Weekend-rotation feasibility: for everyone to cycle through one Fri,
@@ -379,8 +384,8 @@ export function ScheduleGrid() {
         <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">peak wk</span>
-          {totalsByPerson.map(({ name, hours, color, level }) => (
-            <div key={name} className="flex items-center gap-1.5 text-sm" title={`${name}: ${hours.toFixed(1)}h peak week`}>
+          {totalsByPerson.map(({ name, hours, color, level, totalSplits }) => (
+            <div key={name} className="flex items-center gap-1.5 text-sm" title={`${name}: ${hours.toFixed(1)}h peak week · ${totalSplits} split shift${totalSplits === 1 ? '' : 's'} across the period`}>
               <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
               <span className="font-medium text-slate-700">{name.split(' ')[0]}</span>
               <span className={clsx(
@@ -392,6 +397,14 @@ export function ScheduleGrid() {
                 {level === 'Senior' ? 'SR' : level === 'Regular' ? 'RG' : 'TR'}
               </span>
               <span className={clsx('font-bold', hoursStatusColor(hours))}>{hours.toFixed(1)}h</span>
+              {totalSplits > 0 && (
+                <span
+                  className="rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700"
+                  title={`${totalSplits} split shift${totalSplits === 1 ? '' : 's'} (break ≥ 2 h) across the entire period`}
+                >
+                  ⤳{totalSplits}
+                </span>
+              )}
             </div>
           ))}
         </div>

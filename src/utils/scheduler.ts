@@ -449,17 +449,16 @@ export function generateSchedule(
     const cappedDispatchers = cappedToday
     const workingPool = availablePool.filter((d) => !electedOffIds.has(d.id))
 
-    // Sort available dispatchers by ascending weekly hours → balances totals
-    // Balance sort: prefer dispatchers cumulatively behind on the
-    // schedule (totalHoursWorked ASC), with this-week hours as a
-    // secondary tiebreak so within a week we still pull from the
-    // least-loaded. Dispatchers are on fixed monthly salary so a tight
-    // total-hours band is more important than perfectly equal weekly
-    // hours — the cumulative tracker self-corrects drift week over week.
+    // Balance sort: prefer this-week-behind dispatchers FIRST so each
+    // calendar week ends up with a tight hour spread (was running 27-40 h
+    // wide), then break ties on cumulative total to keep the period-long
+    // total band tight too. The cumulative side still self-corrects
+    // because last week's loser usually starts this week's pick order.
     const sortedWorking = [...workingPool].sort((a, b) => {
-      const tA = totalHoursWorked[a.id], tB = totalHoursWorked[b.id]
-      if (tA !== tB) return tA - tB
-      return (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0)
+      const wA = weekHours[a.id][wLabel] ?? 0
+      const wB = weekHours[b.id][wLabel] ?? 0
+      if (wA !== wB) return wA - wB
+      return totalHoursWorked[a.id] - totalHoursWorked[b.id]
     })
 
     // Night-rest check: did this dispatcher work a night shift yesterday?
@@ -658,6 +657,63 @@ export function generateSchedule(
           electedOffIds.delete(d.id)
         }
         rescuePool.splice(best.dIdx, 1)
+      }
+    }
+
+    // ── Must-work pass ────────────────────────────────────────────────
+    // Hard cap MAX_DAYS_OFF_PER_WEEK at the assignment layer (not just
+    // the elected-off slice). Anyone in availablePool who is NOT used
+    // today and who would land at 3+ days off this week must work,
+    // even if it stacks coverage above req+1. The user's rule: never
+    // 3 days off — wasted resources while gaps remain.
+    {
+      const mustWork = availablePool.filter(
+        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) >= MAX_DAYS_OFF_PER_WEEK,
+      )
+      const cov = new Array(SLOTS.length).fill(0)
+      for (const { pattern } of assignments) {
+        pattern.forEach((on, i) => { if (on) cov[i]++ })
+      }
+      for (const d of mustWork) {
+        // Pick the shortest fully-legal pattern that minimises new
+        // over-coverage (preference order: smallest excess → shorter
+        // hours → earlier start). Over-coverage cap is intentionally
+        // bypassed here — preventing a 3rd day off outranks it.
+        let pick: { p: typeof patternMeta[number]; over: number } | null = null
+        for (const p of patternMeta) {
+          if (p.isMorning && workedNightYesterday(d.id)) continue
+          const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+          if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
+          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+          let over = 0
+          for (let i = 0; i < p.bool.length; i++) {
+            if (!p.bool[i]) continue
+            const newCov = cov[i] + 1
+            if (newCov > dayRequired[i]) over += newCov - dayRequired[i]
+          }
+          if (!pick || over < pick.over || (over === pick.over && p.hours < pick.p.hours)) {
+            pick = { p, over }
+          }
+        }
+        if (pick) {
+          assignments.push({ dispatcher: d, pattern: pick.p.bool })
+          usedIds.add(d.id)
+          pick.p.bool.forEach((on, i) => { if (on) cov[i]++ })
+        }
+        // If nothing fits (all patterns blocked or week-cap-blown), we
+        // accept the 3rd off as last resort — better than violating
+        // time-off / 45 h cap.
+      }
+    }
+
+    // Any leftover unassigned working dispatchers ARE off today — count
+    // that toward their weekly off-day tally so the next day's
+    // eligibleForOff filter sees them at the cap. Without this the cap
+    // was silently bypassed and we'd see 3+ days off slip through.
+    for (const d of sortedWorking) {
+      if (!usedIds.has(d.id)) {
+        weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        if (isWeekend) weekendOffTotal[d.id] += 1
       }
     }
 
