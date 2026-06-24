@@ -402,11 +402,20 @@ export function generateSchedule(
     ]
 
     // Phase A — classify dispatchers into:
-    //   blockedToday  — fully blocked by recurring/per-date time-off
+    //   blockedToday  — fully blocked by recurring/per-date time-off,
+    //                   OR forced off because today is the last day of
+    //                   their work-week and they haven't had an off-day
+    //                   yet (legal minimum: 1 day off per 7-day week).
     //   cappedToday   — already at 45 h this week (forced off, doesn't count
     //                   toward the 2-days-off cap, treated like time-off)
     //   availablePool — could work today
+    //
+    // Work week runs Thu→Wed. `daysIntoWeek` = which day-number this is
+    // (1 = Thu, 7 = Wed). When daysIntoWeek === 7 (Wed, the last day)
+    // any dispatcher still at 0 off MUST be off today.
     const isWeekend = HEAVY_DAYS.has(dow)
+    const daysIntoWeek = ((dow + 3) % 7) + 1
+    const isLastWorkDay = daysIntoWeek === 7
     const blockedToday: typeof dispatchers = []
     const cappedToday: typeof dispatchers = []
     const availablePool: typeof dispatchers = []
@@ -414,7 +423,9 @@ export function generateSchedule(
     for (const d of rotated) {
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
-      if (fullyBlocked) {
+      const offSoFar = weekOffDays[d.id][wLabel] ?? 0
+      const legalMustOff = isLastWorkDay && offSoFar === 0
+      if (fullyBlocked || legalMustOff) {
         blockedToday.push(d)
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
         offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
