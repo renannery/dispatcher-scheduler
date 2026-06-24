@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, LONG_SHIFT_BREAK_MIN, MAX_CONSECUTIVE_HOURS, MED_SHIFT_BREAK_MIN, patternMaxBreakHours, patternWorkBlocks, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, LONG_SHIFT_BREAK_MIN, MAX_CONSECUTIVE_HOURS, MED_SHIFT_BREAK_MIN, patternMaxBreakHours, patternTotalBreakHours, patternWorkBlocks, SLOTS } from '@/data/coverageTemplate'
 import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
@@ -296,8 +296,18 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     {isOff ? (
                       <span className="text-slate-400">—</span>
                     ) : (
-                      <span className="font-semibold text-slate-700">
-                        {entry?.totalHours?.toFixed(1)}h
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="font-semibold text-slate-700">
+                          {entry?.totalHours?.toFixed(1)}h
+                        </span>
+                        {entry && patternTotalBreakHours(entry.slots, SLOTS) > 0 && (
+                          <span
+                            className="rounded bg-slate-100 px-1.5 py-0 text-[10px] font-semibold text-slate-600 tabular-nums"
+                            title={`Total mid-shift break time today`}
+                          >
+                            ☕{patternTotalBreakHours(entry.slots, SLOTS)}h
+                          </span>
+                        )}
                       </span>
                     )}
                   </td>

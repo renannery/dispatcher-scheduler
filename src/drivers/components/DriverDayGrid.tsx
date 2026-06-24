@@ -6,6 +6,7 @@ import { useIsAdmin } from '@/store/adminStore'
 import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
 import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE, effectiveCoverage } from '../coverageTemplate'
+import { patternTotalBreakHours } from '@/data/coverageTemplate'
 import { MAX_BLOCKS_PER_DAY, MAX_BREAK_HOURS, MIN_BLOCK_HOURS, coverageStatus, violatesShape, workBlocks } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
@@ -568,9 +569,20 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
                         : h === LEGAL_DAILY_MAX_HOURS
                           ? 'bg-amber-100 text-amber-700'
                         : 'text-slate-700'
+                      const breakH = entry ? patternTotalBreakHours(entry.slots, DRIVER_SLOTS) : 0
                       return (
-                        <span className={clsx('font-semibold tabular-nums rounded px-1.5', tone)}>
-                          {h.toFixed(0)}h
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className={clsx('font-semibold tabular-nums rounded px-1.5', tone)}>
+                            {h.toFixed(0)}h
+                          </span>
+                          {breakH > 0 && (
+                            <span
+                              className="rounded bg-slate-100 px-1.5 py-0 text-[10px] font-semibold text-slate-600 tabular-nums"
+                              title="Total mid-shift break time today"
+                            >
+                              ☕{breakH}h
+                            </span>
+                          )}
                         </span>
                       )
                     })()}

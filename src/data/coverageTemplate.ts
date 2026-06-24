@@ -471,6 +471,23 @@ function totalWorkHours(pattern: number[] | boolean[], slots: { hours: number }[
   return h
 }
 
+/** Returns the SUM of all mid-shift break hours in a pattern (not just the
+ *  longest, like patternMaxBreakHours). Leading and trailing off-slots are
+ *  excluded — only gaps between the first and last worked slot count. */
+export function patternTotalBreakHours(
+  pattern: number[] | boolean[],
+  slots: { hours: number }[] = SLOTS,
+): number {
+  let firstOn = -1, lastOn = -1
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i]) { if (firstOn < 0) firstOn = i; lastOn = i }
+  }
+  if (firstOn < 0) return 0
+  let total = 0
+  for (let i = firstOn + 1; i < lastOn; i++) if (!pattern[i]) total += slots[i].hours
+  return total
+}
+
 /** Returns the slot indices that fall inside any mid-shift break (off-slots
  *  between work blocks). Leading and trailing off-slots are excluded. */
 export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
