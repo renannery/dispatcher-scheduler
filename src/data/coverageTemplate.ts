@@ -111,6 +111,10 @@ const FRI: DayTemplate = {
     // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
     //   covers dinner-peak + the full closer block, skips slot 15-16)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+    // Closer Split B (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break 8-8:30 PM —
+    //   ends at 11 PM, covers slot 18 (req=3) which was the biggest
+    //   Fri deficit. User's manual no-gaps fix used this exact shape.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
   ],
 }
 
@@ -170,6 +174,10 @@ const SUN: DayTemplate = {
     //   covers dinner-peak + the full closer block, breaks BEFORE slot
     //   16 so it doesn't stack the low-req 8:30 PM slot.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+    // Closer Split B (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break 8-8:30 PM —
+    //   ends at 11 PM, covers slot 18 (10-11 PM) which was the biggest
+    //   Sun deficit. User's manual no-gaps fix used this exact shape.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
   ],
 }
 
@@ -240,10 +248,16 @@ const WED: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    // (No Closer Split — Wed is the last work-week day and dispatchers
-    //  often hit it after 3+ days worked; adding another late-evening
-    //  pattern shuffles off-day distribution and lands 3 dispatchers off
-    //  the same Wed, which can't be recovered by adding more patterns.)
+    // Bridge Late (2:30-4 PM + 6-11 PM, 7.5 h, 1 h break 5-6 PM —
+    //   user's no-gaps fix used this exact shape on Wed: tiny
+    //   afternoon slice + dinner-to-close, filling Wed's evening
+    //   peak that one-block patterns can't cover after off-day
+    //   clustering eats the working pool.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+    // Closer Split B (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break —
+    //   ends at 11 PM to fill Wed slot 18 deficit without piling on
+    //   slot 19 which is already covered by Late B.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
   ],
 }
 
@@ -281,10 +295,11 @@ export const MAX_BREAK_PREFERRED_HOURS = 2
 /** Hard cap on mid-shift break. Patterns over this are rejected at import. */
 export const MAX_BREAK_HARD_HOURS = 3
 
-/** Minimum length of any single work block in a pattern. Prevents 1-2 h
- *  tail-blocks before/after a break. A dispatcher should work at least 3 h
- *  before taking a break. */
-export const MIN_BLOCK_HOURS = 3
+/** Minimum length of any single work block in a pattern. Per user's
+ *  manual no-gaps fix, 2.5 h tail-blocks (8:30-11 PM closer; 2:30-4 PM
+ *  bridge) are acceptable and necessary to close evening gaps. Below
+ *  2.5 h is still rejected as too churny for the dispatcher. */
+export const MIN_BLOCK_HOURS = 2.5
 
 /** Required break for an 8 h+ shift. */
 export const LONG_SHIFT_BREAK_MIN = 1
