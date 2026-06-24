@@ -8,10 +8,12 @@ import {
   MAX_BREAK_PREFERRED_HOURS,
   MED_SHIFT_BREAK_MIN,
   MIN_BLOCK_HOURS,
+  PEAK_WINDOWS,
   patternMaxBreakHours,
   patternWorkBlocks,
   SLOTS,
 } from '@/data/coverageTemplate'
+import type { PeakKey } from '@/data/coverageTemplate'
 import type {
   Dispatcher,
   DispatcherDayEntry,
@@ -62,6 +64,20 @@ function weekLabel(date: Date): string {
 /** Index of first working slot in a pattern (-1 if none). */
 function firstActiveSlot(pattern: boolean[]): number {
   return pattern.findIndex((v) => v)
+}
+
+/** Continuity-anchor predicate for one peak. A pattern qualifies iff:
+ *  - it STARTED before the peak's first slot (strict; a shift starting
+ *    exactly at the peak boundary doesn't count — the rule wants someone
+ *    who's already been on, holding the live picture);
+ *  - it covers every slot in the peak window with NO break and NO shift
+ *    end inside the peak (every slot in the window is true).
+ *  The dispatcher's break/end may freely fall outside the peak window. */
+function isPeakAnchorPattern(pattern: boolean[], peakSlots: readonly number[]): boolean {
+  const first = firstActiveSlot(pattern)
+  if (first < 0 || first >= peakSlots[0]) return false
+  for (const i of peakSlots) if (!pattern[i]) return false
+  return true
 }
 
 /** Index of last working slot in a pattern (-1 if none). */
@@ -246,6 +262,175 @@ function trySwapForCoverage(
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Continuity-anchor passes
+// ---------------------------------------------------------------------------
+
+/** Common eligibility test for a (dispatcher, pattern) pair on this day. */
+function isEligibleForPattern(
+  d: Dispatcher,
+  p: { bool: boolean[]; hours: number; isMorning: boolean },
+  ctx: {
+    usedIds: Set<string>
+    weekHours: Record<string, Record<string, number>>
+    wLabel: string
+    timeOff: DispatcherTimeOff
+    dateStr: string
+    dow: number
+    workedNightYesterday: (id: string) => boolean
+  },
+): boolean {
+  if (ctx.usedIds.has(d.id)) return false
+  if (p.isMorning && ctx.workedNightYesterday(d.id)) return false
+  const blocks = blockedBitmap(ctx.timeOff, d, ctx.dateStr, ctx.dow)
+  if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
+  if ((ctx.weekHours[d.id][ctx.wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) return false
+  return true
+}
+
+interface PatternMetaLite {
+  idx: number
+  bool: boolean[]
+  hours: number
+  isMorning: boolean
+  maxBreak: number
+}
+
+interface SeedCtx {
+  patternMeta: PatternMetaLite[]
+  sortedWorking: Dispatcher[]
+  usedIds: Set<string>
+  usedPatternIdx: Set<number>
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>
+  runningCov: number[]
+  weekHours: Record<string, Record<string, number>>
+  wLabel: string
+  timeOff: DispatcherTimeOff
+  dateStr: string
+  dow: number
+  workedNightYesterday: (id: string) => boolean
+  splitsSoFar: Record<string, number>
+}
+
+/** Before the main picker runs, count viable (dispatcher × anchor-pattern)
+ *  pairs for each peak. If supply ≤ 1, reserve one upfront so the picker
+ *  can't blow it on a higher-fill alternative. Mirrors the "morning seed"
+ *  pattern from the driver scheduler. Returns the list of peaks that
+ *  couldn't be seeded (zero viable pairs) — caller surfaces a warning. */
+function seedAnchors(ctx: SeedCtx): PeakKey[] {
+  const unseedable: PeakKey[] = []
+  for (const peak of PEAK_WINDOWS) {
+    const anchorPatterns = ctx.patternMeta.filter(
+      (p) => !ctx.usedPatternIdx.has(p.idx) && isPeakAnchorPattern(p.bool, peak.slots),
+    )
+    // Build (dispatcher, pattern) pairs that pass eligibility.
+    const pairs: Array<{ d: Dispatcher; p: PatternMetaLite }> = []
+    for (const p of anchorPatterns) {
+      for (const d of ctx.sortedWorking) {
+        if (isEligibleForPattern(d, p, ctx)) pairs.push({ d, p })
+      }
+    }
+    const distinctDispatchers = new Set(pairs.map((x) => x.d.id))
+    // No supply — caller emits a warning. Don't seed.
+    if (pairs.length === 0) { unseedable.push(peak.key); continue }
+    // Plenty of supply (>1 distinct dispatcher AND multiple patterns) —
+    // let the main picker handle it. Seeding here just removes flexibility.
+    if (distinctDispatchers.size > 1 && anchorPatterns.length > 1) continue
+    // Constrained — reserve the best pair: prefer lowest weekly hours,
+    // then non-split pattern (lower maxBreak), then shorter shift to
+    // avoid burning a long-pattern slot on a small dispatcher.
+    pairs.sort((a, b) => {
+      const ha = ctx.weekHours[a.d.id][ctx.wLabel] ?? 0
+      const hb = ctx.weekHours[b.d.id][ctx.wLabel] ?? 0
+      if (ha !== hb) return ha - hb
+      if (a.p.maxBreak !== b.p.maxBreak) return a.p.maxBreak - b.p.maxBreak
+      return a.p.hours - b.p.hours
+    })
+    const pick = pairs[0]
+    ctx.assignments.push({ dispatcher: pick.d, pattern: pick.p.bool })
+    ctx.usedIds.add(pick.d.id)
+    ctx.usedPatternIdx.add(pick.p.idx)
+    if (pick.p.maxBreak >= 2) ctx.splitsSoFar[pick.d.id] = (ctx.splitsSoFar[pick.d.id] ?? 0) + 1
+    pick.p.bool.forEach((on, i) => { if (on) ctx.runningCov[i]++ })
+  }
+  return unseedable
+}
+
+/** After the main pipeline (picker + swap + rescue + must-work + 2nd-off +
+ *  stretch), verify each peak still has at least one anchor. If not,
+ *  attempt repair in two steps:
+ *    1. Fill-break: find an assignment whose pattern STARTED pre-peak
+ *       and whose only disqualifier is a false slot inside the peak.
+ *       Flip those slots true if the shape stays valid.
+ *    2. Pattern-swap: find an unused anchor-eligible pattern in the
+ *       template and swap it onto an existing assignment whose
+ *       dispatcher still satisfies eligibility for the new pattern.
+ *  Returns the peaks that couldn't be repaired. */
+function enforceAnchors(
+  ctx: SeedCtx,
+  required: number[],
+): PeakKey[] {
+  const failed: PeakKey[] = []
+  for (const peak of PEAK_WINDOWS) {
+    const hasAnchor = ctx.assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots))
+    if (hasAnchor) continue
+    // Step 1 — fill-break on an existing pre-peak starter.
+    let fixed = false
+    for (const a of ctx.assignments) {
+      const first = firstActiveSlot(a.pattern)
+      if (first < 0 || first >= peak.slots[0]) continue
+      // Already covers all? Then it's an anchor — checked above. Try
+      // filling only the false slots inside the peak.
+      const trial = [...a.pattern]
+      for (const s of peak.slots) trial[s] = true
+      if (!isValidShiftShape(trial)) continue
+      // Weekly cap check — fill-break adds hours.
+      const oldH = slotHours(a.pattern), newH = slotHours(trial)
+      if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + (newH - oldH) > WEEKLY_CAP_HOURS) continue
+      a.pattern = trial
+      fixed = true
+      break
+    }
+    if (fixed) continue
+    // Step 2 — pattern-swap. Find any unused anchor-eligible pattern,
+    // then swap onto an existing assignment whose dispatcher passes
+    // eligibility for the new pattern AND whose existing pattern is
+    // not the sole cover of any other required slot.
+    const anchorPatterns = ctx.patternMeta.filter(
+      (p) => !ctx.usedPatternIdx.has(p.idx) && isPeakAnchorPattern(p.bool, peak.slots),
+    )
+    for (const newP of anchorPatterns) {
+      let swapped = false
+      for (const a of ctx.assignments) {
+        if (!isEligibleForPattern(a.dispatcher, newP, {
+          ...ctx,
+          usedIds: new Set([...ctx.usedIds].filter((id) => id !== a.dispatcher.id)),
+        })) continue
+        // Survival check — would swapping break any required slot?
+        const cov = new Array(SLOTS.length).fill(0)
+        for (const other of ctx.assignments) other.pattern.forEach((on, i) => { if (on) cov[i]++ })
+        let safe = true
+        for (let i = 0; i < SLOTS.length; i++) {
+          const after = cov[i] - (a.pattern[i] ? 1 : 0) + (newP.bool[i] ? 1 : 0)
+          if (required[i] > 0 && after < required[i]) { safe = false; break }
+        }
+        if (!safe) continue
+        // Apply swap.
+        const oldIdx = ctx.patternMeta.findIndex((pm) => pm.bool === a.pattern)
+        if (oldIdx >= 0) ctx.usedPatternIdx.delete(oldIdx)
+        ctx.usedPatternIdx.add(newP.idx)
+        a.pattern = newP.bool
+        fixed = true
+        swapped = true
+        break
+      }
+      if (swapped) break
+    }
+    if (!fixed) failed.push(peak.key)
+  }
+  return failed
+}
+
 /** Stretch shifts to fill single-body gaps. For each under-covered slot,
  *  find an assignment whose pattern is adjacent (covers slot ±1) and
  *  whose extension is shape-valid AND keeps the dispatcher's weekly
@@ -307,16 +492,39 @@ function trimToExactCoverage(
   for (const { pattern } of assignments) {
     pattern.forEach((on, i) => { if (on) cov[i]++ })
   }
+  // Snapshot the set of peaks each day starts with. After each candidate
+  // drop, recompute anchors live — if the drop would take any peak's
+  // anchor count from >0 to 0, refuse it. Tracking running count (not
+  // snapshot) handles the multi-anchor case where dropping one is OK
+  // but dropping the last one isn't.
+  const startingPeaksWithAnchor = PEAK_WINDOWS.filter((peak) =>
+    assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+  )
+  const anchorCountFor = (peak: typeof PEAK_WINDOWS[number]) =>
+    assignments.reduce((n, a) => n + (isPeakAnchorPattern(a.pattern, peak.slots) ? 1 : 0), 0)
   let changed = true
   while (changed) {
     changed = false
     for (let si = 0; si < cov.length; si++) {
       if (cov[si] <= required[si]) continue
-      for (const a of assignments) {
+      for (let ai = 0; ai < assignments.length; ai++) {
+        const a = assignments[ai]
         if (!a.pattern[si]) continue
         const trial = [...a.pattern]
         trial[si] = false
         if (!isValidShiftShape(trial)) continue
+        // Anchor-survival: simulate the drop and check no peak that
+        // STARTED the day with an anchor would lose its last one.
+        const wasAnchorFor = startingPeaksWithAnchor.filter((peak) =>
+          isPeakAnchorPattern(a.pattern, peak.slots),
+        )
+        const wouldRemainAnchorFor = wasAnchorFor.filter((peak) =>
+          isPeakAnchorPattern(trial, peak.slots),
+        )
+        const wouldLoseAnchorOnPeak = wasAnchorFor.find((peak) =>
+          !wouldRemainAnchorFor.includes(peak) && anchorCountFor(peak) <= 1,
+        )
+        if (wouldLoseAnchorOnPeak) continue
         a.pattern = trial
         cov[si]--
         changed = true
@@ -453,6 +661,7 @@ export function generateSchedule(
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
   const coverageRequired: Record<string, number[]> = {}
+  const coverageWarnings: Record<string, { peak: PeakKey; reason: string }[]> = {}
 
   let dayIndex = seed
 
@@ -657,6 +866,7 @@ export function generateSchedule(
     // Constraint: if any Senior is available, ensure at least one is assigned.
     const hasSeniors = sortedWorking.some((d) => d.level === 'Senior')
     const usedIds = new Set<string>()
+    const usedPatternIdx = new Set<number>()
     const assignments: Array<{ dispatcher: (typeof dispatchers)[0]; pattern: boolean[] }> = []
     let seniorAssigned = false
 
@@ -727,13 +937,37 @@ export function generateSchedule(
       return a.maxBreak - b.maxBreak
     })
 
+    // ── seedAnchors — peak-continuity pre-pass ─────────────────────────
+    // Reserves one (dispatcher, anchor-pattern) pair per peak BEFORE the
+    // main picker runs when supply is constrained (≤ 1 viable pair).
+    // Returns peaks with zero viable supply — emitted as warnings below.
+    // Mutates: assignments, usedIds, usedPatternIdx, runningCov, splitsSoFar.
+    const seedCtx = {
+      patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
+      runningCov, weekHours, wLabel, timeOff, dateStr, dow,
+      workedNightYesterday, splitsSoFar,
+    }
+    const unseedablePeaks = seedAnchors(seedCtx)
+    for (const peakKey of unseedablePeaks) {
+      (coverageWarnings[dateStr] ??= []).push({
+        peak: peakKey,
+        reason: 'no eligible dispatcher could anchor this peak (night-rest, time-off, or weekly-cap blocked every candidate)',
+      })
+    }
+
     // Gap-aware dynamic iteration: instead of locking in pattern order
     // by static priority, at each step pick the pattern that BEST fits
     // the current deficit. Short gap-filler patterns (2-2.5h) win when
     // their slots align with an under-covered window; longer patterns
     // win when there's broad deficit to cover. Falls back to the static
     // priority list as a stable tiebreak.
-    const remainingPatterns = new Set(prioritizedPatterns)
+    const remainingPatterns = new Set(
+      // Filter out any patterns already reserved by seedAnchors.
+      prioritizedPatterns.filter((p) => {
+        const idx = patternMeta.findIndex((pm) => pm.bool === p.bool)
+        return !usedPatternIdx.has(idx)
+      })
+    )
     const staticOrder = new Map(prioritizedPatterns.map((p, i) => [p, i]))
     while (remainingPatterns.size > 0) {
       let p: typeof prioritizedPatterns[number] | null = null
@@ -865,9 +1099,8 @@ export function generateSchedule(
 
     // Patterns already used by the picker — rescue/must-work prefer
     // UNUSED patterns to avoid the duplicate-Early-A stacking the
-    // user flagged. Tracked by index since pattern bitmaps are stable
-    // refs in patternMeta.
-    const usedPatternIdx = new Set<number>()
+    // user flagged. Sync from final picker assignments (seed entries
+    // already in usedPatternIdx).
     for (const a of assignments) {
       const idx = patternMeta.findIndex((pm) => pm.bool === a.pattern)
       if (idx >= 0) usedPatternIdx.add(idx)
@@ -1098,8 +1331,31 @@ export function generateSchedule(
     // Runs BEFORE trim so any incidental over-cov can still be reclaimed.
     stretchToFillGaps(assignments, dayRequired, weekHours, wLabel)
 
+    // ── enforceAnchors — peak-continuity repair pass ───────────────────
+    // Validate each peak has at least one anchor (started pre-peak +
+    // continuous through peak). If not, try fill-break first, then
+    // pattern-swap. Any peak still uncovered emits a warning. Runs
+    // between stretch and trim so trim's survival check can protect
+    // any anchor this pass restored.
+    const enforceCtx = {
+      patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
+      runningCov, weekHours, wLabel, timeOff, dateStr, dow,
+      workedNightYesterday, splitsSoFar,
+    }
+    const failedPeaks = enforceAnchors(enforceCtx, dayRequired)
+    for (const peakKey of failedPeaks) {
+      // Dedupe with any seed-time warning for the same peak.
+      const existing = coverageWarnings[dateStr] ?? []
+      if (existing.some((w) => w.peak === peakKey)) continue
+      ;(coverageWarnings[dateStr] ??= []).push({
+        peak: peakKey,
+        reason: 'no continuity anchor — no dispatcher started before the peak and worked through it without a break',
+      })
+    }
+
     // Trim over-covered slots down to the requirement. Runs LAST so it
     // sees the full final coverage from picker + swap + rescue + must-work.
+    // Now also protects the sole anchor's peak slots (see trimToExactCoverage).
     trimToExactCoverage(assignments, dayRequired)
 
     // Any leftover unassigned working dispatchers ARE off today — count
@@ -1173,7 +1429,7 @@ export function generateSchedule(
     dayOfWeek: d.getDay(),
   }))
 
-  return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual, coverageRequired }
+  return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual, coverageRequired, coverageWarnings }
 }
 
 // ---------------------------------------------------------------------------

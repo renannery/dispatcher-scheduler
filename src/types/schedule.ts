@@ -73,6 +73,10 @@ export interface GeneratedSchedule {
    *  per-slot overrides). Lets the UI render the same numbers the scheduler
    *  used without re-deriving from the template. */
   coverageRequired?: Record<string, number[]>
+  /** Non-blocking warnings the scheduler emits when a constraint can't
+   *  be satisfied — e.g. no eligible continuity anchor for a peak. The
+   *  UI surfaces these as inline badges on the affected day. */
+  coverageWarnings?: Record<string, { peak: 'lunch' | 'dinner'; reason: string }[]>
 }
 
 export type Step = 'names' | 'period' | 'schedule'

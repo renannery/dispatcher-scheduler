@@ -425,9 +425,26 @@ export const MED_SHIFT_BREAK_MIN = 0.5
 export const MAX_CONSECUTIVE_HOURS = 5
 
 /** Slot indices that fall within peak hours — lunch (12–2 PM) and dinner
- *  (5–8 PM). Mid-shift breaks must not overlap any of these slots; the
- *  whole peak must always be staffed at full intent. */
+ *  (5–8 PM). Used by the legacy build-time pattern assertion; the live
+ *  scheduler now governs peaks via the continuity-anchor rule below. */
 export const PEAK_SLOT_INDICES = [5, 6, 11, 12, 13, 14]
+
+/** Continuity-anchor peak windows. For each peak, at least one
+ *  dispatcher on duty must have STARTED before the peak began AND
+ *  remain continuously on duty through every slot in the window — no
+ *  break and no shift end inside the peak. Other dispatchers may
+ *  freely start, break, or end mid-peak as long as the anchor holds.
+ *
+ *  Lunch  = 11:30 AM – 2:00 PM → slots 4, 5, 6
+ *  Dinner = 5:00 PM – 8:00 PM  → slots 11, 12, 13, 14
+ */
+export const LUNCH_PEAK_SLOTS = [4, 5, 6] as const
+export const DINNER_PEAK_SLOTS = [11, 12, 13, 14] as const
+export const PEAK_WINDOWS = [
+  { key: 'lunch' as const, label: 'Lunch (11:30–2 PM)', slots: LUNCH_PEAK_SLOTS },
+  { key: 'dinner' as const, label: 'Dinner (5–8 PM)',   slots: DINNER_PEAK_SLOTS },
+]
+export type PeakKey = (typeof PEAK_WINDOWS)[number]['key']
 
 /** Returns the largest mid-shift break (in hours) inside a pattern.
  *  Leading and trailing off-slots don't count — only gaps between work blocks. */

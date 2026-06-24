@@ -96,7 +96,18 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
         <thead>
           <tr>
             <th className="sticky left-0 z-10 min-w-[130px] bg-slate-800 px-3 py-2 text-left font-semibold text-white">
-              {dayLabel}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span>{dayLabel}</span>
+                {(schedule.coverageWarnings?.[date] ?? []).map((w) => (
+                  <span
+                    key={w.peak}
+                    className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-300 ring-1 ring-amber-400/50"
+                    title={`No anchor for ${w.peak}: ${w.reason}`}
+                  >
+                    ⚠ {w.peak} no anchor
+                  </span>
+                ))}
+              </div>
             </th>
             {visibleSlotIndices.map((si) => (
               <th
