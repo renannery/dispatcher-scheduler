@@ -199,7 +199,10 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
 
   return (
     <Document>
-      <Page size="A4" style={SA.page}>
+      {/* Continuous long page: keep A4 width (595pt) but use a 14400pt
+          height so the renderer doesn't paginate. Avoids the mid-row
+          cuts the A4 letter format was creating. */}
+      <Page size={[595, 14400]} style={SA.page}>
         {/* ── Header ── */}
         <View style={SA.hdr}>
           <View style={SA.hdrTop}>
@@ -430,7 +433,7 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
 
   return (
     <Document>
-      <Page size="A4" style={SI.page}>
+      <Page size={[595, 14400]} style={SI.page}>
         {/* ── Header ── */}
         <View style={SI.hdr}>
           <View style={SI.hdrL}>
@@ -570,7 +573,7 @@ function CompactDoc({ ds, schedule, hideHours }: CompactDocProps) {
 
   return (
     <Document>
-      <Page size="A6" style={SC.page}>
+      <Page size={[298, 14400]} style={SC.page}>
         {/* Header */}
         <View style={SC.hdr}>
           <View style={SC.hdrRow}>
