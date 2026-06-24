@@ -600,8 +600,27 @@ export function generateSchedule(
     let prioritizedPatterns = sortedPatterns
     const patternsToDrop = Math.max(0, sortedPatterns.length - sortedWorking.length)
     if (patternsToDrop > 0) {
+      // Greedy drop with coverage-survival check — never drop a pattern
+      // if doing so would leave any required slot with zero patterns
+      // covering it. Previously a slot like Fri 11-11:30 PM (req=1, 3
+      // patterns) saw all three patterns scored 0 unique and ALL
+      // dropped, leaving slot 19 uncovered every Friday.
       const dropSort = [...scoredPatterns].sort((a, b) => a.unique - b.unique || a.p.hours - b.p.hours)
-      const dropped = new Set(dropSort.slice(0, patternsToDrop).map((x) => x.p))
+      const dropped = new Set<typeof sortedPatterns[number]>()
+      const remainingCov = [...coverageCount]
+      for (const cand of dropSort) {
+        if (dropped.size >= patternsToDrop) break
+        // Would dropping cand leave any required slot with 0 cover?
+        let unsafe = false
+        for (let i = 0; i < cand.p.bool.length; i++) {
+          if (cand.p.bool[i] && dayRequired[i] > 0 && remainingCov[i] - 1 < 1) { unsafe = true; break }
+        }
+        if (unsafe) continue
+        dropped.add(cand.p)
+        for (let i = 0; i < cand.p.bool.length; i++) {
+          if (cand.p.bool[i]) remainingCov[i] -= 1
+        }
+      }
       prioritizedPatterns = sortedPatterns.filter((pp) => !dropped.has(pp))
     }
     prioritizedPatterns = [...prioritizedPatterns].sort((a, b) => {
