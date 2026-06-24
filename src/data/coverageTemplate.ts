@@ -94,6 +94,14 @@ const THU: DayTemplate = {
     //   that morning shifts taper out of and dinner shifts haven't
     //   started yet. Exactly at legal max consecutive, no break.)
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    // Morning Mini (9-11 AM, 2 h single block — minimum-length filler for
+    //   the 9-11 AM gap when full-length morning shifts are already
+    //   covering peak. Gap-aware picker uses it when fill > over.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h single block — surgically fills
+    //   the 2-4 PM lull slots without committing a dispatcher to a
+    //   long shift that would over-cover dinner peak.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -148,6 +156,10 @@ const FRI: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
     // Afternoon (2-7 PM, 5 h single block — fills the 2-4 PM lull gap.)
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    // Morning Mini (9-11 AM, 2 h single block — surgical filler.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h single block — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -179,6 +191,10 @@ const SAT: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
     // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -223,6 +239,10 @@ const SUN: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
     // Late C'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer with break-slot shift.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -259,6 +279,10 @@ const MON: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
     // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -284,6 +308,10 @@ const TUE: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1],
     // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -328,6 +356,10 @@ const WED: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
     // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
+    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
     //   3rd pattern covering slots 1, 2 (9-11 AM, req=2) and slot 9
     //   (3-4 PM, req=2) so the picker has options when the existing

@@ -632,7 +632,32 @@ export function generateSchedule(
       return a.maxBreak - b.maxBreak
     })
 
-    for (const p of prioritizedPatterns) {
+    // Gap-aware dynamic iteration: instead of locking in pattern order
+    // by static priority, at each step pick the pattern that BEST fits
+    // the current deficit. Short gap-filler patterns (2-2.5h) win when
+    // their slots align with an under-covered window; longer patterns
+    // win when there's broad deficit to cover. Falls back to the static
+    // priority list as a stable tiebreak.
+    const remainingPatterns = new Set(prioritizedPatterns)
+    const staticOrder = new Map(prioritizedPatterns.map((p, i) => [p, i]))
+    while (remainingPatterns.size > 0) {
+      let p: typeof prioritizedPatterns[number] | null = null
+      let bestScore = -Infinity
+      for (const cand of remainingPatterns) {
+        let fill = 0, over = 0
+        for (let i = 0; i < cand.bool.length; i++) {
+          if (!cand.bool[i]) continue
+          if (runningCov[i] < dayRequired[i]) fill++
+          else if (runningCov[i] >= dayRequired[i]) over++
+        }
+        // fill*10 - over: a fresh deficit-fill is worth ten over-cov
+        // bodies. Subtract the static-priority index so equally-scored
+        // patterns fall back to the smart-drop / uniqueness ordering.
+        const score = fill * 10 - over - (staticOrder.get(cand) ?? 0) * 0.01
+        if (score > bestScore) { bestScore = score; p = cand }
+      }
+      if (!p) break
+      remainingPatterns.delete(p)
       // Over-coverage cap: skip the whole pattern if it would push ANY
       // already-covered slot past required + MAX_OVER_COVERAGE. Avoids
       // 4/1 / 5/3 / 5/1 stacking that the user explicitly called out.
