@@ -67,13 +67,13 @@ const THU: DayTemplate = {
     // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break at
     //   11:30-12 — preserves the original 9-3 PM time range while
     //   satisfying the law's >5h consecutive break requirement.)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
     //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
@@ -116,7 +116,7 @@ const FRI: DayTemplate = {
   //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Early B  (10 AM-3 PM, 5 h single block — exactly at the legal max
     //   consecutive limit; no break required.)
     [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -212,10 +212,10 @@ const SUN: DayTemplate = {
     [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Late A   (3-6 PM + 6:30-9 PM, 5.5 h, 30 min break — law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0],
-    // Late B   (4-6:30 PM + 7-10 PM, 5.5 h, 30 min break — law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0],
+    // Late A   (3-6 PM + 6:30-10 PM, 6.5 h, 30 min break — law: >5h needs break)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0],
+    // Late B   (4-6:30 PM + 7-11 PM, 6.5 h, 30 min break — law: >5h needs break)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0],
     // Late C   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
     // Late D   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
@@ -254,10 +254,10 @@ const MON: DayTemplate = {
   //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
     //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     //Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
     [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
@@ -294,7 +294,7 @@ const TUE: DayTemplate = {
   //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early A  (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -324,7 +324,7 @@ const WED: DayTemplate = {
   //                                                                              ↑ closer slot
   shiftPatterns: [
     // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
     //   morning gap + lunch peak + early dinner peak in a single shift)
     [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -332,7 +332,7 @@ const WED: DayTemplate = {
     [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
     // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
     //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
     //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
     //   4-10 PM range so the tail meets MIN_BLOCK while keeping the

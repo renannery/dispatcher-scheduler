@@ -104,6 +104,10 @@ function isValidShiftShape(slots: boolean[]): boolean {
   // Labor law: no single block over 5h.
   if (Math.max(...blocks) > 5) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
+  // Minimum 6h per worked day — a dispatcher commuting in for <6h is
+  // a waste of their time and our scheduling budget. Off days are
+  // handled separately (electedOff path); this only rejects shifts.
+  if (totalWork < 6) return false
   if (totalWork > 9) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
   if (maxBreak > MAX_BREAK_HARD_HOURS) return false
@@ -378,19 +382,24 @@ export function generateSchedule(
     const dayLabel = format(date, 'EEE, MMMM do')
     const yesterday = format(addDays(date, -1), 'yyyy-MM-dd')
 
-    // Pre-compute pattern metadata (once per day)
-    const patternMeta = template.shiftPatterns.map((raw, idx) => {
-      const bool = raw.map((v) => v === 1)
-      return {
-        idx,
-        bool,
-        hours: slotHours(bool),
-        first: firstActiveSlot(bool),
-        last: lastActiveSlot(bool),
-        isMorning: firstActiveSlot(bool) <= MORNING_SLOT_THRESHOLD,
-        maxBreak: patternMaxBreakHours(bool, SLOTS),
-      }
-    })
+    // Pre-compute pattern metadata (once per day). Filter to shapes that
+    // pass the same shape rules used by the swap pass — most importantly
+    // the 6h-per-day minimum, so short fillers can never become a
+    // dispatcher's entire shift for the day.
+    const patternMeta = template.shiftPatterns
+      .map((raw, idx) => {
+        const bool = raw.map((v) => v === 1)
+        return {
+          idx,
+          bool,
+          hours: slotHours(bool),
+          first: firstActiveSlot(bool),
+          last: lastActiveSlot(bool),
+          isMorning: firstActiveSlot(bool) <= MORNING_SLOT_THRESHOLD,
+          maxBreak: patternMaxBreakHours(bool, SLOTS),
+        }
+      })
+      .filter((p) => isValidShiftShape(p.bool))
 
     // Sort patterns: morning first, then LONGEST shifts first so they go
     // to the least-loaded dispatcher. Break-size penalty (over the 2 h
