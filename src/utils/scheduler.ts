@@ -104,10 +104,11 @@ function isValidShiftShape(slots: boolean[]): boolean {
   // Labor law: no single block over 5h.
   if (Math.max(...blocks) > 5) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
-  // Minimum 5h per worked day — a dispatcher commuting in for <5h is
-  // a waste of their time and our scheduling budget. Off days are
-  // handled separately (electedOff path); this only rejects shifts.
-  if (totalWork < 5) return false
+  // Minimum 4h per worked day. Was 5h, lowered after the user's manual
+  // Wed-Jul-1 fix used 4h blocks for kimberly + michelle to trim out
+  // 1.5-3h mid-shift breaks — short clean shifts beat long shifts with
+  // dead time in the middle. Off days handled separately (electedOff).
+  if (totalWork < 4) return false
   if (totalWork > 9) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
   if (maxBreak > MAX_BREAK_HARD_HOURS) return false
