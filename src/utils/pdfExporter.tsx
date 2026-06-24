@@ -194,7 +194,7 @@ interface AllDispatchersDocProps {
  *  Page can be sized to fit content instead of paginating. Numbers
  *  match the style block above (paddingVertical × 2 + content). Adds
  *  ~40pt of slack at the bottom for the footer + safety margin. */
-function estimateAdminHeight(schedule: GeneratedSchedule, showHours: boolean): number {
+function estimateAdminHeight(schedule: GeneratedSchedule): number {
   const dispCount = schedule.dispatcherSchedules.length
   const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
   const dayCount  = schedule.dates.length
@@ -220,7 +220,7 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
   )}`
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n = SLOTS.length
-  const pageHeight = estimateAdminHeight(schedule, showHours)
+  const pageHeight = estimateAdminHeight(schedule)
 
   return (
     <Document>
