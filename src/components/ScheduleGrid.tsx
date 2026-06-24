@@ -284,10 +284,13 @@ export function ScheduleGrid() {
     setPdfLoading(true)
     try {
       const mod = await import('@/utils/pdfExporter')
+      // Non-admin users never see total hours in their PDF —
+      // matches the on-screen rule (admin PIN required to view hours).
+      const hideHours = !isAdmin
       if (action.type === 'admin')              await mod.exportAdminPDF(schedule)
       if (action.type === 'team')               await mod.exportTeamPDF(schedule)
-      if (action.type === 'individual')         await mod.exportIndividualPDF(schedule, action.dispatcherId)
-      if (action.type === 'individual-compact') await mod.exportIndividualCompactPDF(schedule, action.dispatcherId)
+      if (action.type === 'individual')         await mod.exportIndividualPDF(schedule, action.dispatcherId, hideHours)
+      if (action.type === 'individual-compact') await mod.exportIndividualCompactPDF(schedule, action.dispatcherId, hideHours)
     } finally {
       setPdfLoading(false)
     }
