@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, patternMaxBreakHours, SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
-import { generateSchedule, hoursStatusBg, hoursStatusColor } from '@/utils/scheduler'
+import { generateSchedule, hoursStatusBg, hoursStatusColor, shuffleDispatcherAssignments } from '@/utils/scheduler'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
@@ -229,12 +229,13 @@ export function ScheduleGrid() {
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
-  // Shuffle = re-roll with a new seed but keep undo history so Cmd+Z
-  // brings the previous shuffle back. Different from Regenerate which
-  // clears the stacks (treated as a fresh start).
+  // Shuffle = rotate which dispatcher takes which shift on each day
+  // while keeping the per-day shift shapes IDENTICAL. Same coverage,
+  // same off-days per person — just different people in each role.
+  // Cmd+Z brings the previous arrangement back.
   const handleShuffle = () => {
     regenSeed.current++
-    const shuffled = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
+    const shuffled = shuffleDispatcherAssignments(schedule, timeOff, regenSeed.current)
     applyShuffledSchedule(shuffled)
   }
 
