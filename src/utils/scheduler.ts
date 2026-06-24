@@ -321,6 +321,13 @@ export function generateSchedule(
   const totalElectedOff: Record<string, number> = {}
   dispatchers.forEach((d) => (totalElectedOff[d.id] = 0))
 
+  // Per-dispatcher off-day count broken down by day-of-week (0=Sun..6=Sat).
+  // Used to spread off-days across the calendar week so all 3 of N
+  // dispatchers don't happen to land off on the same Wednesday — the
+  // structural cause of Wed coverage gaps the user flagged.
+  const offByDow: Record<string, Record<number, number>> = {}
+  dispatchers.forEach((d) => (offByDow[d.id] = {}))
+
   // Per-dispatcher running total of working hours across the entire schedule.
   // Used as a tiebreak so dispatchers who are *cumulatively* behind get the
   // next shift first, smoothing imbalances that build up week after week.
@@ -410,6 +417,7 @@ export function generateSchedule(
       if (fullyBlocked) {
         blockedToday.push(d)
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
         if (isWeekend) weekendOffTotal[d.id] += 1
       } else if ((weekHours[d.id][wLabel] ?? 0) >= WEEKLY_CAP_HOURS) {
         cappedToday.push(d)
@@ -442,6 +450,12 @@ export function generateSchedule(
       const dA = weekOffDays[a.id][wLabel] ?? 0
       const dB = weekOffDays[b.id][wLabel] ?? 0
       if (dA !== dB) return dA - dB
+      // Spread off-days across the calendar week — prefer dispatchers
+      // with fewer offs on THIS day-of-week so we don't keep landing
+      // 3 people off the same Wednesday.
+      const dowA = offByDow[a.id][dow] ?? 0
+      const dowB = offByDow[b.id][dow] ?? 0
+      if (dowA !== dowB) return dowA - dowB
       return totalElectedOff[a.id] - totalElectedOff[b.id]
     })
 
@@ -450,6 +464,7 @@ export function generateSchedule(
     )
     for (const id of electedOffIds) {
       weekOffDays[id][wLabel] = (weekOffDays[id][wLabel] ?? 0) + 1
+      offByDow[id][dow] = (offByDow[id][dow] ?? 0) + 1
       totalElectedOff[id] += 1
       if (isWeekend) weekendOffTotal[id] += 1
     }
@@ -460,12 +475,23 @@ export function generateSchedule(
     // Balance sort: prefer this-week-behind dispatchers FIRST so each
     // calendar week ends up with a tight hour spread (was running 27-40 h
     // wide), then break ties on cumulative total to keep the period-long
-    // total band tight too. The cumulative side still self-corrects
-    // because last week's loser usually starts this week's pick order.
+    // total band tight too. Final tiebreak: prefer candidates who've
+    // been off on THIS day-of-week more often so the picker reaches
+    // them first — fixes Wed/Thu clustering where the same 2-3
+    // dispatchers kept landing unassigned.
     const sortedWorking = [...workingPool].sort((a, b) => {
       const wA = weekHours[a.id][wLabel] ?? 0
       const wB = weekHours[b.id][wLabel] ?? 0
       if (wA !== wB) return wA - wB
+      // Per-DOW spread BEFORE cumulative — when week-hours are tied
+      // (typical on day-1-of-week), prefer dispatchers who've been off
+      // on THIS day-of-week more often. Without this, the same
+      // dispatcher gets unassigned on the same weekday every week
+      // because their total-hours runs high from other days (a
+      // self-perpetuating loop the user flagged on shamika/Thursdays).
+      const dowA = offByDow[a.id][dow] ?? 0
+      const dowB = offByDow[b.id][dow] ?? 0
+      if (dowA !== dowB) return dowB - dowA
       return totalHoursWorked[a.id] - totalHoursWorked[b.id]
     })
 
@@ -701,6 +727,7 @@ export function generateSchedule(
         // unassigned working ones never had it bumped in the first place.
         if (electedOffIds.has(d.id)) {
           weekOffDays[d.id][wLabel] = Math.max(0, (weekOffDays[d.id][wLabel] ?? 1) - 1)
+          offByDow[d.id][dow] = Math.max(0, (offByDow[d.id][dow] ?? 1) - 1)
           totalElectedOff[d.id] = Math.max(0, totalElectedOff[d.id] - 1)
           if (isWeekend) weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
           electedOffIds.delete(d.id)
@@ -781,6 +808,7 @@ export function generateSchedule(
     for (const d of sortedWorking) {
       if (!usedIds.has(d.id)) {
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
         if (isWeekend) weekendOffTotal[d.id] += 1
       }
     }

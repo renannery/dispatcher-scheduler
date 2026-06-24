@@ -240,6 +240,10 @@ const WED: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
     // Late B   (5 PM–11:30 PM, 6.5 h single block — closer)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    // (No Closer Split — Wed is the last work-week day and dispatchers
+    //  often hit it after 3+ days worked; adding another late-evening
+    //  pattern shuffles off-day distribution and lands 3 dispatchers off
+    //  the same Wed, which can't be recovered by adding more patterns.)
   ],
 }
 
