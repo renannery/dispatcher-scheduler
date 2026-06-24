@@ -92,19 +92,24 @@ const MAX_OVER_COVERAGE = 1
 // allowed when the peak slot is currently over-covered (slack to lend).
 // ---------------------------------------------------------------------------
 
-/** True when this shift bitmap satisfies every dispatcher shape rule
- *  (min 3h block, max 1 break, break-by-length, ≤9h daily). */
+/** True when this shift bitmap satisfies every dispatcher shape rule:
+ *  min 2h block (lowered to allow law-mandated breaks), max 1 break,
+ *  max 5h consecutive (Section 23 — labor law), 30 min break required
+ *  over 5h, 1 h break over 8h, ≤9h daily total. */
 function isValidShiftShape(slots: boolean[]): boolean {
   const blocks = patternWorkBlocks(slots, SLOTS)
   if (blocks.length === 0) return false
-  if (blocks.length > 2) return false // at most one break per shift
+  if (blocks.length > 2) return false
   if (blocks.length > 1 && Math.min(...blocks) < MIN_BLOCK_HOURS) return false
+  // Labor law: no single block over 5h.
+  if (Math.max(...blocks) > 5) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
   if (totalWork > 9) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
   if (maxBreak > MAX_BREAK_HARD_HOURS) return false
   if (totalWork >= 8 && maxBreak < LONG_SHIFT_BREAK_MIN) return false
-  if (totalWork > 6 && totalWork < 8 && maxBreak < MED_SHIFT_BREAK_MIN) return false
+  // Labor law: > 5h work needs a 30 min meal break.
+  if (totalWork > 5 && totalWork < 8 && maxBreak < MED_SHIFT_BREAK_MIN) return false
   return true
 }
 
@@ -183,15 +188,19 @@ function trySwapForCoverage(
     let extLastOn = -1
     for (let i = extended.length - 1; i >= 0; i--) if (extended[i]) { extLastOn = i; break }
 
-    // Quick win: if extension keeps total ≤ 6 h we don't need any break.
+    // Quick win: if extension keeps total ≤ 5h AND remains a single block
+    // ≤ 5h we don't need any break (labor law: > 5h consecutive needs
+    // a 30 min break).
     const extWork = slotHours(extended)
-    if (extWork <= 6 && isValidShiftShape(extended) && computeCoverageGain(slots, extended, cov, req) > 0) {
+    const extBlocks = patternWorkBlocks(extended, SLOTS)
+    const extMaxBlock = extBlocks.length > 0 ? Math.max(...extBlocks) : 0
+    if (extWork <= 5 && extMaxBlock <= 5 && isValidShiftShape(extended) && computeCoverageGain(slots, extended, cov, req) > 0) {
       return extended
     }
 
     // Otherwise we need a break. Required break duration by shift length.
     const needBreak = extWork > 8 ? LONG_SHIFT_BREAK_MIN
-                    : extWork > 6 ? MED_SHIFT_BREAK_MIN
+                    : extWork > 5 ? MED_SHIFT_BREAK_MIN
                     : 0
 
     // Try every contiguous break position that keeps both blocks ≥ 3 h
