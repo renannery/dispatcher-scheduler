@@ -89,6 +89,57 @@ function lastActiveSlot(pattern: boolean[]): number {
 }
 
 /**
+ * Shared "would mutating this assignment leave any peak without its last
+ * anchor?" check. Used by both `trimToExactCoverage` and the transition-
+ * smoothing pass. `startingPeaks` is the set of peaks that started the day
+ * with at least one anchor — we never let that count drop to zero.
+ * Returns true when the mutation is safe (preserves anchor coverage).
+ */
+function dropPreservesAnchors(
+  trialPattern: boolean[],
+  self: { pattern: boolean[] },
+  selfOldPattern: boolean[],
+  assignments: Array<{ pattern: boolean[] }>,
+  startingPeaks: readonly { slots: readonly number[] }[],
+): boolean {
+  for (const peak of startingPeaks) {
+    if (!isPeakAnchorPattern(selfOldPattern, peak.slots)) continue
+    if (isPeakAnchorPattern(trialPattern, peak.slots)) continue
+    let otherAnchors = 0
+    for (const a of assignments) {
+      if (a === self) continue
+      if (isPeakAnchorPattern(a.pattern, peak.slots)) otherAnchors++
+    }
+    if (otherAnchors === 0) return false
+  }
+  return true
+}
+
+/** Shape boundaries of a single shift: first/last working slot and the
+ *  list of breaks between them. Off-slots before `start` or after `end`
+ *  are NOT breaks — they're pre/post-shift idle. */
+function shiftBoundaries(pattern: boolean[]): {
+  start: number
+  end: number
+  breaks: Array<{ start: number; end: number }>
+} {
+  const start = firstActiveSlot(pattern)
+  const end = lastActiveSlot(pattern)
+  const breaks: Array<{ start: number; end: number }> = []
+  if (start < 0) return { start, end, breaks }
+  let inBreak = false
+  let bStart = -1
+  for (let i = start; i <= end; i++) {
+    if (!pattern[i] && !inBreak) { inBreak = true; bStart = i }
+    else if (pattern[i] && inBreak) {
+      inBreak = false
+      breaks.push({ start: bStart, end: i - 1 })
+    }
+  }
+  return { start, end, breaks }
+}
+
+/**
  * A "night shift" ends at slot 17 (9–10 PM) or later.
  * Dispatchers who worked a night shift should not be assigned a morning
  * pattern (starts at slot 0/1/2 — 8/9/10 AM) the following day.
@@ -500,8 +551,6 @@ function trimToExactCoverage(
   const startingPeaksWithAnchor = PEAK_WINDOWS.filter((peak) =>
     assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
   )
-  const anchorCountFor = (peak: typeof PEAK_WINDOWS[number]) =>
-    assignments.reduce((n, a) => n + (isPeakAnchorPattern(a.pattern, peak.slots) ? 1 : 0), 0)
   let changed = true
   while (changed) {
     changed = false
@@ -513,18 +562,7 @@ function trimToExactCoverage(
         const trial = [...a.pattern]
         trial[si] = false
         if (!isValidShiftShape(trial)) continue
-        // Anchor-survival: simulate the drop and check no peak that
-        // STARTED the day with an anchor would lose its last one.
-        const wasAnchorFor = startingPeaksWithAnchor.filter((peak) =>
-          isPeakAnchorPattern(a.pattern, peak.slots),
-        )
-        const wouldRemainAnchorFor = wasAnchorFor.filter((peak) =>
-          isPeakAnchorPattern(trial, peak.slots),
-        )
-        const wouldLoseAnchorOnPeak = wasAnchorFor.find((peak) =>
-          !wouldRemainAnchorFor.includes(peak) && anchorCountFor(peak) <= 1,
-        )
-        if (wouldLoseAnchorOnPeak) continue
+        if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) continue
         a.pattern = trial
         cov[si]--
         changed = true
@@ -533,6 +571,301 @@ function trimToExactCoverage(
       if (changed) break
     }
   }
+}
+
+/** Per-dispatcher weekly cap on NET hours added by the transition-
+ *  smoothing pass. Hours-flat surplus relocations don't count — only
+ *  pure extensions. Keeps any single dispatcher from absorbing every
+ *  day's smoothing and quietly running up against the 45 h legal cap
+ *  by Friday. */
+const SMOOTHING_BUDGET_PER_WEEK = 2
+
+/** Max NET hours any single dispatcher can absorb on one day from
+ *  smoothing extensions. Keeps a single stubborn dip from ballooning
+ *  one dispatcher's day. */
+const SMOOTHING_DAILY_NET_ADD = 1
+
+/** How far from the dip (in slot indices) the standalone surplus-
+ *  relocation step is allowed to source from. 3 ≈ 1.5–3 hours away,
+ *  which covers the dispatcher's nearby shift window without rearranging
+ *  their whole day. */
+const SMOOTHING_RELOCATION_REACH = 3
+
+/**
+ * Post-trim transition-smoothing pass. Closes 1-slot, 1-below dips
+ * that sit at shift transitions (break-on-dip, handoff-overlap, or
+ * adjacent surplus that can be relocated) the way an admin would by
+ * hand. Runs AFTER trimToExactCoverage so it only sees dips that
+ * survived every earlier coverage pass — and so trim can't immediately
+ * undo whatever smoothing extended.
+ *
+ * Resolution order per dip:
+ *  1a. boundary-on-dip (break covers slot i)         — hours-flat
+ *  2a. handoff-overlap (outgoing.end+1 = i = incoming.start-1) — hours-flat
+ *  3.  standalone surplus relocation                 — hours-flat
+ *  1b. boundary-on-dip                               — net add
+ *  2b. handoff-overlap                               — net add
+ *  4.  fallback A: net add to nearest eligible neighbor
+ *  5.  fallback B: emit a coverageWarnings transition entry
+ *
+ * Hours-flat moves always run before any net add so the pass doesn't
+ * add weekly hours when a same-dispatcher relocation would have done it.
+ *
+ * Gate: only acts on slots where (a) required - actual === 1 and (b)
+ * both neighbors are at-or-above target. Anything bigger or anything
+ * sitting in a multi-slot hole isn't a transition issue — it's
+ * structural undercoverage the earlier passes already gave up on.
+ */
+export function smoothTransitions(args: {
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>
+  required: number[]
+  weekHours: Record<string, Record<string, number>>
+  smoothingBudget: Record<string, Record<string, number>>
+  wLabel: string
+  timeOff: DispatcherTimeOff
+  dateStr: string
+  dow: number
+}): { resolved: string[]; unresolved: number[] } {
+  const { assignments, required, weekHours, smoothingBudget, wLabel, timeOff, dateStr, dow } = args
+  const cov = new Array(SLOTS.length).fill(0)
+  for (const { pattern } of assignments) pattern.forEach((on, i) => { if (on) cov[i]++ })
+
+  const startingPeaks = PEAK_WINDOWS.filter((peak) =>
+    assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+  )
+
+  const isQualifyingDip = (i: number): boolean => {
+    if (cov[i] >= required[i]) return false
+    if (required[i] - cov[i] !== 1) return false
+    if (i > 0 && cov[i - 1] < required[i - 1]) return false
+    if (i < cov.length - 1 && cov[i + 1] < required[i + 1]) return false
+    return true
+  }
+
+  const resolved: string[] = []
+  const dailyNetAdd = new Map<string, number>()
+
+  // Cap a dispatcher gains by adding `delta` hours (net). Returns true
+  // if all caps (weekly 45 h, weekly smoothing budget, daily smoothing
+  // budget) would still hold.
+  const fitsBudget = (a: { dispatcher: Dispatcher }, delta: number): boolean => {
+    if (delta <= 0) return true
+    if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + delta > WEEKLY_CAP_HOURS) return false
+    if ((smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta > SMOOTHING_BUDGET_PER_WEEK) return false
+    if ((dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta > SMOOTHING_DAILY_NET_ADD) return false
+    return true
+  }
+
+  const isBlocked = (a: { dispatcher: Dispatcher }, i: number): boolean => {
+    const block = blockedBitmap(timeOff, a.dispatcher, dateStr, dow)
+    if (block && block[i]) return true
+    if (a.dispatcher.recurringBlocks?.[dow]?.[i]) return true
+    return false
+  }
+
+  // Apply hours-flat relocation: drop slot j, set slot i. Mutates a + cov.
+  // Slot hours may differ between j and i (0.5 vs 1) — book the delta
+  // into weekHours and (if positive) the smoothing budget so the pass
+  // doesn't leak unbooked hours.
+  const applyRelocation = (
+    a: { dispatcher: Dispatcher; pattern: boolean[] },
+    j: number,
+    i: number,
+  ): void => {
+    a.pattern[j] = false
+    a.pattern[i] = true
+    cov[j]--
+    cov[i]++
+    const delta = SLOTS[i].hours - SLOTS[j].hours
+    if (delta !== 0) {
+      weekHours[a.dispatcher.id][wLabel] = (weekHours[a.dispatcher.id][wLabel] ?? 0) + delta
+      if (delta > 0) {
+        smoothingBudget[a.dispatcher.id][wLabel] =
+          (smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta
+        dailyNetAdd.set(a.dispatcher.id, (dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta)
+      }
+    }
+  }
+
+  const applyExtension = (
+    a: { dispatcher: Dispatcher; pattern: boolean[] },
+    i: number,
+  ): void => {
+    a.pattern[i] = true
+    cov[i]++
+    const addH = SLOTS[i].hours
+    weekHours[a.dispatcher.id][wLabel] = (weekHours[a.dispatcher.id][wLabel] ?? 0) + addH
+    smoothingBudget[a.dispatcher.id][wLabel] =
+      (smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + addH
+    dailyNetAdd.set(a.dispatcher.id, (dailyNetAdd.get(a.dispatcher.id) ?? 0) + addH)
+  }
+
+  // Surplus slots this dispatcher could relocate from, near slot i, in
+  // descending order of surplus and then descending distance from i
+  // (further first — keeps the immediate neighborhood intact).
+  const findSurplusSources = (
+    a: { pattern: boolean[] },
+    i: number,
+  ): number[] => {
+    const out: Array<{ j: number; surplus: number; dist: number }> = []
+    for (let j = 0; j < a.pattern.length; j++) {
+      if (!a.pattern[j]) continue
+      const surplus = cov[j] - required[j]
+      if (surplus < 1) continue
+      const dist = Math.abs(j - i)
+      if (dist === 0) continue
+      if (dist > SMOOTHING_RELOCATION_REACH) continue
+      out.push({ j, surplus, dist })
+    }
+    out.sort((p, q) => q.surplus - p.surplus || q.dist - p.dist)
+    return out.map((x) => x.j)
+  }
+
+  // Lowest weekly-hours first so we don't keep loading the same
+  // dispatcher. Ties broken by id for determinism.
+  const byLowestWeeklyHours = (
+    a: { dispatcher: Dispatcher },
+    b: { dispatcher: Dispatcher },
+  ): number => {
+    const wa = weekHours[a.dispatcher.id][wLabel] ?? 0
+    const wb = weekHours[b.dispatcher.id][wLabel] ?? 0
+    if (wa !== wb) return wa - wb
+    return a.dispatcher.id.localeCompare(b.dispatcher.id)
+  }
+
+  const tryBoundaryOnDip = (i: number, allowNetAdd: boolean): string | null => {
+    const candidates = assignments
+      .filter((a) => {
+        if (a.pattern[i]) return false
+        const { start, end, breaks } = shiftBoundaries(a.pattern)
+        if (start < 0) return false
+        return breaks.some((b) => b.start <= i && i <= b.end)
+      })
+      .sort(byLowestWeeklyHours)
+
+    for (const a of candidates) {
+      for (const j of findSurplusSources(a, i)) {
+        const trial = [...a.pattern]
+        trial[j] = false; trial[i] = true
+        if (!isValidShiftShape(trial)) continue
+        if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
+        const delta = SLOTS[i].hours - SLOTS[j].hours
+        if (!fitsBudget(a, delta)) continue
+        applyRelocation(a, j, i)
+        return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} break-fill (relocated from ${SLOTS[j].label} surplus)`
+      }
+      if (!allowNetAdd) continue
+      const addH = SLOTS[i].hours
+      if (!fitsBudget(a, addH)) continue
+      if (isBlocked(a, i)) continue
+      const trial = [...a.pattern]
+      trial[i] = true
+      if (!isValidShiftShape(trial)) continue
+      applyExtension(a, i)
+      return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} break-fill (+${addH}h net)`
+    }
+    return null
+  }
+
+  const tryHandoffOverlap = (i: number, allowNetAdd: boolean): string | null => {
+    // Prefer outgoing first — keeps the incoming dispatcher arriving
+    // clean at their original start.
+    const outgoing = assignments
+      .filter((a) => !a.pattern[i] && lastActiveSlot(a.pattern) === i - 1)
+      .map((a) => ({ a, side: 'out' as const }))
+    const incoming = assignments
+      .filter((a) => !a.pattern[i] && firstActiveSlot(a.pattern) === i + 1)
+      .map((a) => ({ a, side: 'in' as const }))
+    const candidates = [...outgoing, ...incoming].sort((x, y) => byLowestWeeklyHours(x.a, y.a))
+
+    for (const { a, side } of candidates) {
+      for (const j of findSurplusSources(a, i)) {
+        const trial = [...a.pattern]
+        trial[j] = false; trial[i] = true
+        if (!isValidShiftShape(trial)) continue
+        if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
+        const delta = SLOTS[i].hours - SLOTS[j].hours
+        if (!fitsBudget(a, delta)) continue
+        applyRelocation(a, j, i)
+        return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} handoff-${side} (relocated from ${SLOTS[j].label} surplus)`
+      }
+      if (!allowNetAdd) continue
+      const addH = SLOTS[i].hours
+      if (!fitsBudget(a, addH)) continue
+      if (isBlocked(a, i)) continue
+      const trial = [...a.pattern]
+      trial[i] = true
+      if (!isValidShiftShape(trial)) continue
+      applyExtension(a, i)
+      return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} handoff-${side} (+${addH}h net)`
+    }
+    return null
+  }
+
+  // Standalone surplus relocation — no boundary, no handoff required.
+  // Any dispatcher with nearby surplus they could shift INTO slot i.
+  // This is the Thursday-8PM case: a dispatcher with a 1 PM surplus
+  // who isn't at the dip's break or handoff but can still relocate.
+  const tryStandaloneRelocation = (i: number): string | null => {
+    const candidates = assignments
+      .filter((a) => !a.pattern[i] && !isBlocked(a, i))
+      .sort(byLowestWeeklyHours)
+    for (const a of candidates) {
+      for (const j of findSurplusSources(a, i)) {
+        const trial = [...a.pattern]
+        trial[j] = false; trial[i] = true
+        if (!isValidShiftShape(trial)) continue
+        if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
+        const delta = SLOTS[i].hours - SLOTS[j].hours
+        if (!fitsBudget(a, delta)) continue
+        applyRelocation(a, j, i)
+        return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} relocated from ${SLOTS[j].label} surplus`
+      }
+    }
+    return null
+  }
+
+  const tryFallbackNetAdd = (i: number): string | null => {
+    const candidates = assignments
+      .filter((a) => !a.pattern[i])
+      .filter((a) => (i > 0 && a.pattern[i - 1]) || (i < a.pattern.length - 1 && a.pattern[i + 1]))
+      .filter((a) => !isBlocked(a, i))
+      .sort(byLowestWeeklyHours)
+    for (const a of candidates) {
+      const addH = SLOTS[i].hours
+      if (!fitsBudget(a, addH)) continue
+      const trial = [...a.pattern]
+      trial[i] = true
+      if (!isValidShiftShape(trial)) continue
+      applyExtension(a, i)
+      return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} extend +${addH}h (nearest neighbor)`
+    }
+    return null
+  }
+
+  // Two passes over the dips: first hours-flat only, then allow net adds.
+  // After each successful resolution, isQualifyingDip(i) returns false
+  // so the second pass naturally skips already-fixed slots.
+  for (const allowNetAdd of [false, true]) {
+    for (let i = 0; i < cov.length; i++) {
+      if (!isQualifyingDip(i)) continue
+      let r = tryBoundaryOnDip(i, allowNetAdd)
+      if (r) { resolved.push(r); continue }
+      r = tryHandoffOverlap(i, allowNetAdd)
+      if (r) { resolved.push(r); continue }
+      if (!allowNetAdd) {
+        r = tryStandaloneRelocation(i)
+        if (r) { resolved.push(r); continue }
+      } else {
+        r = tryFallbackNetAdd(i)
+        if (r) { resolved.push(r); continue }
+      }
+    }
+  }
+
+  const unresolved: number[] = []
+  for (let i = 0; i < cov.length; i++) if (isQualifyingDip(i)) unresolved.push(i)
+  return { resolved, unresolved }
 }
 
 /** Iterate the day's assignments and apply at most one swap per dispatcher
@@ -606,6 +939,13 @@ export function generateSchedule(
   // Per-dispatcher, per-week hour accumulator
   const weekHours: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (weekHours[d.id] = {}))
+
+  // Per-dispatcher, per-week budget of NET hours added by the transition-
+  // smoothing pass. Capped at SMOOTHING_BUDGET_PER_WEEK so one person
+  // can't quietly absorb every day's smoothing and hit the 45 h cap by
+  // Friday. Hours-flat surplus relocations don't book against this.
+  const smoothingBudget: Record<string, Record<string, number>> = {}
+  dispatchers.forEach((d) => (smoothingBudget[d.id] = {}))
 
   // Per-dispatcher, per-week off-day counter. Counts recurring blocks AND
   // elected off-days together, so a dispatcher with Fri as a recurring block
@@ -1357,6 +1697,34 @@ export function generateSchedule(
     // sees the full final coverage from picker + swap + rescue + must-work.
     // Now also protects the sole anchor's peak slots (see trimToExactCoverage).
     trimToExactCoverage(assignments, dayRequired)
+
+    // ── smoothTransitions — final transition-smoothing polish ───────────
+    // Close 1-slot, 1-below dips at shift transitions the way an admin
+    // would by hand: extend across a break/handoff, prefer relocating
+    // adjacent surplus over net adds, cap per-dispatcher weekly net add
+    // at SMOOTHING_BUDGET_PER_WEEK. Runs AFTER trim so a borrowed-from
+    // surplus slot can't be trimmed away the moment we add the dip slot.
+    // Any dip that can't be closed by either a same-day move or a small
+    // net add (because every neighbor is capped, rest-blocked, or off)
+    // is surfaced as a `transition` warning on the day, distinct from
+    // the `lunch`/`dinner` anchor warnings.
+    const smoothing = smoothTransitions({
+      assignments, required: dayRequired, weekHours, smoothingBudget,
+      wLabel, timeOff, dateStr, dow,
+    })
+    for (const note of smoothing.resolved) {
+      // eslint-disable-next-line no-console
+      console.info(`[smoothTransitions] ${note}`)
+    }
+    for (const i of smoothing.unresolved) {
+      ;(coverageWarnings[dateStr] ??= []).push({
+        peak: 'transition',
+        slotIndex: i,
+        reason: `1-slot dip at ${SLOTS[i].label} — every adjacent dispatcher capped, resting, or off`,
+      })
+      // eslint-disable-next-line no-console
+      console.info(`[smoothTransitions] ${dateStr} ${SLOTS[i].label}: no eligible neighbor → warning`)
+    }
 
     // Any leftover unassigned working dispatchers ARE off today — count
     // that toward their weekly off-day tally so the next day's

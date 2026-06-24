@@ -74,9 +74,15 @@ export interface GeneratedSchedule {
    *  used without re-deriving from the template. */
   coverageRequired?: Record<string, number[]>
   /** Non-blocking warnings the scheduler emits when a constraint can't
-   *  be satisfied — e.g. no eligible continuity anchor for a peak. The
-   *  UI surfaces these as inline badges on the affected day. */
-  coverageWarnings?: Record<string, { peak: 'lunch' | 'dinner'; reason: string }[]>
+   *  be satisfied — e.g. no eligible continuity anchor for a peak, or a
+   *  1-slot dip the transition-smoothing pass couldn't close. The UI
+   *  surfaces these as inline badges on the affected day, styled
+   *  differently by `peak` kind. For `transition`, `slotIndex` carries
+   *  the dip's slot so the badge can show the time. */
+  coverageWarnings?: Record<
+    string,
+    { peak: 'lunch' | 'dinner' | 'transition'; reason: string; slotIndex?: number }[]
+  >
 }
 
 export type Step = 'names' | 'period' | 'schedule'
