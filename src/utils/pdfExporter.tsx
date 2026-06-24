@@ -190,19 +190,45 @@ interface AllDispatchersDocProps {
   showHours: boolean
 }
 
+/** Estimate the total rendered height for the admin/team PDF so the
+ *  Page can be sized to fit content instead of paginating. Numbers
+ *  match the style block above (paddingVertical × 2 + content). Adds
+ *  ~40pt of slack at the bottom for the footer + safety margin. */
+function estimateAdminHeight(schedule: GeneratedSchedule, showHours: boolean): number {
+  const dispCount = schedule.dispatcherSchedules.length
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
+  const dayCount  = schedule.dates.length
+  // Header: 36pt padding + 18pt title + 10pt period + 8pt meta + dispatcher
+  // chip rows (chips wrap ~5 per row at A4 width).
+  const dispChipRows = Math.max(1, Math.ceil(dispCount / 5))
+  const headerH = 36 + 22 + 14 + 12 + 10 + dispChipRows * 20
+  // Per-day inside a week card: dayLblRow (10) + hourRow (13) + covRow (17)
+  // + N dispatcher rows (22 each). Dispatcher rows show only working bodies
+  // (off rows hidden), but worst-case all dispatchers visible.
+  const perDayH = 10 + 13 + 17 + dispCount * 22
+  // Per-week card: wHead (28) + (days in week) * perDayH + 10 margin.
+  const daysPerWeek = Math.ceil(dayCount / weekCount)
+  const perWeekH = 28 + daysPerWeek * perDayH + 10
+  const bodyPad  = 14 + 30
+  const footerH  = 30
+  return Math.ceil(headerH + bodyPad + weekCount * perWeekH + footerH)
+}
+
 function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
   const period = `${format(parseISO(schedule.startDate), 'MMM d, yyyy')} – ${format(
     parseISO(schedule.endDate), 'MMM d, yyyy',
   )}`
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n = SLOTS.length
+  const pageHeight = estimateAdminHeight(schedule, showHours)
 
   return (
     <Document>
-      {/* Continuous long page: keep A4 width (595pt) but use a 14400pt
-          height so the renderer doesn't paginate. Avoids the mid-row
-          cuts the A4 letter format was creating. */}
-      <Page size={[595, 14400]} style={SA.page}>
+      {/* Continuous single page sized to fit the content. Width stays
+          at A4 (595pt) so column proportions and font sizes are
+          unchanged; height is computed from the day/week/dispatcher
+          counts so we don't truncate or leave huge empty space. */}
+      <Page size={[595, pageHeight]} style={SA.page}>
         {/* ── Header ── */}
         <View style={SA.hdr}>
           <View style={SA.hdrTop}>
@@ -353,11 +379,9 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
           })}
         </View>
 
-        {/* ── Footer ── */}
-        <View style={SA.foot} fixed>
+        {/* ── Footer ── (single-page now; no page numbers) */}
+        <View style={SA.foot}>
           <Text style={SA.footTxt}>Dispatcher Scheduler · {period}</Text>
-          <Text style={SA.footTxt}
-            render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
         </View>
       </Page>
     </Document>
@@ -421,6 +445,20 @@ interface IndividualDocProps {
   hideHours?: boolean
 }
 
+/** Height estimator for the individual PDF — one bar row per day. */
+function estimateIndividualHeight(schedule: GeneratedSchedule): number {
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
+  const dayCount  = schedule.dates.length
+  const daysPerWeek = Math.ceil(dayCount / weekCount)
+  // Header: 44pt padding + ~50pt content (avatar block)
+  const headerH = 92
+  // Per-week: wHead (28) + days × dRow (30) + 10 margin
+  const perWeekH = 28 + daysPerWeek * 30 + 10
+  const bodyPad  = 14 + 30
+  const footerH  = 30
+  return Math.ceil(headerH + bodyPad + weekCount * perWeekH + footerH)
+}
+
 function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
   const { dispatcher } = ds
   const peakH  = Math.max(0, ...Object.values(ds.weeklyHours))
@@ -430,10 +468,11 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n  = SLOTS.length
   const lc = levelColors(dispatcher.level)
+  const pageHeight = estimateIndividualHeight(schedule)
 
   return (
     <Document>
-      <Page size={[595, 14400]} style={SI.page}>
+      <Page size={[595, pageHeight]} style={SI.page}>
         {/* ── Header ── */}
         <View style={SI.hdr}>
           <View style={SI.hdrL}>
@@ -515,11 +554,9 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
           })}
         </View>
 
-        {/* ── Footer ── */}
-        <View style={SI.foot} fixed>
+        {/* ── Footer ── (single-page now; no page numbers) */}
+        <View style={SI.foot}>
           <Text style={SI.footTxt}>Dispatcher Scheduler · {dispatcher.name}</Text>
-          <Text style={SI.footTxt}
-            render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
         </View>
       </Page>
     </Document>
@@ -564,16 +601,29 @@ interface CompactDocProps {
   hideHours?: boolean
 }
 
+/** Height estimator for the A6-width compact (phone) PDF. */
+function estimateCompactHeight(schedule: GeneratedSchedule): number {
+  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
+  const dayCount  = schedule.dates.length
+  const daysPerWeek = Math.ceil(dayCount / weekCount)
+  // Page padding 10 × 2 + header (~60) + weeks (wHead 20 + days × 16 + 6).
+  const headerH = 60
+  const perWeekH = 20 + daysPerWeek * 16 + 6
+  const pagePad = 10 * 2
+  return Math.ceil(pagePad + headerH + weekCount * perWeekH + 20)
+}
+
 function CompactDoc({ ds, schedule, hideHours }: CompactDocProps) {
   const { dispatcher } = ds
   const period = `${format(parseISO(schedule.startDate), 'MMM d')} – ${format(
     parseISO(schedule.endDate), 'MMM d, yyyy',
   )}`
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
+  const pageHeight = estimateCompactHeight(schedule)
 
   return (
     <Document>
-      <Page size={[298, 14400]} style={SC.page}>
+      <Page size={[298, pageHeight]} style={SC.page}>
         {/* Header */}
         <View style={SC.hdr}>
           <View style={SC.hdrRow}>
