@@ -108,6 +108,9 @@ const FRI: DayTemplate = {
     // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
     //   Fri slot 19 (req=1) + slot 18 (req=3) can stack 2 bodies)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
+    //   covers dinner-peak + the full closer block, skips slot 15-16)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
   ],
 }
 
@@ -159,6 +162,14 @@ const SUN: DayTemplate = {
     //   Sun slots 17/18 (req=3, only Late C otherwise) can stack a 2nd
     //   body. Uniqueness scoring credits both C+D for slot 18 deficit.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+    // Mid Split (11 AM–2 PM + 3 PM–8 PM, 8 h, 1 h break 2-3 PM — covers
+    //   lunch + dinner peaks but SKIPS slot 16 to avoid the 8:30-9 PM
+    //   stack that blocks evening closer assignments.)
+    [0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
+    //   covers dinner-peak + the full closer block, breaks BEFORE slot
+    //   16 so it doesn't stack the low-req 8:30 PM slot.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
   ],
 }
 
@@ -183,6 +194,9 @@ const MON: DayTemplate = {
     // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
     //   Mon dinner-peak + closer slots can stack a 2nd body)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
+    //   covers dinner-peak + the full closer block, skips slot 15-16)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
   ],
 }
 

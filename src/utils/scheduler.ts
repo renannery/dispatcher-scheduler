@@ -332,6 +332,14 @@ export function generateSchedule(
   const lastSlotWorked: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (lastSlotWorked[d.id] = {}))
 
+  // Per-dispatcher running count of split shifts (worked day with a
+  // mid-shift break ≥ 2 h). Used as a tiebreak in the picker so split
+  // patterns rotate fairly across the roster — without it the same
+  // dispatcher tends to absorb every split because they happen to sort
+  // lowest on week-hours after one.
+  const splitsSoFar: Record<string, number> = {}
+  dispatchers.forEach((d) => (splitsSoFar[d.id] = 0))
+
   const scheduleMap: Record<string, DispatcherDayEntry[]> = {}
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
@@ -566,7 +574,21 @@ export function generateSchedule(
       const withinSoft = eligible.filter(
         (d) => (weekHours[d.id][wLabel] ?? 0) + p.hours <= SOFT_WEEKLY_TARGET,
       )
-      const pickFrom = withinSoft.length > 0 ? withinSoft : eligible
+      let pickFrom = withinSoft.length > 0 ? withinSoft : eligible
+
+      // Split-shift fairness: when this pattern IS a split (≥ 2 h
+      // mid-shift break), prefer the candidate who has accumulated
+      // the fewest splits so far. Without this the same dispatcher
+      // tends to absorb every split because they keep sorting lowest
+      // on week-hours — user observed a 16-vs-1 spread.
+      if (p.maxBreak >= 2) {
+        pickFrom = [...pickFrom].sort((a, b) => {
+          const sA = splitsSoFar[a.id], sB = splitsSoFar[b.id]
+          if (sA !== sB) return sA - sB
+          // Preserve original week-hours ordering as tiebreak.
+          return (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0)
+        })
+      }
 
       // If no Senior has been assigned yet and Seniors are available, promote
       // the least-hours Senior to the front of the candidate list.
@@ -581,7 +603,18 @@ export function generateSchedule(
       if (dispatcher.level === 'Senior') seniorAssigned = true
       assignments.push({ dispatcher, pattern: p.bool })
       usedIds.add(dispatcher.id)
+      if (p.maxBreak >= 2) splitsSoFar[dispatcher.id]++
       p.bool.forEach((on, i) => { if (on) runningCov[i]++ })
+    }
+
+    // Patterns already used by the picker — rescue/must-work prefer
+    // UNUSED patterns to avoid the duplicate-Early-A stacking the
+    // user flagged. Tracked by index since pattern bitmaps are stable
+    // refs in patternMeta.
+    const usedPatternIdx = new Set<number>()
+    for (const a of assignments) {
+      const idx = patternMeta.findIndex((pm) => pm.bool === a.pattern)
+      if (idx >= 0) usedPatternIdx.add(idx)
     }
 
     // Coverage-aware swap pass: extend single-block shifts into peak-break
@@ -632,7 +665,8 @@ export function generateSchedule(
         // pattern also closes a critical late-evening gap. fill > 0
         // is the gating condition.
         let best: { p: typeof patternMeta[number]; dIdx: number; score: number } | null = null
-        for (const p of patternMeta) {
+        for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
+          const p = patternMeta[pIdx]
           let fill = 0, over = 0, blown = false
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
@@ -641,7 +675,10 @@ export function generateSchedule(
             if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE + 2) { blown = true; break }
           }
           if (fill === 0 || blown) continue
-          const score = fill - over
+          // Penalise re-using a pattern already in play — user prefers
+          // a different shape when both fill the same deficit.
+          const dupPenalty = usedPatternIdx.has(pIdx) ? 1 : 0
+          const score = fill - over - dupPenalty
           for (let i = 0; i < rescuePool.length; i++) {
             const d = rescuePool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue
@@ -657,7 +694,9 @@ export function generateSchedule(
         const d = rescuePool[best.dIdx]
         assignments.push({ dispatcher: d, pattern: best.p.bool })
         usedIds.add(d.id)
+        if (best.p.maxBreak >= 2) splitsSoFar[d.id]++
         best.p.bool.forEach((on, j) => { if (on) cov[j]++ })
+        usedPatternIdx.add(patternMeta.indexOf(best.p))
         // Roll back off-day accounting only for elected-off dispatchers —
         // unassigned working ones never had it bumped in the first place.
         if (electedOffIds.has(d.id)) {
@@ -695,8 +734,9 @@ export function generateSchedule(
         // MAX_OVER_COVERAGE elsewhere in the same pattern — a real
         // trade we're consciously accepting. Tiebreaks: prefer
         // shorter shifts to limit the hours hit when neutral.
-        let pick: { p: typeof patternMeta[number]; score: number } | null = null
-        for (const p of patternMeta) {
+        let pick: { p: typeof patternMeta[number]; score: number; pIdx: number } | null = null
+        for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
+          const p = patternMeta[pIdx]
           if (p.isMorning && workedNightYesterday(d.id)) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
@@ -711,17 +751,21 @@ export function generateSchedule(
           // Fill weighted 2× over: closing one gap is worth two units
           // of over-coverage. Captures the user's "I want gaps covered,
           // not just more hours" rule — only assign over-cap patterns
-          // when they genuinely close coverage.
-          const score = fill * 2 - over
+          // when they genuinely close coverage. Dup penalty discourages
+          // re-using a pattern the picker already placed.
+          const dupPenalty = usedPatternIdx.has(pIdx) ? 1 : 0
+          const score = fill * 2 - over - dupPenalty
           const better =
             !pick ||
             score > pick.score ||
             (score === pick.score && p.hours < pick.p.hours)
-          if (better) pick = { p, score }
+          if (better) pick = { p, score, pIdx }
         }
         if (pick) {
           assignments.push({ dispatcher: d, pattern: pick.p.bool })
           usedIds.add(d.id)
+          if (pick.p.maxBreak >= 2) splitsSoFar[d.id]++
+          usedPatternIdx.add(pick.pIdx)
           pick.p.bool.forEach((on, i) => { if (on) cov[i]++ })
         }
         // If nothing fits (all patterns blocked or week-cap-blown), we
