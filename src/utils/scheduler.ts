@@ -324,6 +324,13 @@ export function generateSchedule(
   const weekendOffTotal: Record<string, number> = {}
   dispatchers.forEach((d) => (weekendOffTotal[d.id] = 0))
 
+  // Per-dispatcher weekend off-days within the CURRENT work-week. Used to
+  // ensure no dispatcher gets 2 weekend days off in the same week (e.g.,
+  // off Sat AND Sun) — Fri/Sat/Sun are busy days; we only have 7
+  // dispatchers; one weekend off per person per week is the cap.
+  const weekendOffThisWeek: Record<string, Record<string, number>> = {}
+  dispatchers.forEach((d) => (weekendOffThisWeek[d.id] = {}))
+
   // Per-dispatcher total elected off-days (excludes recurring/per-date blocks
   // and 45 h cap-hits). Used as a fairness tiebreak across weeks so the same
   // dispatcher isn't picked off every Thursday.
@@ -438,7 +445,10 @@ export function generateSchedule(
         blockedToday.push(d)
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
         offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
-        if (isWeekend) weekendOffTotal[d.id] += 1
+        if (isWeekend) {
+          weekendOffTotal[d.id] += 1
+          weekendOffThisWeek[d.id][wLabel] = (weekendOffThisWeek[d.id][wLabel] ?? 0) + 1
+        }
       } else if ((weekHours[d.id][wLabel] ?? 0) >= WEEKLY_CAP_HOURS) {
         cappedToday.push(d)
       } else {
@@ -450,20 +460,41 @@ export function generateSchedule(
     // The day needs at most `patternsNeeded` dispatchers; everyone past that
     // is potentially off. Cap each dispatcher at MAX_DAYS_OFF_PER_WEEK total.
     //
-    // On Fri/Sat/Sun, ALWAYS elect at least 1 person off — user wants the
-    // weekend rotation to touch the heavy days too, not park 7 dispatchers
-    // there every week. Templates have ~10 patterns each on those days
-    // (more than the 7-person roster), so without this nudge nobody ever
-    // gets a weekend off.
+    // On Fri/Sat/Sun, ALWAYS elect exactly 1 person off (counting anyone
+    // already blocked by time-off) — busy days, only 7 dispatchers, so
+    // we can't afford more than 1 off. If a dispatcher is already
+    // blocked off today, NO extra election (else we'd have 2 off
+    // and lose coverage).
     const patternsNeeded = template.shiftPatterns.length
     let desiredElectedOff = Math.max(0, availablePool.length - patternsNeeded)
-    if (isWeekend && availablePool.length >= 2) {
-      desiredElectedOff = Math.max(desiredElectedOff, 1)
+    if (isWeekend) {
+      const alreadyOff = blockedToday.length + cappedToday.length
+      // Cap weekend election so blocked + capped + elected ≤ 1.
+      desiredElectedOff = Math.max(0, 1 - alreadyOff)
     }
 
-    const eligibleForOff = availablePool.filter(
+    let eligibleForOff = availablePool.filter(
       (d) => (weekOffDays[d.id][wLabel] ?? 0) < MAX_DAYS_OFF_PER_WEEK,
     )
+
+    // On Fri/Sat/Sun, don't elect anyone who's already had a weekend
+    // off this week (e.g. off Sat → can't also be off Sun). Also skip
+    // anyone with a FUTURE weekend day blocked by time-off in this
+    // same work-week — their weekend off is already accounted for
+    // even though we haven't reached that date yet.
+    if (isWeekend) {
+      const futureWeekendDates = allDates
+        .filter((dt) => weekLabel(dt) === wLabel && HEAVY_DAYS.has(dt.getDay()) && format(dt, 'yyyy-MM-dd') > dateStr)
+      eligibleForOff = eligibleForOff.filter((d) => {
+        if ((weekendOffThisWeek[d.id][wLabel] ?? 0) > 0) return false
+        for (const dt of futureWeekendDates) {
+          const futStr = format(dt, 'yyyy-MM-dd')
+          const futBlocks = blockedBitmap(timeOff, d, futStr, dt.getDay())
+          if (futBlocks && futBlocks.length > 0 && futBlocks.every(Boolean)) return false
+        }
+        return true
+      })
+    }
 
     // On weekend days, weekend-off fairness leads (so everyone cycles through
     // Fri/Sat/Sun off-days regardless of which weekday they were off). On
@@ -495,7 +526,10 @@ export function generateSchedule(
       weekOffDays[id][wLabel] = (weekOffDays[id][wLabel] ?? 0) + 1
       offByDow[id][dow] = (offByDow[id][dow] ?? 0) + 1
       totalElectedOff[id] += 1
-      if (isWeekend) weekendOffTotal[id] += 1
+      if (isWeekend) {
+        weekendOffTotal[id] += 1
+        weekendOffThisWeek[id][wLabel] = (weekendOffThisWeek[id][wLabel] ?? 0) + 1
+      }
     }
 
     const cappedDispatchers = cappedToday
@@ -766,7 +800,10 @@ export function generateSchedule(
           weekOffDays[d.id][wLabel] = Math.max(0, (weekOffDays[d.id][wLabel] ?? 1) - 1)
           offByDow[d.id][dow] = Math.max(0, (offByDow[d.id][dow] ?? 1) - 1)
           totalElectedOff[d.id] = Math.max(0, totalElectedOff[d.id] - 1)
-          if (isWeekend) weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
+          if (isWeekend) {
+            weekendOffTotal[d.id] = Math.max(0, weekendOffTotal[d.id] - 1)
+            weekendOffThisWeek[d.id][wLabel] = Math.max(0, (weekendOffThisWeek[d.id][wLabel] ?? 1) - 1)
+          }
           electedOffIds.delete(d.id)
         }
         rescuePool.splice(best.dIdx, 1)
@@ -846,7 +883,10 @@ export function generateSchedule(
       if (!usedIds.has(d.id)) {
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
         offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
-        if (isWeekend) weekendOffTotal[d.id] += 1
+        if (isWeekend) {
+          weekendOffTotal[d.id] += 1
+          weekendOffThisWeek[d.id][wLabel] = (weekendOffThisWeek[d.id][wLabel] ?? 0) + 1
+        }
       }
     }
 

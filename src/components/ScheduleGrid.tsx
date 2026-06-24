@@ -623,7 +623,7 @@ export function ScheduleGrid() {
                         className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700 hover:bg-amber-200"
                       >
                         {dayOffBuckets['1d']}
-                        <span className="text-[10px] font-normal opacity-80">1d off</span>
+                        <span className="text-[10px] font-normal opacity-80">× 1d off</span>
                       </button>
                     )}
                     {dayOffBuckets['2d'] > 0 && (
@@ -634,7 +634,7 @@ export function ScheduleGrid() {
                         className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700 hover:bg-emerald-200"
                       >
                         {dayOffBuckets['2d']}
-                        <span className="text-[10px] font-normal opacity-80">2d off</span>
+                        <span className="text-[10px] font-normal opacity-80">× 2d off</span>
                       </button>
                     )}
                     {dayOffBuckets['3d'] > 0 && (
@@ -645,7 +645,7 @@ export function ScheduleGrid() {
                         className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700 hover:bg-amber-200"
                       >
                         {dayOffBuckets['3d']}
-                        <span className="text-[10px] font-normal opacity-80">3d off</span>
+                        <span className="text-[10px] font-normal opacity-80">× 3d off</span>
                       </button>
                     )}
                     {dayOffBuckets['4d+'] > 0 && (
@@ -656,7 +656,7 @@ export function ScheduleGrid() {
                         className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-700 hover:bg-red-200"
                       >
                         {dayOffBuckets['4d+']}
-                        <span className="text-[10px] font-normal opacity-80">4+d off</span>
+                        <span className="text-[10px] font-normal opacity-80">× 4+d off</span>
                       </button>
                     )}
                   </div>
