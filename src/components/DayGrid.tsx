@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, LONG_SHIFT_BREAK_MIN, MED_SHIFT_BREAK_MIN, patternMaxBreakHours, SLOTS } from '@/data/coverageTemplate'
 import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
@@ -202,6 +202,28 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                         <HoverHint label="Off — no reason set">
                           <span className="rounded bg-slate-100 px-1 text-[9px] text-slate-400">
                             OFF
+                          </span>
+                        </HoverHint>
+                      )
+                    })()}
+                    {/* Break-shape warning — surfaced on the name row when
+                        a working dispatcher's day has too little break for
+                        their hours. Caught at view time so it also fires
+                        for manual slot edits, not just generated shifts. */}
+                    {!isOff && entry && (() => {
+                      const h = entry.totalHours ?? 0
+                      const brk = patternMaxBreakHours(entry.slots, SLOTS)
+                      let problem: string | null = null
+                      if (h >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
+                        problem = `${h}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break — has ${brk}h`
+                      } else if (h >= 7 && h < 8 && brk < MED_SHIFT_BREAK_MIN) {
+                        problem = `${h}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break — has ${brk}h`
+                      }
+                      if (!problem) return null
+                      return (
+                        <HoverHint label={problem}>
+                          <span className="rounded bg-red-100 px-1.5 text-[9px] font-bold uppercase tracking-wide text-red-700 ring-1 ring-red-400 animate-pulse">
+                            ⚠ break
                           </span>
                         </HoverHint>
                       )
