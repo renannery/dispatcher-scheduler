@@ -830,17 +830,19 @@ export function generateSchedule(
       let pickFrom = withinSoft.length > 0 ? withinSoft : eligible
 
       // Split-shift fairness: when this pattern IS a split (≥ 2 h
-      // mid-shift break), prefer the candidate who has accumulated
-      // the fewest splits so far. Without this the same dispatcher
-      // tends to absorb every split because they keep sorting lowest
-      // on week-hours — user observed a 16-vs-1 spread.
-      if (p.maxBreak >= 2) {
-        pickFrom = [...pickFrom].sort((a, b) => {
-          const sA = splitsSoFar[a.id], sB = splitsSoFar[b.id]
-          if (sA !== sB) return sA - sB
-          // Preserve original week-hours ordering as tiebreak.
-          return (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0)
-        })
+      // mid-shift break), HARD-FILTER to the candidates with the
+      // fewest splits so far — not just a tiebreak. Sorting alone
+      // wasn't strong enough: the lowest-hours dispatcher kept
+      // sorting first on `withinSoft` regardless of split count, so
+      // one person absorbed 5 splits while another had 1. User
+      // observed and manually rebalanced (resgie 5→4, kimberly 1→2).
+      if (p.maxBreak >= 2 && pickFrom.length > 1) {
+        const minSplits = Math.min(...pickFrom.map((d) => splitsSoFar[d.id] ?? 0))
+        const lowest = pickFrom.filter((d) => (splitsSoFar[d.id] ?? 0) === minSplits)
+        if (lowest.length > 0) pickFrom = lowest
+        pickFrom = [...pickFrom].sort((a, b) =>
+          (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0),
+        )
       }
 
       // If no Senior has been assigned yet and Seniors are available, promote
