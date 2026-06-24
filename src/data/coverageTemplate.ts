@@ -115,6 +115,10 @@ const FRI: DayTemplate = {
     //   ends at 11 PM, covers slot 18 (req=3) which was the biggest
     //   Fri deficit. User's manual no-gaps fix used this exact shape.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
+    // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
+    //   3rd pattern covering slot 9 (3-4 PM) so Fri's req=2 there can
+    //   actually be met. Early A + Early B + this gives 3 candidates.)
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -258,6 +262,11 @@ const WED: DayTemplate = {
     //   ends at 11 PM to fill Wed slot 18 deficit without piling on
     //   slot 19 which is already covered by Late B.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
+    // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
+    //   3rd pattern covering slots 1, 2 (9-11 AM, req=2) and slot 9
+    //   (3-4 PM, req=2) so the picker has options when the existing
+    //   2 morning patterns can't both reach those slots.)
+    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   ],
 }
 
