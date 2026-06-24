@@ -83,6 +83,17 @@ const THU: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
     // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, 30 min break at 8:30-9 PM — A
+    //   variant: break shifted to slot 16 instead of 15, fills the
+    //   8-8:30 PM gap that the standard Late A leaves behind)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, 30 min break at 8:30-9 PM — B
+    //   variant: same break-slot shift for the closer.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Afternoon (2-7 PM, 5 h single block — fills the 2-4 PM lull gap
+    //   that morning shifts taper out of and dinner shifts haven't
+    //   started yet. Exactly at legal max consecutive, no break.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -129,6 +140,14 @@ const FRI: DayTemplate = {
     //   3rd pattern covering slot 9 (3-4 PM) so Fri's req=2 there can
     //   actually be met. Early A + Early B + this gives 3 candidates.)
     [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, 30 min break at 8:30-9 PM —
+    //   break shifted to slot 16 fills the 8-8:30 PM gap.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, 30 min break at 8:30-9 PM —
+    //   closer variant with the break-slot shift.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Afternoon (2-7 PM, 5 h single block — fills the 2-4 PM lull gap.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -156,6 +175,10 @@ const SAT: DayTemplate = {
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
     // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
   ],
 }
 
@@ -195,6 +218,11 @@ const SUN: DayTemplate = {
     //   ends at 11 PM, covers slot 18 (10-11 PM) which was the biggest
     //   Sun deficit. User's manual no-gaps fix used this exact shape.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
+    // Late B'  (4-8:30 PM + 9-11 PM, 6 h, break at 8:30-9 PM — Sun variant
+    //   that puts the break at slot 16 to fill the 8-8:30 PM gap.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late C'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer with break-slot shift.)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
   ],
 }
 
@@ -225,6 +253,12 @@ const MON: DayTemplate = {
     // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
     //   covers dinner-peak + the full closer block, skips slot 15-16)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -246,6 +280,10 @@ const TUE: DayTemplate = {
     // Late     (4-8 PM + 8:30-11:30 PM, 7 h, 30 min break — covers closer
     //   with no consecutive block over 5 h)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+    // Late'    (4-8:30 PM + 9-11:30 PM, 7 h, break at 8:30-9 PM — fills slot 15)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
   ],
 }
 
@@ -284,6 +322,12 @@ const WED: DayTemplate = {
     //   ends at 11 PM to fill Wed slot 18 deficit without piling on
     //   slot 19 which is already covered by Late B.)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
+    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
     // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
     //   3rd pattern covering slots 1, 2 (9-11 AM, req=2) and slot 9
     //   (3-4 PM, req=2) so the picker has options when the existing

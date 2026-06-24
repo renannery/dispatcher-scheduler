@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, LONG_SHIFT_BREAK_MIN, MED_SHIFT_BREAK_MIN, patternMaxBreakHours, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, LONG_SHIFT_BREAK_MIN, MAX_CONSECUTIVE_HOURS, MED_SHIFT_BREAK_MIN, patternMaxBreakHours, patternWorkBlocks, SLOTS } from '@/data/coverageTemplate'
 import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
@@ -216,11 +216,16 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     {!isOff && entry && (() => {
                       const h = entry.totalHours ?? 0
                       const brk = patternMaxBreakHours(entry.slots, SLOTS)
+                      const blocks = patternWorkBlocks(entry.slots, SLOTS)
+                      const maxBlock = blocks.length ? Math.max(...blocks) : 0
                       let problem: string | null = null
-                      if (h >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
+                      // Labor law (Section 23): >5h consecutive needs ≥30 min break.
+                      if (maxBlock > MAX_CONSECUTIVE_HOURS) {
+                        problem = `${maxBlock}h consecutive work > ${MAX_CONSECUTIVE_HOURS}h legal max — needs a ≥${MED_SHIFT_BREAK_MIN}h break inside that block`
+                      } else if (h >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
                         problem = `${h}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break — has ${brk}h`
-                      } else if (h >= 7 && h < 8 && brk < MED_SHIFT_BREAK_MIN) {
-                        problem = `${h}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break — has ${brk}h`
+                      } else if (h > MAX_CONSECUTIVE_HOURS && brk < MED_SHIFT_BREAK_MIN) {
+                        problem = `${h}h shift needs ≥${MED_SHIFT_BREAK_MIN}h meal break — has ${brk}h (Section 23)`
                       }
                       if (!problem) return null
                       return (
