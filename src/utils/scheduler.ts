@@ -994,6 +994,56 @@ export function generateSchedule(
       }
     }
 
+    // ── Coverage-gated 2nd-off-prevention ─────────────────────────────
+    // Same shape as must-work but lower threshold: dispatchers with
+    // exactly 1 day off this week who'd otherwise become off today
+    // (= 2 days off) get force-assigned IF a legal pattern of theirs
+    // closes at least one gap AND the net coverage benefit is
+    // positive. Prevents granting a 2nd off-day while gaps remain;
+    // preserves the 2-days-off perk when coverage is already met.
+    {
+      const candidatePool = availablePool.filter(
+        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) === 1,
+      )
+      const cov = new Array(SLOTS.length).fill(0)
+      for (const { pattern } of assignments) {
+        pattern.forEach((on, i) => { if (on) cov[i]++ })
+      }
+      for (const d of candidatePool) {
+        let pick: { p: typeof patternMeta[number]; score: number; pIdx: number } | null = null
+        for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
+          const p = patternMeta[pIdx]
+          if (p.isMorning && workedNightYesterday(d.id)) continue
+          const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+          if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
+          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+          let fill = 0, over = 0
+          for (let i = 0; i < p.bool.length; i++) {
+            if (!p.bool[i]) continue
+            if (cov[i] < dayRequired[i]) fill++
+            else if (cov[i] >= dayRequired[i]) over++
+          }
+          // Only pick when we genuinely close a gap. fill*2 - over: a
+          // pure trim-of-over wouldn't help, so demand net positive.
+          if (fill === 0) continue
+          const score = fill * 2 - over
+          if (score <= 0) continue
+          const better =
+            !pick ||
+            score > pick.score ||
+            (score === pick.score && p.hours < pick.p.hours)
+          if (better) pick = { p, score, pIdx }
+        }
+        if (pick) {
+          assignments.push({ dispatcher: d, pattern: pick.p.bool })
+          usedIds.add(d.id)
+          if (pick.p.maxBreak >= 2) splitsSoFar[d.id]++
+          usedPatternIdx.add(pick.pIdx)
+          pick.p.bool.forEach((on, i) => { if (on) cov[i]++ })
+        }
+      }
+    }
+
     // Trim over-covered slots down to the requirement. Runs LAST so it
     // sees the full final coverage from picker + swap + rescue + must-work.
     trimToExactCoverage(assignments, dayRequired)
