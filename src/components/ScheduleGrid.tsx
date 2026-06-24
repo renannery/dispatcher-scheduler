@@ -158,6 +158,8 @@ export function ScheduleGrid() {
   // filtered dispatcher list for that bucket.
   type DrillKind = 'atCap' | 'target' | 'under' | 'off' | '1d' | '2d' | '3d' | '4d+'
   const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
+  // Per-dispatcher detail modal — fired from a peak-wk pill click.
+  const [dispatcherDetailId, setDispatcherDetailId] = useState<string | null>(null)
   // Forces a re-render every wall-clock minute so the NowLine slides.
   const [nowTick, setNowTick] = useState(0)
   useEffect(() => {
@@ -300,6 +302,7 @@ export function ScheduleGrid() {
   // period-total split-shift count (worked day with a mid-shift break
   // ≥ 2 h — disruptive enough that the gap can't be used productively).
   const totalsByPerson = schedule.dispatcherSchedules.map((ds) => ({
+    id:    ds.dispatcher.id,
     name:  ds.dispatcher.name,
     color: ds.dispatcher.color,
     level: ds.dispatcher.level,
@@ -402,28 +405,18 @@ export function ScheduleGrid() {
         <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">peak wk</span>
-          {totalsByPerson.map(({ name, hours, color, level, totalSplits }) => (
-            <div key={name} className="flex items-center gap-1.5 text-sm" title={`${name}: ${hours.toFixed(1)}h peak week · ${totalSplits} split shift${totalSplits === 1 ? '' : 's'} across the period`}>
+          {totalsByPerson.map(({ id, name, hours, color }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setDispatcherDetailId(id)}
+              className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-sm transition hover:bg-slate-100"
+              title={`${name}: click for details`}
+            >
               <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
               <span className="font-medium text-slate-700">{name.split(' ')[0]}</span>
-              <span className={clsx(
-                'rounded px-1.5 py-0 text-[10px] font-bold',
-                level === 'Senior'  && 'bg-amber-100 text-amber-600',
-                level === 'Regular' && 'bg-blue-100 text-blue-600',
-                level === 'Trainee' && 'bg-slate-100 text-slate-500',
-              )}>
-                {level === 'Senior' ? 'SR' : level === 'Regular' ? 'RG' : 'TR'}
-              </span>
               <span className={clsx('font-bold', hoursStatusColor(hours))}>{hours.toFixed(1)}h</span>
-              {totalSplits > 0 && (
-                <span
-                  className="rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700"
-                  title={`${totalSplits} split shift${totalSplits === 1 ? '' : 's'} (break ≥ 2 h) across the entire period`}
-                >
-                  ⤳{totalSplits}
-                </span>
-              )}
-            </div>
+            </button>
           ))}
         </div>
         <div className="flex flex-wrap gap-2">
@@ -938,6 +931,117 @@ export function ScheduleGrid() {
               </div>
               <div className="border-t border-slate-100 px-5 py-2 text-xs text-slate-500">
                 {sorted.length} dispatcher{sorted.length === 1 ? '' : 's'} in this bucket
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Per-dispatcher detail modal — fired from peak-wk pill click. */}
+      {dispatcherDetailId && (() => {
+        const ds = schedule.dispatcherSchedules.find((x) => x.dispatcher.id === dispatcherDetailId)
+        if (!ds) return null
+        const { dispatcher, days, weeklyHours, totalHours } = ds
+        const peak = Math.max(0, ...Object.values(weeklyHours))
+        const totalSplits = days.filter(
+          (d) => !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
+        ).length
+        const daysWorked = days.filter((d) => !d.isOff).length
+        const daysOff = days.length - daysWorked
+        // Group days by week for the per-week breakdown.
+        const byWeek = new Map<string, typeof days>()
+        for (const day of days) {
+          const wl = schedule.dates.find((d) => d.date === day.date)?.weekLabel ?? ''
+          if (!byWeek.has(wl)) byWeek.set(wl, [])
+          byWeek.get(wl)!.push(day)
+        }
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+            onClick={() => setDispatcherDetailId(null)}
+          >
+            <div
+              className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: dispatcher.color }} />
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-semibold text-slate-800">{dispatcher.name}</h3>
+                    <span className={clsx(
+                      'mt-0.5 inline-block rounded px-1.5 py-0 text-[10px] font-bold',
+                      dispatcher.level === 'Senior'  && 'bg-amber-100 text-amber-600',
+                      dispatcher.level === 'Regular' && 'bg-blue-100 text-blue-600',
+                      dispatcher.level === 'Trainee' && 'bg-slate-100 text-slate-500',
+                    )}>
+                      {dispatcher.level === 'Senior' ? 'SENIOR' : dispatcher.level === 'Regular' ? 'REGULAR' : 'TRAINEE'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDispatcherDetailId(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {/* Top summary */}
+                <div className="grid grid-cols-4 gap-3 border-b border-slate-100 pb-4 text-center">
+                  <div>
+                    <div className={clsx('text-lg font-bold tabular-nums', hoursStatusColor(peak))}>{peak.toFixed(1)}h</div>
+                    <div className="text-[10px] uppercase text-slate-400">peak wk</div>
+                  </div>
+                  <div>
+                    <div className="text-lg font-bold tabular-nums text-slate-700">{totalHours.toFixed(1)}h</div>
+                    <div className="text-[10px] uppercase text-slate-400">total</div>
+                  </div>
+                  <div>
+                    <div className="text-lg font-bold tabular-nums text-slate-700">{daysWorked}/{daysOff}</div>
+                    <div className="text-[10px] uppercase text-slate-400">on/off</div>
+                  </div>
+                  <div>
+                    <div className={clsx('text-lg font-bold tabular-nums', totalSplits > 0 ? 'text-amber-700' : 'text-slate-700')}>{totalSplits}</div>
+                    <div className="text-[10px] uppercase text-slate-400">splits</div>
+                  </div>
+                </div>
+                {/* Per-week breakdown */}
+                <ul className="mt-3 flex flex-col gap-3">
+                  {[...byWeek.entries()].map(([wl, wdays]) => {
+                    const wHours = wdays.reduce((s, d) => s + d.totalHours, 0)
+                    const wOff = wdays.filter((d) => d.isOff)
+                    return (
+                      <li key={wl} className="rounded-lg border border-slate-100 p-3">
+                        <div className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-700">
+                          <span>{wl}</span>
+                          <span className={clsx('tabular-nums', hoursStatusColor(wHours))}>{wHours.toFixed(1)}h</span>
+                        </div>
+                        <div className="mt-2 grid grid-cols-7 gap-1 text-[11px]">
+                          {wdays.map((d) => {
+                            const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(d.date + 'T12:00:00').getDay()]
+                            return (
+                              <div key={d.date} className={clsx(
+                                'flex flex-col items-center rounded px-1 py-1 tabular-nums',
+                                d.isOff ? 'bg-slate-100 text-slate-400' : 'bg-emerald-50 text-emerald-700',
+                              )}>
+                                <span className="text-[9px] uppercase opacity-70">{dow}</span>
+                                <span className="font-bold">{d.isOff ? 'OFF' : `${d.totalHours}h`}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {wOff.length > 0 && (
+                          <div className="mt-1.5 text-[10px] text-slate-500">
+                            off: {wOff.map((d) => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(d.date + 'T12:00:00').getDay()]).join(', ')}
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
               </div>
             </div>
           </div>
