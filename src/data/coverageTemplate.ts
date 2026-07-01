@@ -98,10 +98,42 @@ const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
 // while Evening A is on its meal break.
 const EVENING_B   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
 
+// Mon–Wed SPLIT shapes — the one explicit exception to the 30-min paid
+// meal break: one dispatcher covers BOTH peaks with a long unpaid 3h gap
+// through the 14:00–17:00 lull (slots 7–10). The gap clears the lunch
+// peak (ends 14:00) and the dinner peak (starts 17:00), both blocks are
+// ≥3h and ≤5h, and the shape carries the weekday 5h primary stretch.
+// A split dispatcher anchors BOTH peaks (starts before each, continuous
+// through each). Splits free a body-day on Tue/Wed, which funds the
+// rotating 2nd day off for Regular/Senior dispatchers.
+//
+// Split B (11:00–14:00 + 17:00–22:00, 3h + 5h, 8h worked — dinner-heavy;
+// ends 10 PM so night-rest blocks a next-day morning.)
+const SPLIT_B = [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+// Split C (9:00–14:00 + 17:00–20:00, 5h + 3h, 8h worked — morning-heavy;
+// helps the 9–11 AM open, ends 8 PM.)
+const SPLIT_C = [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+
+/** Slots a Mon–Wed split gap may occupy (14:00–17:00 lull) and its
+ *  exact length. Used by isValidShiftShape to admit the split shape. */
+export const SPLIT_GAP_SLOTS = [7, 8, 9, 10] as const
+export const SPLIT_GAP_HOURS = 3
+
+/** Canonical split coverage bitmap — used by the coverage-gated off
+ *  election to simulate how many bodies a split saves on a given day. */
+export const SPLIT_COVERAGE: readonly number[] = SPLIT_B
+
 const WEEKDAY_PATTERNS = [
   WD_MORNING, WD_MORNING, WD_MORNING, WD_MORNING,
   EVENING_A, EVENING_A, EVENING_A,
   EVENING_B, EVENING_B, EVENING_B,
+]
+// Mon–Wed: same two-team catalog PLUS the split shapes. Thu–Sun get no
+// splits — the two fixed teams stay pure there.
+const MON_WED_PATTERNS = [
+  ...WEEKDAY_PATTERNS,
+  SPLIT_B, SPLIT_B,
+  SPLIT_C, SPLIT_C,
 ]
 const WEEKEND_PATTERNS = [
   WE_MORNING, WE_MORNING, WE_MORNING, WE_MORNING,
@@ -152,7 +184,7 @@ const MON: DayTemplate = {
   dayOfWeek: 1, dayName: 'Monday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 3, 3, 3, 3, 1, 2, 2, 1],
-  shiftPatterns: WEEKDAY_PATTERNS,
+  shiftPatterns: MON_WED_PATTERNS,
 }
 
 // ─── TUESDAY (dayOfWeek=2) ──────────────────────────────────────────────────
@@ -160,7 +192,7 @@ const TUE: DayTemplate = {
   dayOfWeek: 2, dayName: 'Tuesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1],
-  shiftPatterns: WEEKDAY_PATTERNS,
+  shiftPatterns: MON_WED_PATTERNS,
 }
 
 // ─── WEDNESDAY (dayOfWeek=3) ────────────────────────────────────────────────
@@ -168,7 +200,7 @@ const WED: DayTemplate = {
   dayOfWeek: 3, dayName: 'Wednesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2, 1],
-  shiftPatterns: WEEKDAY_PATTERNS,
+  shiftPatterns: MON_WED_PATTERNS,
 }
 
 /** Map from JS getDay() → DayTemplate */
@@ -372,6 +404,7 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
   const violations: string[] = []
   for (const day of Object.values(DAY_TEMPLATES)) {
     const isWeekend = day.dayOfWeek === 0 || day.dayOfWeek === 6
+    const splitsAllowed = day.dayOfWeek >= 1 && day.dayOfWeek <= 3 // Mon–Wed
     day.shiftPatterns.forEach((pat, idx) => {
       const blocks = patternWorkBlocks(pat, day.slots)
       const brk = patternMaxBreakHours(pat, day.slots)
@@ -381,16 +414,26 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
         return
       }
       if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) {
-        violations.push(`${day.dayName} #${idx}: break ${brk}h ≠ the ${MEAL_BREAK_HOURS}h paid meal break`)
+        // Mon–Wed split exception: a 3h unpaid gap confined to the
+        // 14:00–17:00 lull, both blocks ≥ 3h.
+        const gap = midShiftBreakSlots(pat)
+        const isSplit =
+          splitsAllowed &&
+          brk === SPLIT_GAP_HOURS &&
+          gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
+          blocks[0] >= MIN_BLOCK_HOURS &&
+          blocks[1] >= MIN_BLOCK_HOURS
+        if (!isSplit) {
+          violations.push(`${day.dayName} #${idx}: break ${brk}h is neither the ${MEAL_BREAK_HOURS}h meal break nor a legal Mon–Wed split gap`)
+        }
+      } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
+        violations.push(`${day.dayName} #${idx}: tail ${blocks[1]}h < ${MIN_TAIL_STRETCH_HOURS}h`)
       }
       if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) {
         violations.push(`${day.dayName} #${idx}: ${Math.max(...blocks)}h stretch > ${MAX_CONSECUTIVE_HOURS}h legal max`)
       }
       if (blocks[0] < MIN_BLOCK_HOURS) {
         violations.push(`${day.dayName} #${idx}: first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
-      }
-      if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
-        violations.push(`${day.dayName} #${idx}: tail ${blocks[1]}h < ${MIN_TAIL_STRETCH_HOURS}h`)
       }
       if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) {
         violations.push(`${day.dayName} #${idx}: ${work}h worked with no meal break`)

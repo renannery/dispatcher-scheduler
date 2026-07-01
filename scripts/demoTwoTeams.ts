@@ -23,7 +23,10 @@ import {
   HANDOFF_SLOT,
   MAX_CONSECUTIVE_HOURS,
   MEAL_BREAK_HOURS,
+  midShiftBreakSlots,
   MIN_BLOCK_HOURS,
+  SPLIT_GAP_HOURS,
+  SPLIT_GAP_SLOTS,
   WEEKDAY_PRIMARY_STRETCH_HOURS,
   patternMaxBreakHours,
   patternWorkBlocks,
@@ -56,7 +59,17 @@ for (const ds of schedule.dispatcherSchedules) {
     const work = blocks.reduce((s, h) => s + h, 0)
     const problems: string[] = []
     if (blocks.length > 2) problems.push(`${blocks.length} stretches`)
-    if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h`)
+    if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) {
+      // Mon–Wed split exception: 3h gap confined to the 14:00–17:00
+      // lull, both blocks ≥ 3h.
+      const gap = midShiftBreakSlots(day.slots)
+      const isSplit =
+        day.dayOfWeek >= 1 && day.dayOfWeek <= 3 &&
+        brk === SPLIT_GAP_HOURS &&
+        gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
+        blocks[0] >= MIN_BLOCK_HOURS && blocks[1] >= MIN_BLOCK_HOURS
+      if (!isSplit) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h and not a legal Mon–Wed split`)
+    }
     if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) problems.push(`stretch ${Math.max(...blocks)}h > 5h`)
     if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < 3h`)
     if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) problems.push(`${work}h no meal break`)
@@ -141,6 +154,35 @@ for (const dInfo of schedule.dates.slice(0, 7)) {
   }
   console.log(`  ${dInfo.date} ${DOW_NAMES[dInfo.dayOfWeek]}: ${m}M / ${e}E / ${off} off`)
 }
+
+// ── Split usage + 2nd-day-off report ────────────────────────────────────
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Mon–Wed splits + 2nd days off per week')
+console.log('══════════════════════════════════════════════════════════════════════')
+const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
+const isSplitShift = (slots: boolean[]) =>
+  patternMaxBreakHours(slots, SLOTS) === SPLIT_GAP_HOURS
+let totalSecondOffs = 0
+const secondOffByName = new Map<string, number>()
+for (const wl of weekLabels) {
+  const weekDates = new Set(schedule.dates.filter((d) => d.weekLabel === wl).map((d) => d.date))
+  if (weekDates.size < 7) continue // partial edge weeks skew the count
+  let splits = 0
+  const twoOff: string[] = []
+  for (const ds of schedule.dispatcherSchedules) {
+    const days = ds.days.filter((d) => weekDates.has(d.date))
+    splits += days.filter((d) => !d.isOff && isSplitShift(d.slots)).length
+    const off = days.filter((d) => d.isOff).length
+    if (off >= 2) {
+      twoOff.push(`${ds.dispatcher.name}(${off})`)
+      totalSecondOffs += off - 1
+      secondOffByName.set(ds.dispatcher.name, (secondOffByName.get(ds.dispatcher.name) ?? 0) + (off - 1))
+    }
+  }
+  console.log(`  ${wl}: splits=${splits} · 2-off: ${twoOff.length ? twoOff.join(', ') : '—'}`)
+}
+console.log(`  Total 2nd days off granted: ${totalSecondOffs}`)
+console.log(`  Distribution: ${[...secondOffByName.entries()].map(([n, c]) => `${n}:${c}`).join(' ') || '—'}`)
 
 // ── Warning counts by kind ──────────────────────────────────────────────
 const counts: Record<string, number> = {}

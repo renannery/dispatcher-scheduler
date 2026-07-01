@@ -7,12 +7,16 @@ import {
   HANDOFF_SLOT,
   MAX_CONSECUTIVE_HOURS,
   MEAL_BREAK_HOURS,
+  midShiftBreakSlots,
   MIN_BLOCK_HOURS,
   MIN_TAIL_STRETCH_HOURS,
   PEAK_WINDOWS,
   patternMaxBreakHours,
   patternWorkBlocks,
   SLOTS,
+  SPLIT_COVERAGE,
+  SPLIT_GAP_HOURS,
+  SPLIT_GAP_SLOTS,
   SURPLUS_TOLERATED_SLOTS,
   WEEKDAY_PRIMARY_STRETCH_HOURS,
 } from '@/data/coverageTemplate'
@@ -320,16 +324,29 @@ function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   if (blocks.length === 0) return false
   if (blocks.length > 2) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
-  if (blocks.length === 2 && maxBreak !== MEAL_BREAK_HOURS) return false
+  if (blocks.length === 2 && maxBreak !== MEAL_BREAK_HOURS) {
+    // Mon–Wed split exception: one dispatcher covers both peaks with a
+    // 3h UNPAID gap confined to the 14:00–17:00 lull (never touching
+    // the lunch or dinner peak). Both blocks must be real stretches
+    // (≥ 3h). This is the only shape allowed to deviate from the
+    // 30-min paid meal break, and only on dow 1–3.
+    const isSplitDay = dayOfWeek === 1 || dayOfWeek === 2 || dayOfWeek === 3
+    if (!isSplitDay) return false
+    if (maxBreak !== SPLIT_GAP_HOURS) return false
+    const gap = midShiftBreakSlots(slots)
+    if (!gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s))) return false
+    if (blocks[1] < MIN_BLOCK_HOURS) return false
+  } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
+    return false
+  }
   // Labor law: no single worked stretch over 5h.
   if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
   if (totalWork < 4) return false
   if (totalWork > 9) return false
-  // > 5h worked requires the meal break.
+  // > 5h worked requires a break (meal break or split gap).
   if (totalWork > MAX_CONSECUTIVE_HOURS && blocks.length < 2) return false
   if (blocks[0] < MIN_BLOCK_HOURS) return false
-  if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) return false
   // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt.
   const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
   if (!isWeekendDay && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) return false
@@ -352,13 +369,16 @@ function isEligibleForPattern(
     dateStr: string
     dow: number
     workedNightYesterday: (id: string) => boolean
+    /** Effective weekly cap for TODAY's assignment — 45h minus the
+     *  trainee reserve, night-aware (see capForShift in the day loop). */
+    capForShift: (dispId: string, lastSlot: number) => number
   },
 ): boolean {
   if (ctx.usedIds.has(d.id)) return false
   if (p.isMorning && ctx.workedNightYesterday(d.id)) return false
   const blocks = blockedBitmap(ctx.timeOff, d, ctx.dateStr, ctx.dow)
   if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
-  if ((ctx.weekHours[d.id][ctx.wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) return false
+  if ((ctx.weekHours[d.id][ctx.wLabel] ?? 0) + p.hours > ctx.capForShift(d.id, lastActiveSlot(p.bool))) return false
   return true
 }
 
@@ -383,6 +403,7 @@ interface SeedCtx {
   dateStr: string
   dow: number
   workedNightYesterday: (id: string) => boolean
+  capForShift: (dispId: string, lastSlot: number) => number
 }
 
 /** Before the main picker runs, count viable (dispatcher × anchor-pattern)
@@ -457,7 +478,7 @@ function enforceAnchors(
       if (!isValidShiftShape(trial, ctx.dow)) continue
       // Weekly cap check — fill-break adds hours.
       const oldH = slotHours(a.pattern), newH = slotHours(trial)
-      if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + (newH - oldH) > WEEKLY_CAP_HOURS) continue
+      if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + (newH - oldH) > ctx.capForShift(a.dispatcher.id, lastActiveSlot(trial))) continue
       a.pattern = trial
       fixed = true
       break
@@ -515,6 +536,7 @@ function stretchToFillGaps(
   weekHours: Record<string, Record<string, number>>,
   wLabel: string,
   dayOfWeek: number,
+  capForShift: (dispId: string, lastSlot: number) => number,
 ): void {
   const cov = new Array(SLOTS.length).fill(0)
   for (const { pattern } of assignments) {
@@ -537,7 +559,7 @@ function stretchToFillGaps(
         // weekHours is pre-shift (today's hours added at accumulation step
         // after all passes), so the cap check is pre-shift + this day's
         // post-stretch shift.
-        if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + newHours > WEEKLY_CAP_HOURS) continue
+        if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + newHours > capForShift(a.dispatcher.id, lastActiveSlot(trial))) continue
         a.pattern = trial
         cov[si]++
         changed = true
@@ -650,8 +672,9 @@ export function smoothTransitions(args: {
   timeOff: DispatcherTimeOff
   dateStr: string
   dow: number
+  capForShift: (dispId: string, lastSlot: number) => number
 }): { resolved: string[]; unresolved: number[] } {
-  const { assignments, required, weekHours, smoothingBudget, wLabel, timeOff, dateStr, dow } = args
+  const { assignments, required, weekHours, smoothingBudget, wLabel, timeOff, dateStr, dow, capForShift } = args
   const cov = new Array(SLOTS.length).fill(0)
   for (const { pattern } of assignments) pattern.forEach((on, i) => { if (on) cov[i]++ })
 
@@ -671,11 +694,11 @@ export function smoothTransitions(args: {
   const dailyNetAdd = new Map<string, number>()
 
   // Cap a dispatcher gains by adding `delta` hours (net). Returns true
-  // if all caps (weekly 45 h, weekly smoothing budget, daily smoothing
-  // budget) would still hold.
-  const fitsBudget = (a: { dispatcher: Dispatcher }, delta: number): boolean => {
+  // if all caps (weekly 45 h — night-aware trainee cap, weekly smoothing
+  // budget, daily smoothing budget) would still hold.
+  const fitsBudget = (a: { dispatcher: Dispatcher; pattern: boolean[] }, delta: number): boolean => {
     if (delta <= 0) return true
-    if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + delta > WEEKLY_CAP_HOURS) return false
+    if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + delta > capForShift(a.dispatcher.id, lastActiveSlot(a.pattern))) return false
     if ((smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta > SMOOTHING_BUDGET_PER_WEEK) return false
     if ((dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta > SMOOTHING_DAILY_NET_ADD) return false
     return true
@@ -1066,6 +1089,52 @@ export function generateSchedule(
     // off election and the picker's over-coverage cap both see it.
     const dayRequired = effectiveCoverage(dow, coverageOverrides)
 
+    // Trainee weekly-hour reserve. Trainees must work every non-rest day
+    // (off-day cap 1), so keep enough of their 45h budget for the
+    // remaining mandatory workdays. Without this the picker loads
+    // trainees with 8h splits/evenings early in the week, they hit 45h
+    // by Monday, and the cap forces an involuntary 2nd day off —
+    // violating the trainee rule through the back door.
+    //
+    // TWO caps per trainee, chosen by whether today's candidate shift
+    // ends at night (≥ 9 PM):
+    //  - weeklyCapFor: remaining days reserved at that day's SHORTEST
+    //    shift (weekday Morning 6.5h / weekend Morning 7.5h).
+    //  - weeklyCapNightFor: a night-ending shift blocks tomorrow's
+    //    morning (night-rest), and every non-morning option is 8h and
+    //    itself night-ending — so one night chains 8h/day until the
+    //    trainee's rest day resets it. Reserve 8h for each chained
+    //    remaining day, the minimum shift after the rest.
+    // Conservative: fully-blocked future days still count toward the
+    // reserve (over-reserving means shorter shifts, never a violation).
+    const minShiftHoursFor = (dw: number) => (dw === 0 || dw === 6 ? 7.5 : 6.5)
+    const NIGHT_CHAIN_SHIFT_HOURS = 8
+    const weeklyCapFor: Record<string, number> = {}
+    const weeklyCapNightFor: Record<string, number> = {}
+    for (const d of dispatchers) {
+      if (d.level !== 'Trainee') {
+        weeklyCapFor[d.id] = WEEKLY_CAP_HOURS
+        weeklyCapNightFor[d.id] = WEEKLY_CAP_HOURS
+        continue
+      }
+      let reserve = 0
+      let reserveNight = 0
+      let chained = true
+      for (const dt of allDates) {
+        const ds = format(dt, 'yyyy-MM-dd')
+        if (ds <= dateStr || weekLabel(dt) !== wLabel) continue
+        if (restLocks[d.id].has(ds)) { chained = false; continue }
+        const minH = minShiftHoursFor(dt.getDay())
+        reserve += minH
+        reserveNight += chained ? NIGHT_CHAIN_SHIFT_HOURS : minH
+      }
+      weeklyCapFor[d.id] = WEEKLY_CAP_HOURS - reserve
+      weeklyCapNightFor[d.id] = WEEKLY_CAP_HOURS - reserveNight
+    }
+    // Effective cap for a candidate shift, chosen by its end slot.
+    const capForShift = (dispId: string, lastSlot: number): number =>
+      lastSlot >= NIGHT_SLOT_THRESHOLD ? weeklyCapNightFor[dispId] : weeklyCapFor[dispId]
+
     // Phase A — classify dispatchers into:
     //   blockedToday  — fully blocked by recurring/per-date time-off,
     //                   OR forced off because today is the last day of
@@ -1114,14 +1183,32 @@ export function generateSchedule(
     // Phase B — fairness pick: how many in availablePool to elect OFF today.
     // Coverage-gated: elect an off only when the day's peak demand still
     // fits in the remaining pool. Under the two-team model the day needs
-    // roughly (max morning-window req) + (max evening-window req) bodies;
-    // any pool beyond that is genuine slack that can become a 2nd day
-    // off. With the current 7-person roster there is usually no slack —
-    // the perk auto-revives the moment headcount allows it (that plus
-    // the daily warnings is the hiring signal).
+    // roughly (max morning-window req) + (max evening-window req) bodies.
+    // Slot 9 (3–4 PM) is excluded from both windows — the handoff overlap
+    // double-covers it. On Mon–Wed, splits can absorb a body's worth of
+    // double-peak coverage, so we simulate 1–2 splits against the actual
+    // req vector and take the cheapest configuration. The slack this
+    // frees (Tue/Wed −1 each at current targets) is what funds the
+    // rotating 2nd day off for Regular/Senior. Mon derives no saving
+    // from the same simulation (2:30–3 PM sits in the split gap), so no
+    // false slack there. The perk scales with headcount automatically.
     const morningNeed = Math.max(...dayRequired.slice(0, HANDOFF_SLOT))
-    const eveningNeed = Math.max(...dayRequired.slice(HANDOFF_SLOT))
-    const bodiesNeeded = morningNeed + eveningNeed
+    const eveningNeed = Math.max(...dayRequired.slice(HANDOFF_SLOT + 1))
+    let bodiesNeeded = morningNeed + eveningNeed
+    const splitsAllowed = dow >= 1 && dow <= 3
+    if (splitsAllowed) {
+      for (let s = 1; s <= 2; s++) {
+        let mNeed = 0
+        for (let i = 0; i < HANDOFF_SLOT; i++) {
+          mNeed = Math.max(mNeed, dayRequired[i] - s * (SPLIT_COVERAGE[i] ? 1 : 0))
+        }
+        let eNeed = 0
+        for (let i = HANDOFF_SLOT + 1; i < SLOTS.length; i++) {
+          eNeed = Math.max(eNeed, dayRequired[i] - s * (SPLIT_COVERAGE[i] ? 1 : 0))
+        }
+        bodiesNeeded = Math.min(bodiesNeeded, s + mNeed + eNeed)
+      }
+    }
     const desiredElectedOff = Math.max(0, availablePool.length - bodiesNeeded)
 
     let eligibleForOff = availablePool.filter(
@@ -1292,7 +1379,7 @@ export function generateSchedule(
     const seedCtx = {
       patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
       runningCov, weekHours, wLabel, timeOff, dateStr, dow,
-      workedNightYesterday,
+      workedNightYesterday, capForShift,
     }
     const unseedablePeaks = seedAnchors(seedCtx)
     for (const peakKey of unseedablePeaks) {
@@ -1407,7 +1494,7 @@ export function generateSchedule(
         if (p.isMorning && workedNightYesterday(d.id)) return false
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
         if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
-        if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) return false
+        if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) return false
         return true
       })
       // Continue (not break) so a later pattern still gets a chance even
@@ -1523,7 +1610,7 @@ export function generateSchedule(
             if (p.isMorning && workedNightYesterday(d.id)) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
             if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
-            if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+            if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
             if (!best || score > best.score) best = { p, dIdx: i, score }
           }
         }
@@ -1585,7 +1672,7 @@ export function generateSchedule(
           if (p.isMorning && workedNightYesterday(d.id)) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
-          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
           let fill = 0, overTolerated = 0, overOff = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
@@ -1650,7 +1737,7 @@ export function generateSchedule(
           if (p.isMorning && workedNightYesterday(d.id)) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
-          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
+          if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
           let fill = 0, overTolerated = 0, overOff = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
@@ -1685,7 +1772,7 @@ export function generateSchedule(
     // dispatcher's tail/head by 0.5-1h. Mirrors the manual closer
     // extensions (Thu shamika → slot 19, Fri resgie → slot 19, etc).
     // Runs BEFORE trim so any incidental over-cov can still be reclaimed.
-    stretchToFillGaps(assignments, dayRequired, weekHours, wLabel, dow)
+    stretchToFillGaps(assignments, dayRequired, weekHours, wLabel, dow, capForShift)
 
     // ── enforceAnchors — peak-continuity repair pass ───────────────────
     // Validate each peak has at least one anchor (started pre-peak +
@@ -1696,7 +1783,7 @@ export function generateSchedule(
     const enforceCtx = {
       patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
       runningCov, weekHours, wLabel, timeOff, dateStr, dow,
-      workedNightYesterday,
+      workedNightYesterday, capForShift,
     }
     const failedPeaks = enforceAnchors(enforceCtx, dayRequired)
     for (const peakKey of failedPeaks) {
@@ -1726,7 +1813,7 @@ export function generateSchedule(
     // the `lunch`/`dinner` anchor warnings.
     const smoothing = smoothTransitions({
       assignments, required: dayRequired, weekHours, smoothingBudget,
-      wLabel, timeOff, dateStr, dow,
+      wLabel, timeOff, dateStr, dow, capForShift,
     })
     for (const note of smoothing.resolved) {
       // eslint-disable-next-line no-console
