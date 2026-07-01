@@ -446,6 +446,27 @@ export const PEAK_WINDOWS = [
 ]
 export type PeakKey = (typeof PEAK_WINDOWS)[number]['key']
 
+/** Windows where over-coverage is tolerated — surplus hours (e.g. from a
+ *  trainee's forced 6th workday) can sit here without pushing the picker
+ *  toward off-peak over-cov. Deliberately DIFFERENT from the anchor peak
+ *  windows above:
+ *    Lunch  anchor        = 11:30 AM – 2:00 PM  → slots 4, 5, 6
+ *    Lunch  surplus-OK    = 11:00 AM – 1:00 PM  → slots 3, 4, 5
+ *    Dinner anchor        = 5:00 PM  – 8:00 PM  → slots 11, 12, 13, 14
+ *    Dinner surplus-OK    = 5:00 PM  – 8:00 PM  → slots 11, 12, 13, 14 (same as anchor)
+ *
+ *  Lunch windows do NOT coincide — surplus-tolerated lunch starts 30 min
+ *  earlier and ends 1 h earlier than the anchor lunch. Do not merge or
+ *  reuse the anchor sets for surplus-tolerance checks. Consumers pick
+ *  the one whose semantic matches their pass (continuity check → anchor
+ *  sets; over-cov scoring → surplus sets). */
+export const SURPLUS_TOLERATED_LUNCH_SLOTS  = [3, 4, 5] as const
+export const SURPLUS_TOLERATED_DINNER_SLOTS = [11, 12, 13, 14] as const
+export const SURPLUS_TOLERATED_SLOTS = new Set<number>([
+  ...SURPLUS_TOLERATED_LUNCH_SLOTS,
+  ...SURPLUS_TOLERATED_DINNER_SLOTS,
+])
+
 /** Returns the largest mid-shift break (in hours) inside a pattern.
  *  Leading and trailing off-slots don't count — only gaps between work blocks. */
 export function patternMaxBreakHours(

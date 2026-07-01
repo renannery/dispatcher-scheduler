@@ -12,11 +12,13 @@ import {
   patternMaxBreakHours,
   patternWorkBlocks,
   SLOTS,
+  SURPLUS_TOLERATED_SLOTS,
 } from '@/data/coverageTemplate'
 import type { PeakKey } from '@/data/coverageTemplate'
 import type {
   Dispatcher,
   DispatcherDayEntry,
+  DispatcherLevel,
   DispatcherSchedule,
   DispatcherTimeOff,
   GeneratedSchedule,
@@ -29,10 +31,17 @@ import type {
 /** Fri, Sat, Sun — the "heavy" weekend days the fairness picker spreads. */
 export const HEAVY_DAYS = new Set([5, 6, 0]) // Fri, Sat, Sun
 
-/** Soft target: try to give every dispatcher 2 days off per week, fall back
- *  to 1 day off only when coverage demand makes 2 infeasible. The picker
- *  never *elects* a 3rd off-day on top of recurring blocks. */
-const MAX_DAYS_OFF_PER_WEEK = 2
+/** Level-aware weekly off-day cap. Regular/Senior can take up to 2 days
+ *  off per week (soft target — falls back to 1 when coverage demand makes
+ *  2 infeasible). Trainees are capped at 1 day off so they accumulate
+ *  more on-shift hours per week to learn faster (a floor management
+ *  policy, not a coverage optimization). The picker never *elects* off-
+ *  days beyond this on top of recurring blocks. */
+const MAX_DAYS_OFF_TRAINEE = 1
+const MAX_DAYS_OFF_REGULAR = 2
+function maxDaysOffFor(level: DispatcherLevel): number {
+  return level === 'Trainee' ? MAX_DAYS_OFF_TRAINEE : MAX_DAYS_OFF_REGULAR
+}
 
 /** Legal weekly maximum. Once a dispatcher reaches this they're forced off
  *  the rest of the week (treated like time-off, doesn't count against the
@@ -1114,7 +1123,7 @@ export function generateSchedule(
     }
 
     let eligibleForOff = availablePool.filter(
-      (d) => (weekOffDays[d.id][wLabel] ?? 0) < MAX_DAYS_OFF_PER_WEEK,
+      (d) => (weekOffDays[d.id][wLabel] ?? 0) < maxDaysOffFor(d.level),
     )
 
     // On Fri/Sat/Sun, don't elect anyone who's already had a weekend
@@ -1326,7 +1335,7 @@ export function generateSchedule(
         }
       }
       for (const cand of remainingPatterns) {
-        let fill = 0, over = 0, criticality = 0
+        let fill = 0, overTolerated = 0, overOff = 0, criticality = 0
         for (let i = 0; i < cand.bool.length; i++) {
           if (!cand.bool[i]) continue
           if (runningCov[i] < dayRequired[i]) {
@@ -1343,12 +1352,23 @@ export function generateSchedule(
             // Caught on Fri 11-11:30 PM (req=1, 2 covering patterns) —
             // neither was picked early without this broader boost.
             if (altCountPerSlot[i] <= deficit + 1) criticality += 1000
-          } else if (runningCov[i] >= dayRequired[i]) over++
+          } else if (runningCov[i] >= dayRequired[i]) {
+            // Split over-cov by slot window. Surplus is tolerated inside
+            // the SURPLUS_TOLERATED windows (lunch 11:00-13:00, dinner
+            // 17:00-20:00) — trainees work a forced 6th day and their
+            // excess hours land preferentially there. Over-cov outside
+            // those windows costs 2× so the picker routes surplus to
+            // the tolerated windows first, and only spills into off-peak
+            // when no tolerated capacity remains.
+            if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
+            else overOff++
+          }
         }
-        // fill*10 - over: a fresh deficit-fill is worth ten over-cov
-        // bodies. Subtract the static-priority index so equally-scored
-        // patterns fall back to the smart-drop / uniqueness ordering.
-        const score = fill * 10 - over - (staticOrder.get(cand) ?? 0) * 0.01 + criticality
+        // fill*10 dominates so under-target still wins. overOff is 2x
+        // overTolerated — a soft nudge, not a hard cap (that's handled
+        // separately by MAX_OVER_COVERAGE below).
+        const score = fill * 10 - overTolerated - 2 * overOff
+                    - (staticOrder.get(cand) ?? 0) * 0.01 + criticality
         if (score > bestScore) { bestScore = score; p = cand }
       }
       if (!p) break
@@ -1551,14 +1571,14 @@ export function generateSchedule(
     }
 
     // ── Must-work pass ────────────────────────────────────────────────
-    // Hard cap MAX_DAYS_OFF_PER_WEEK at the assignment layer (not just
-    // the elected-off slice). Anyone in availablePool who is NOT used
-    // today and who would land at 3+ days off this week must work,
-    // even if it stacks coverage above req+1. The user's rule: never
-    // 3 days off — wasted resources while gaps remain.
+    // Hard cap at the assignment layer, respecting the per-level off-day
+    // cap (Trainee 1, Regular/Senior 2). Anyone in availablePool who is
+    // NOT used today and is already at their cap must work — even if it
+    // stacks coverage above req+1. Rule: no dispatcher exceeds their
+    // level's off-day cap — wasted resources while gaps remain.
     {
       const mustWork = availablePool.filter(
-        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) >= MAX_DAYS_OFF_PER_WEEK,
+        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) >= maxDaysOffFor(d.level),
       )
       const cov = new Array(SLOTS.length).fill(0)
       for (const { pattern } of assignments) {
@@ -1582,20 +1602,27 @@ export function generateSchedule(
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
           if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
-          let fill = 0, over = 0
+          let fill = 0, overTolerated = 0, overOff = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
             const newCov = cov[i] + 1
             if (cov[i] < dayRequired[i]) fill++
-            if (newCov > dayRequired[i]) over += newCov - dayRequired[i]
+            if (newCov > dayRequired[i]) {
+              const excess = newCov - dayRequired[i]
+              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated += excess
+              else overOff += excess
+            }
           }
           // Fill weighted 2× over: closing one gap is worth two units
           // of over-coverage. Captures the user's "I want gaps covered,
           // not just more hours" rule — only assign over-cap patterns
           // when they genuinely close coverage. Dup penalty discourages
-          // re-using a pattern the picker already placed.
+          // re-using a pattern the picker already placed. Off-peak
+          // over-cov costs 2× tolerated-window over-cov — routes the
+          // trainee's forced 6th-day surplus into the surplus-tolerated
+          // lunch/dinner windows first.
           const dupPenalty = usedPatternIdx.has(pIdx) ? 1 : 0
-          const score = fill * 2 - over - dupPenalty
+          const score = fill * 2 - overTolerated - 2 * overOff - dupPenalty
           const better =
             !pick ||
             score > pick.score ||
@@ -1638,16 +1665,20 @@ export function generateSchedule(
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
           if ((weekHours[d.id][wLabel] ?? 0) + p.hours > WEEKLY_CAP_HOURS) continue
-          let fill = 0, over = 0
+          let fill = 0, overTolerated = 0, overOff = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
             if (cov[i] < dayRequired[i]) fill++
-            else if (cov[i] >= dayRequired[i]) over++
+            else if (cov[i] >= dayRequired[i]) {
+              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
+              else overOff++
+            }
           }
-          // Only pick when we genuinely close a gap. fill*2 - over: a
-          // pure trim-of-over wouldn't help, so demand net positive.
+          // Only pick when we genuinely close a gap. Off-peak over-cov
+          // costs 2× tolerated so surplus lands in the tolerated
+          // lunch/dinner windows first.
           if (fill === 0) continue
-          const score = fill * 2 - over
+          const score = fill * 2 - overTolerated - 2 * overOff
           if (score <= 0) continue
           const better =
             !pick ||
