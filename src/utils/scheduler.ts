@@ -590,6 +590,62 @@ function enforceAnchors(
   return failed
 }
 
+/**
+ * Coverage-improving swap pass — the coverage target is the contract.
+ * The greedy picker (and the smart-drop pre-filter) can settle on a
+ * shape mix that leaves deficits while an unused catalog shape would
+ * cover them strictly better — observed on Saturdays: a 4th morning
+ * body parked on a +1 opening surplus while dinner ran 4 short. For
+ * each assignment × unused pattern, evaluate the swap's effect on
+ * total missing units (Σ max(0, req − cov)); apply the best strictly-
+ * improving swap and repeat until none improves. Every swap must pass
+ * dispatcher eligibility for the new shape (time-off, night-rest,
+ * weekly cap), stay within the picker's loosest over-cap tier
+ * (req + MAX_OVER_COVERAGE + 1 — no new deep stacking), and preserve
+ * peak-anchor continuity.
+ */
+function improveCoverageBySwaps(ctx: SeedCtx, required: number[]): void {
+  const deficitUnits = (cov: number[]) => {
+    let u = 0
+    for (let i = 0; i < required.length; i++) u += Math.max(0, required[i] - cov[i])
+    return u
+  }
+  for (let iter = 0; iter < 20; iter++) {
+    const cov = new Array(SLOTS.length).fill(0)
+    for (const a of ctx.assignments) a.pattern.forEach((on, i) => { if (on) cov[i]++ })
+    const base = deficitUnits(cov)
+    if (base === 0) return
+    const startingPeaks = PEAK_WINDOWS.filter((peak) =>
+      ctx.assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+    )
+    let best: { a: (typeof ctx.assignments)[number]; newP: PatternMetaLite; after: number } | null = null
+    for (const a of ctx.assignments) {
+      for (const newP of ctx.patternMeta) {
+        if (ctx.usedPatternIdx.has(newP.idx)) continue
+        if (!isEligibleForPattern(a.dispatcher, newP, {
+          ...ctx,
+          usedIds: new Set([...ctx.usedIds].filter((id) => id !== a.dispatcher.id)),
+        })) continue
+        let after = 0
+        let overShoot = false
+        for (let i = 0; i < SLOTS.length; i++) {
+          const c = cov[i] - (a.pattern[i] ? 1 : 0) + (newP.bool[i] ? 1 : 0)
+          if (c > required[i] + MAX_OVER_COVERAGE + 1) { overShoot = true; break }
+          after += Math.max(0, required[i] - c)
+        }
+        if (overShoot) continue
+        if (!dropPreservesAnchors(newP.bool, a, a.pattern, ctx.assignments, startingPeaks)) continue
+        if (after < (best ? best.after : base)) best = { a, newP, after }
+      }
+    }
+    if (!best) return
+    const oldIdx = ctx.patternMeta.findIndex((pm) => pm.bool === best.a.pattern)
+    if (oldIdx >= 0) ctx.usedPatternIdx.delete(oldIdx)
+    ctx.usedPatternIdx.add(best.newP.idx)
+    best.a.pattern = best.newP.bool
+  }
+}
+
 /** Stretch shifts to fill single-body gaps. For each under-covered slot,
  *  find an assignment whose pattern is adjacent (covers slot ±1) and
  *  whose extension is shape-valid AND keeps the dispatcher's weekly
@@ -678,6 +734,63 @@ function trimToExactCoverage(
         cov[si]--
         changed = true
         break
+      }
+      if (changed) break
+    }
+  }
+}
+
+/**
+ * Break-placement repair — coverage targets are the contract; a meal
+ * break parked on an under-covered slot while a surplus slot sits
+ * inside the same shift is a free fix. For every deficit slot where an
+ * assigned dispatcher is on their 30-min meal break, try relocating
+ * that break to another half-slot in the shift whose coverage stays at
+ * or above target after losing one body. No hours change (both slots
+ * are 0.5h — isValidShiftShape rejects anything else), shape rules and
+ * anchor continuity are re-checked per move, and Mon–Wed split gaps
+ * are untouched (their gap is 3h, not the meal break). Runs after
+ * enforceAnchors (anchor state final) and before trim.
+ */
+function repairBreaks(
+  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
+  required: number[],
+  dayOfWeek: number,
+): void {
+  const cov = new Array(SLOTS.length).fill(0)
+  for (const { pattern } of assignments) {
+    pattern.forEach((on, i) => { if (on) cov[i]++ })
+  }
+  const startingPeaksWithAnchor = PEAK_WINDOWS.filter((peak) =>
+    assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let si = 0; si < cov.length; si++) {
+      if (cov[si] >= required[si]) continue
+      for (const a of assignments) {
+        const first = firstActiveSlot(a.pattern)
+        const last = lastActiveSlot(a.pattern)
+        // must be THIS dispatcher's mid-shift meal break at the slot
+        if (first < 0 || si <= first || si >= last || a.pattern[si]) continue
+        if (patternMaxBreakHours(a.pattern, SLOTS) !== MEAL_BREAK_HOURS) continue
+        let moved = false
+        for (let j = first + 1; j < last && !moved; j++) {
+          if (!a.pattern[j]) continue
+          if (cov[j] - 1 < required[j]) continue // target at j must hold
+          const trial = [...a.pattern]
+          trial[si] = true
+          trial[j] = false
+          if (!isValidShiftShape(trial, dayOfWeek)) continue
+          if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) continue
+          a.pattern = trial
+          cov[si]++
+          cov[j]--
+          moved = true
+          changed = true
+        }
+        if (moved) break
       }
       if (changed) break
     }
@@ -1915,6 +2028,20 @@ export function generateSchedule(
       }
     }
 
+    const enforceCtx = {
+      patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
+      runningCov, weekHours, wLabel, timeOff, dateStr, dow,
+      workedNightYesterday, capForShift,
+    }
+
+    // ── improveCoverageBySwaps — respect the coverage target ──────────
+    // Swap assigned shapes for unused catalog shapes whenever that
+    // strictly reduces total missing units. Runs before stretch (which
+    // then fills residual 1-slot gaps) and before enforceAnchors (which
+    // repairs any anchor a swap may have cost — swaps themselves never
+    // drop the last anchor).
+    improveCoverageBySwaps(enforceCtx, dayRequired)
+
     // Stretch shifts to fill single-body gaps by extending an adjacent
     // dispatcher's tail/head by 0.5-1h. Mirrors the manual closer
     // extensions (Thu shamika → slot 19, Fri resgie → slot 19, etc).
@@ -1927,11 +2054,6 @@ export function generateSchedule(
     // pattern-swap. Any peak still uncovered emits a warning. Runs
     // between stretch and trim so trim's survival check can protect
     // any anchor this pass restored.
-    const enforceCtx = {
-      patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
-      runningCov, weekHours, wLabel, timeOff, dateStr, dow,
-      workedNightYesterday, capForShift,
-    }
     const failedPeaks = enforceAnchors(enforceCtx, dayRequired)
     for (const peakKey of failedPeaks) {
       // Dedupe with any seed-time warning for the same peak.
@@ -1942,6 +2064,14 @@ export function generateSchedule(
         reason: 'no continuity anchor — no dispatcher started before the peak and worked through it without a break',
       })
     }
+
+    // ── repairBreaks — break-placement repair ──────────────────────────
+    // Coverage targets are the contract: a meal break parked on an
+    // under-covered slot while a surplus slot sits inside the same
+    // shift is a free fix (no hours added, shape + anchors re-checked).
+    // Runs after enforceAnchors so anchor state is final, before trim
+    // so trim sees the repaired coverage.
+    repairBreaks(assignments, dayRequired, dow)
 
     // Trim over-covered slots down to the requirement. Runs LAST so it
     // sees the full final coverage from picker + swap + rescue + must-work.
