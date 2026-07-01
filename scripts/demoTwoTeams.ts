@@ -115,30 +115,25 @@ for (const ds of schedule.dispatcherSchedules) {
 }
 console.log(`  → ${gateHFail === 0 ? 'PASS' : 'FAIL'}`)
 
-// ── Gate O: handoff overlap on every day with an evening shift ─────────
+// ── Gate O: lean transition — 3–4 PM never piles past target + 2 ───────
+// There is no scheduled handoff overlap (incoming dispatchers arrive
+// ~10 min early, off-schedule). The 3–4 PM slot must sit at its
+// coverage target, tolerating at most the picker's req+2 over-cap tier.
 let gateOFail = 0
-const handoffWarned: string[] = []
+let worstOver = 0
+let worstOverDate = ''
 for (const dInfo of schedule.dates) {
-  const dayShifts = schedule.dispatcherSchedules
-    .map((ds) => ds.days.find((x) => x.date === dInfo.date))
-    .filter((x): x is NonNullable<typeof x> => !!x && !x.isOff)
-  const hasEvening = dayShifts.some((s) => s.slots.findIndex(Boolean) >= HANDOFF_SLOT)
-  if (!hasEvening) continue
-  const hasOverlap = dayShifts.some((s) => {
-    const first = s.slots.findIndex(Boolean)
-    return first >= 0 && first < HANDOFF_SLOT && s.slots[HANDOFF_SLOT]
-  })
-  const warned = (schedule.coverageWarnings?.[dInfo.date] ?? []).some((w) => w.peak === 'handoff')
-  if (!hasOverlap && !warned) {
-    gateOFail++
-  }
-  if (warned) handoffWarned.push(dInfo.date)
+  const req = schedule.coverageRequired?.[dInfo.date]?.[HANDOFF_SLOT] ?? 0
+  const act = schedule.coverageActual[dInfo.date]?.[HANDOFF_SLOT] ?? 0
+  const over = act - req
+  if (over > worstOver) { worstOver = over; worstOverDate = dInfo.date }
+  if (over > 2) gateOFail++
 }
 console.log('\n══════════════════════════════════════════════════════════════════════')
-console.log(' Gate O — 15:00 handoff overlap (or explicit warning) every day')
+console.log(' Gate O — lean 3–4 PM transition (actual ≤ required + 2 every day)')
 console.log('══════════════════════════════════════════════════════════════════════')
-console.log(`  Silent cold starts: ${gateOFail}${gateOFail === 0 ? ' ✓' : ' ← FAIL'}`)
-console.log(`  Days carrying a handoff warning: ${handoffWarned.length}${handoffWarned.length ? ` (${handoffWarned.slice(0, 5).join(', ')}${handoffWarned.length > 5 ? '…' : ''})` : ''}`)
+console.log(`  Days over target+2 at 3–4 PM: ${gateOFail}${gateOFail === 0 ? ' ✓' : ' ← FAIL'}`)
+console.log(`  Worst 3–4 PM surplus: +${worstOver}${worstOverDate ? ` on ${worstOverDate}` : ''}`)
 
 // ── Team sizes by day-of-week (first full week) ─────────────────────────
 console.log('\n══════════════════════════════════════════════════════════════════════')

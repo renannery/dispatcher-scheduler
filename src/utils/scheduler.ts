@@ -3,7 +3,6 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 import {
   DAY_TEMPLATES,
   effectiveCoverage,
-  EVENING_RAMP_SLOTS,
   HANDOFF_SLOT,
   MAX_CONSECUTIVE_HOURS,
   MEAL_BREAK_HOURS,
@@ -124,6 +123,28 @@ function assignMandatoryRest(
   }
   const weekOrder = [...weekBuckets.keys()] // preserves insertion (chronological)
 
+  // Vacation pressure per date: how many dispatchers are already off on
+  // full-day user time-off. Rest placement avoids piling a lock onto
+  // such days — without this, a vacation-thinned day also absorbs a
+  // rest lock and loses 3 of 7 bodies while its neighbors lose none
+  // (seen on Thu 2026-06-25: 2 vacations + a rest lock collapsed the
+  // night segment to 1 body vs required 3). Only USER time-off counts
+  // toward the deviation trigger — locks placed by this pre-pass follow
+  // the home-day quota, which stacks rests on purpose (Mon×2, Tue×3).
+  const vacPressure = new Map<string, number>()
+  for (const dt of allDates) {
+    const ds = format(dt, 'yyyy-MM-dd')
+    let n = 0
+    for (const d of dispatchers) {
+      const blocks = blockedBitmap(timeOff, d, ds, dt.getDay())
+      if (blocks !== null && blocks.length > 0 && blocks.every(Boolean)) n++
+    }
+    vacPressure.set(ds, n)
+  }
+  // Locks placed so far — used only to pick WHERE a deviating rest goes,
+  // so two displaced rests don't re-stack on the same calm day.
+  const lockPressure = new Map<string, number>()
+
   dispatchers.forEach((d, dispIdx) => {
     restLocks[d.id] = new Set()
     // Conservative pre-schedule assumption: the day before the schedule
@@ -131,6 +152,17 @@ function assignMandatoryRest(
     // dispatchers can work at most 6 days into the schedule before
     // needing a rest, regardless of unknown pre-schedule state.
     let lastRestDate: Date = addDays(allDates[0], -1)
+
+    // Stable HOME rest weekday for this dispatcher (constant across
+    // weeks; used by Step 1's cadence rescue and Step 2's placement).
+    // Demand-spread quota: Tue is the lightest day (lunch 3, dinner 2,
+    // close 1) so it absorbs 3 rests; Wed and Thu take 1 each —
+    // stacking 2 rests on either gutted them to skeleton crews (Thu
+    // is a 5-need day + the week-start edge; Wed's close went to
+    // zero when 2 rests left it exactly tight). Mon keeps 2. Seed
+    // rotates the assignment so Regenerate varies who rests when.
+    const HOME_REST_DOWS = [1, 1, 2, 2, 2, 3, 4] // Mon,Mon,Tue,Tue,Tue,Wed,Thu
+    const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
 
     weekOrder.forEach((wLbl) => {
       const weekDates = weekBuckets.get(wLbl)!
@@ -155,7 +187,23 @@ function assignMandatoryRest(
           )
         }
         lastRestDate = latestPreExisting
-        return
+        // Cadence rescue — if the vacation sits BEFORE this week's home
+        // day, next week's home day is > 7 days out and unreachable, so
+        // rest would snap to the week-start day (Thursday) and STAY
+        // there: from a Thu rest, the only day within 7 in the next
+        // Thu-anchored bucket is again Thu. One early-week vacation
+        // then pins the dispatcher to Thursday rests forever, and every
+        // vacation-taker piles onto the same day (seen in production:
+        // 4 of 7 off every Thursday, night coverage 0/3). Placing the
+        // normal home-day lock later this same week keeps the cadence —
+        // the vacation week simply absorbs one extra off day. When the
+        // vacation is ON or AFTER the home day, next week is reachable
+        // and we skip Step 2 as before.
+        const homeThisWeek = weekDates.find((dt) => dt.getDay() === homeDow)
+        const needsAnchor =
+          homeThisWeek !== undefined && differenceInDays(homeThisWeek, lastRestDate) >= 1
+        if (!needsAnchor) return
+        // fall through to Step 2 — validRange starts after the vacation
       }
 
       // Step 2 — pick a rest date. Valid range: dates in this week that
@@ -172,22 +220,12 @@ function assignMandatoryRest(
       if (validRange.length > 0) {
         // Placement preference: rest on the LOW-DEMAND days (Mon–Thu)
         // so Fri/Sat/Sun keep the full roster — the two-team model
-        // needs 7 bodies on Fri/Sun and 8 on Sat. Each dispatcher gets
-        // a stable HOME rest weekday (same day every week → rest gap is
+        // needs 7 bodies on Fri/Sun and 8 on Sat. Rest goes on the
+        // dispatcher's HOME weekday (same day every week → rest gap is
         // exactly 7 days, streak exactly 6, always legal, no drift).
-        // The quota follows demand: Wed needs 6 of 7 bodies so it takes
-        // only 1 home rest; Mon/Tue/Thu absorb 2 each. Seed rotates the
-        // assignment so Regenerate varies who rests when. Falls back to
-        // any low-demand day, then any valid day, when time-off pushed
-        // lastRestDate off-cycle. This is a preference only — the
-        // weekly-rest guarantee and 6-consecutive cap are unchanged.
-        // Demand-spread quota: Tue is the lightest day (lunch 3, dinner 2,
-        // close 1) so it absorbs 3 rests; Wed and Thu take 1 each —
-        // stacking 2 rests on either gutted them to skeleton crews (Thu
-        // is a 5-need day + the week-start edge; Wed's close went to
-        // zero when 2 rests left it exactly tight). Mon keeps 2.
-        const HOME_REST_DOWS = [1, 1, 2, 2, 2, 3, 4] // Mon,Mon,Tue,Tue,Tue,Wed,Thu
-        const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
+        // Falls back to any low-demand day, then any valid day, when
+        // time-off pushed lastRestDate off-cycle. This is a preference
+        // only — the weekly-rest guarantee and 6-day cap are unchanged.
         let pool = validRange.filter((dt) => dt.getDay() === homeDow)
         if (pool.length === 0) {
           pool = validRange.filter((dt) => {
@@ -196,6 +234,27 @@ function assignMandatoryRest(
           })
         }
         if (pool.length === 0) pool = validRange
+        // Crowd check: if the day we're about to pick already has a
+        // full-day vacation on it, deviate — widen to the low-demand
+        // pool and take the least-crowded day (vacations + locks placed
+        // so far, so two displaced rests don't re-stack). validRange
+        // keeps every alternative legal (gap ≤ 7), so deviating never
+        // breaks the weekly guarantee or the 6-day cap.
+        const vacOf = (dt: Date) => vacPressure.get(format(dt, 'yyyy-MM-dd')) ?? 0
+        const totalOf = (dt: Date) =>
+          vacOf(dt) + (lockPressure.get(format(dt, 'yyyy-MM-dd')) ?? 0)
+        if (vacOf(pool[pool.length - 1]) > 0) {
+          let wide = validRange.filter((dt) => {
+            const dw = dt.getDay()
+            return dw === 1 || dw === 2 || dw === 3 || dw === 4 // Mon–Thu
+          })
+          if (wide.length === 0) wide = validRange
+          const minP = Math.min(...wide.map(totalOf))
+          const calm = wide.filter((dt) => totalOf(dt) === minP)
+          // Among least-crowded days prefer the home day, else latest.
+          const calmHome = calm.filter((dt) => dt.getDay() === homeDow)
+          pool = calmHome.length > 0 ? calmHome : calm
+        }
         chosen = pool[pool.length - 1] // latest in pool
       } else {
         // Only reachable when lastRestDate is more than 7 days before
@@ -210,7 +269,9 @@ function assignMandatoryRest(
         )
       }
 
-      restLocks[d.id].add(format(chosen, 'yyyy-MM-dd'))
+      const chosenStr = format(chosen, 'yyyy-MM-dd')
+      restLocks[d.id].add(chosenStr)
+      lockPressure.set(chosenStr, (lockPressure.get(chosenStr) ?? 0) + 1)
       lastRestDate = chosen
     })
   })
@@ -605,9 +666,6 @@ function trimToExactCoverage(
   while (changed) {
     changed = false
     for (let si = 0; si < cov.length; si++) {
-      // Never trim the evening-ramp window (3–5 PM): the over-coverage
-      // there is the deliberate handoff overlap + dinner ramp, not waste.
-      if (EVENING_RAMP_SLOTS.has(si)) continue
       if (cov[si] <= required[si]) continue
       for (let ai = 0; ai < assignments.length; ai++) {
         const a = assignments[ai]
@@ -1352,7 +1410,37 @@ export function generateSchedule(
       // covering it. Previously a slot like Fri 11-11:30 PM (req=1, 3
       // patterns) saw all three patterns scored 0 unique and ALL
       // dropped, leaving slot 19 uncovered every Friday.
-      const dropSort = [...scoredPatterns].sort((a, b) => a.unique - b.unique || a.p.hours - b.p.hours)
+      // Between two DINNER-anchor shapes of equal uniqueness, drop the
+      // one whose break lands on the higher-requirement slot first. An
+      // anchor that breaks where the day is tightest (Evening A's 8 PM
+      // break vs a req-3 Thursday 8 PM) is anti-selected by the
+      // criticality boosts and never assigned — protecting it starves
+      // the peak of a USABLE anchor. Keeping the low-req-break variant
+      // (Evening D breaks 8:30, req 2) gives the picker an anchor it
+      // will actually take. Scoped to dinner anchors only: applying
+      // this ordering globally reshuffled morning drops and produced
+      // 9–10 AM zero-coverage days.
+      const dinnerSlots = PEAK_WINDOWS.find((pk) => pk.key === 'dinner')!.slots
+      const breakReq = (pp: (typeof sortedPatterns)[number]) => {
+        const first = pp.bool.findIndex(Boolean)
+        const last = pp.bool.lastIndexOf(true)
+        let worst = 0
+        for (let i = first + 1; i < last; i++) {
+          if (!pp.bool[i]) worst = Math.max(worst, dayRequired[i])
+        }
+        return worst
+      }
+      // NB: the key must yield a TOTAL order — a conditional "only when
+      // both are anchors" comparison is intransitive and JS sort then
+      // returns an arbitrary permutation (observed: D/E dropped, A kept).
+      const dinnerBadness = (pp: (typeof sortedPatterns)[number]) =>
+        isPeakAnchorPattern(pp.bool, dinnerSlots) ? breakReq(pp) : 0
+      const dropSort = [...scoredPatterns].sort(
+        (a, b) =>
+          a.unique - b.unique ||
+          dinnerBadness(b.p) - dinnerBadness(a.p) ||
+          a.p.hours - b.p.hours,
+      )
       const dropped = new Set<typeof sortedPatterns[number]>()
       const remainingCov = [...coverageCount]
       // Track anchor-capable patterns per peak — never drop the last two
@@ -1488,7 +1576,7 @@ export function generateSchedule(
             // those windows costs 2× so the picker routes surplus to
             // the tolerated windows first, and only spills into off-peak
             // when no tolerated capacity remains.
-            if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated++
+            if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
             else overOff++
           }
         }
@@ -1519,10 +1607,6 @@ export function generateSchedule(
       const cap = MAX_OVER_COVERAGE + (fillsDeficit ? 1 : 0)
       let overShoots = false
       for (let i = 0; i < p.bool.length; i++) {
-        // Evening-ramp slots (3–5 PM) are exempt: the whole Evening team
-        // is on the floor from 15:00 by design (handoff + dinner ramp),
-        // so their low req must not throttle evening team size.
-        if (EVENING_RAMP_SLOTS.has(i)) continue
         if (p.bool[i] && runningCov[i] + 1 > dayRequired[i] + cap) {
           overShoots = true; break
         }
@@ -1555,6 +1639,19 @@ export function generateSchedule(
         (d) => (weekHours[d.id][wLabel] ?? 0) + p.hours <= SOFT_WEEKLY_TARGET,
       )
       let pickFrom = withinSoft.length > 0 ? withinSoft : eligible
+
+      // Save morning-capable bodies: an evening pattern should consume a
+      // dispatcher who is night-blocked for mornings anyway (closed late
+      // yesterday). Evening shapes score higher on deep-demand days and
+      // assign first — without this partition they eat the morning-capable
+      // pool, and the 9 AM shapes picked last find only night-blocked
+      // bodies and silently fail (Friday 9–10 AM sat at zero coverage).
+      if (!p.isMorning) {
+        const nightBlocked = pickFrom.filter((d) => workedNightYesterday(d.id))
+        if (nightBlocked.length > 0) {
+          pickFrom = [...nightBlocked, ...pickFrom.filter((d) => !workedNightYesterday(d.id))]
+        }
+      }
 
       // If no Senior has been assigned yet and Seniors are available, promote
       // the least-hours Senior to the front of the candidate list.
@@ -1637,9 +1734,6 @@ export function generateSchedule(
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
             fill += deficit[i] // depth-weighted, matches the main picker
-            // Evening-ramp slots are exempt from over-coverage — the full
-            // evening team stands there by design (handoff + dinner ramp).
-            if (EVENING_RAMP_SLOTS.has(i)) continue
             if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) over++
             if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE + 2) { blown = true; break }
           }
@@ -1732,7 +1826,7 @@ export function generateSchedule(
             if (cov[i] < dayRequired[i]) fill++
             if (newCov > dayRequired[i]) {
               const excess = newCov - dayRequired[i]
-              if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated += excess
+              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated += excess
               else overOff += excess
             }
           }
@@ -1795,7 +1889,7 @@ export function generateSchedule(
             if (!p.bool[i]) continue
             if (cov[i] < dayRequired[i]) fill += dayRequired[i] - cov[i]
             else if (cov[i] >= dayRequired[i]) {
-              if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated++
+              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
               else overOff++
             }
           }
@@ -1956,25 +2050,10 @@ export function generateSchedule(
       }
     }
 
-    // ── handoff warning ─────────────────────────────────────────────────
-    // The two-team model relies on the Morning team staying past the
-    // Evening team's 15:00 start (structural overlap 15:00–16:00) so the
-    // Evening team never arrives cold. Warn when a day has an evening
-    // shift but NO morning-side shift still working the handoff slot.
-    const hasEvening = assignments.some(
-      (a) => firstActiveSlot(a.pattern) >= HANDOFF_SLOT,
-    )
-    const hasHandoffOverlap = assignments.some((a) => {
-      const first = firstActiveSlot(a.pattern)
-      return first >= 0 && first < HANDOFF_SLOT && a.pattern[HANDOFF_SLOT]
-    })
-    if (hasEvening && !hasHandoffOverlap) {
-      ;(coverageWarnings[dateStr] ??= []).push({
-        peak: 'handoff',
-        slotIndex: HANDOFF_SLOT,
-        reason: 'no morning dispatcher working through 3–4 PM — evening team starts cold, no context handoff',
-      })
-    }
+    // No handoff warning: the teams meet at the slot boundary — the
+    // incoming dispatcher arrives ~10 min early (off-schedule) to catch
+    // up, so no scheduled overlap is required. The 'handoff' warning
+    // kind stays in the type union for snapshots saved before this.
   }
 
   // Build final DispatcherSchedule objects
