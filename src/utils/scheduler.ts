@@ -70,6 +70,127 @@ function weekLabel(date: Date): string {
   return `${format(thu, 'MMM d')} – ${format(wed, 'MMM d')}`
 }
 
+/** Hard legal cap: no dispatcher may work more than this many days in a
+ *  row, INCLUDING across work-week boundaries. Enforced by the Phase 0
+ *  rest pre-pass — never as a soft check inside the coverage passes. */
+const MAX_CONSECUTIVE_WORK_DAYS = 6
+
+/**
+ * Phase 0 — mandatory weekly rest.
+ *
+ * Runs BEFORE any coverage / anchor / trainee logic. Locks exactly one
+ * rest day per dispatcher per work-week (Thu–Wed), unless the dispatcher
+ * already has a full-day off from `timeOff` / `recurringBlocks` in that
+ * week, in which case that pre-existing rest satisfies the guarantee.
+ *
+ * Two hard invariants held by the output:
+ *   (I1) Every work-week that has at least one work-eligible day for the
+ *        dispatcher contains ≥1 rest date for that dispatcher.
+ *   (I2) No two consecutive rest dates are more than 7 calendar days
+ *        apart → maximum MAX_CONSECUTIVE_WORK_DAYS consecutive workdays.
+ *
+ * Every subsequent pass reads `restLocks[dispId]` and treats those dates
+ * as inviolable off-days. The mandatory rest pre-pass is the single
+ * authority on the weekly-rest and consecutive-day cap; no other pass
+ * may set, refund, or override a lock.
+ *
+ * Rotation: dispatchers with the same valid range get different picks
+ * via (seed × dispIdx × weekIdx) offset, so nobody always rests on
+ * the same weekday.
+ */
+function assignMandatoryRest(
+  dispatchers: Dispatcher[],
+  allDates: Date[],
+  timeOff: DispatcherTimeOff,
+  seed: number,
+): { restLocks: Record<string, Set<string>>; streakWarnings: string[] } {
+  const restLocks: Record<string, Set<string>> = {}
+  const streakWarnings: string[] = []
+  if (allDates.length === 0) return { restLocks, streakWarnings }
+
+  // Bucket allDates by work-week label, preserving date order.
+  const weekBuckets = new Map<string, Date[]>()
+  for (const dt of allDates) {
+    const wLbl = weekLabel(dt)
+    if (!weekBuckets.has(wLbl)) weekBuckets.set(wLbl, [])
+    weekBuckets.get(wLbl)!.push(dt)
+  }
+  const weekOrder = [...weekBuckets.keys()] // preserves insertion (chronological)
+
+  dispatchers.forEach((d, dispIdx) => {
+    restLocks[d.id] = new Set()
+    // Conservative pre-schedule assumption: the day before the schedule
+    // starts was a work day. This lets the cap bind from day 1 —
+    // dispatchers can work at most 6 days into the schedule before
+    // needing a rest, regardless of unknown pre-schedule state.
+    let lastRestDate: Date = addDays(allDates[0], -1)
+
+    weekOrder.forEach((wLbl, weekIdx) => {
+      const weekDates = weekBuckets.get(wLbl)!
+
+      // Step 1 — pre-existing full-day off satisfies the weekly guarantee.
+      // A day is "pre-existing off" iff timeOff / recurringBlocks blocks
+      // every slot. Multiple such days: take the latest for lastRestDate.
+      let latestPreExisting: Date | null = null
+      for (const dt of weekDates) {
+        const ds = format(dt, 'yyyy-MM-dd')
+        const blocks = blockedBitmap(timeOff, d, ds, dt.getDay())
+        const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
+        if (fullyBlocked) latestPreExisting = dt
+      }
+      if (latestPreExisting !== null) {
+        // Streak audit: user-entered timeOff can produce a > 7-day gap
+        // that the pre-pass cannot fix (we can't override user input).
+        const gap = differenceInDays(latestPreExisting, lastRestDate)
+        if (gap > 7) {
+          streakWarnings.push(
+            `${d.name}: ${gap - 1} consecutive workdays before pre-existing off on ${format(latestPreExisting, 'yyyy-MM-dd')} (user-entered time-off gap; cannot fix)`,
+          )
+        }
+        lastRestDate = latestPreExisting
+        return
+      }
+
+      // Step 2 — pick a rest date. Valid range: dates in this week that
+      // sit within [lastRestDate + 1, lastRestDate + 7]. Under normal
+      // inputs this is always non-empty because the previous iteration
+      // picks the LATEST feasible date, capping lastRestDate close to
+      // WedOfPrevWeek — so week N's Thu is at most 7 days later.
+      const validRange = weekDates.filter((dt) => {
+        const gap = differenceInDays(dt, lastRestDate)
+        return gap >= 1 && gap <= MAX_CONSECUTIVE_WORK_DAYS + 1
+      })
+
+      let chosen: Date
+      if (validRange.length > 0) {
+        // Bias toward the LATEST valid date (leaves the most flexibility
+        // for the next week), rotated by (seed, dispIdx, weekIdx) so
+        // dispatchers don't all cluster on Wednesday. Offset picks a
+        // slightly earlier valid day for some (disp, week) combos.
+        const N = validRange.length
+        const offset = ((seed >>> 0) + dispIdx + weekIdx * (dispIdx + 3)) % N
+        chosen = validRange[N - 1 - offset]
+      } else {
+        // Only reachable when lastRestDate is more than 7 days before
+        // ThuOfCurrentWeek — implies a prior week had no in-range rest
+        // (extremely tight upstream constraints). We still lock a rest
+        // to satisfy the weekly guarantee, and record the streak
+        // violation. In practice this branch should not fire with the
+        // "prefer latest" rule + non-adversarial time-off input.
+        chosen = weekDates[0]
+        streakWarnings.push(
+          `${d.name}: forced rest ${format(chosen, 'yyyy-MM-dd')} exceeds 6-day cap from ${format(lastRestDate, 'yyyy-MM-dd')} — upstream week could not fit a valid rest`,
+        )
+      }
+
+      restLocks[d.id].add(format(chosen, 'yyyy-MM-dd'))
+      lastRestDate = chosen
+    })
+  })
+
+  return { restLocks, streakWarnings }
+}
+
 /** Index of first working slot in a pattern (-1 if none). */
 function firstActiveSlot(pattern: boolean[]): number {
   return pattern.findIndex((v) => v)
@@ -945,6 +1066,20 @@ export function generateSchedule(
 
   const allDates = Array.from({ length: totalDays }, (_, i) => addDays(start, i))
 
+  // ── Phase 0 — mandatory weekly rest (hard gate, top of pipeline) ────
+  // Lock 1 rest date per dispatcher per work-week and cap consecutive
+  // workdays at MAX_CONSECUTIVE_WORK_DAYS across week boundaries.
+  // These locks are INVIOLABLE — every subsequent pass filters them out
+  // via `restLocks`. No pass may set, refund, or override a lock.
+  const { restLocks, streakWarnings } = assignMandatoryRest(dispatchers, allDates, timeOff, seed)
+  // Streak warnings only fire when user-entered time-off creates a gap
+  // > 7 days that Phase 0 can't fix (it can't override user input).
+  // Surface as console.warn — extremely rare on non-adversarial input.
+  for (const msg of streakWarnings) {
+    // eslint-disable-next-line no-console
+    console.warn(`[mandatoryRest] ${msg}`)
+  }
+
   // Per-dispatcher, per-week hour accumulator
   const weekHours: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (weekHours[d.id] = {}))
@@ -1079,8 +1214,6 @@ export function generateSchedule(
     // (1 = Thu, 7 = Wed). When daysIntoWeek === 7 (Wed, the last day)
     // any dispatcher still at 0 off MUST be off today.
     const isWeekend = HEAVY_DAYS.has(dow)
-    const daysIntoWeek = ((dow + 3) % 7) + 1
-    const isLastWorkDay = daysIntoWeek === 7
     const blockedToday: typeof dispatchers = []
     const cappedToday: typeof dispatchers = []
     const availablePool: typeof dispatchers = []
@@ -1088,9 +1221,13 @@ export function generateSchedule(
     for (const d of rotated) {
       const blocks = blockedBitmap(timeOff, d, dateStr, dow)
       const fullyBlocked = blocks !== null && blocks.length > 0 && blocks.every(Boolean)
-      const offSoFar = weekOffDays[d.id][wLabel] ?? 0
-      const legalMustOff = isLastWorkDay && offSoFar === 0
-      if (fullyBlocked || legalMustOff) {
+      // Mandatory rest lock from Phase 0 — inviolable. No pass may
+      // override this, so we route straight into blockedToday and bump
+      // the weekOffDays counter the same way as fullyBlocked. Weekend
+      // rest locks also count toward weekend-off tallies so the fairness
+      // picker doesn't try to elect a second weekend off in the same week.
+      const restLocked = restLocks[d.id].has(dateStr)
+      if (fullyBlocked || restLocked) {
         blockedToday.push(d)
         weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
         offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
@@ -1503,11 +1640,15 @@ export function generateSchedule(
       // assigned, defeating the rotation. (Weekday rescues can still
       // pull from elected-off because we have plenty of weekdays to
       // cycle through and we'd rather close a gap.)
+      // Rest-locked dispatchers are ALWAYS excluded from rescue — the
+      // Phase 0 lock is inviolable. rescue may still refund an
+      // electedOffIds member (existing behavior), but a rest lock is
+      // not electable off — it never entered availablePool as elected.
       const rescuePool = isWeekend
-        ? sortedWorking.filter((d) => !usedIds.has(d.id))
+        ? sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr))
         : [
-            ...availablePool.filter((d) => electedOffIds.has(d.id)),
-            ...sortedWorking.filter((d) => !usedIds.has(d.id)),
+            ...availablePool.filter((d) => electedOffIds.has(d.id) && !restLocks[d.id].has(dateStr)),
+            ...sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr)),
           ]
       for (let safety = 0; safety < 50; safety++) {
         // Build the deficit vector: how many MORE bodies each slot needs.
@@ -1578,7 +1719,10 @@ export function generateSchedule(
     // level's off-day cap — wasted resources while gaps remain.
     {
       const mustWork = availablePool.filter(
-        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) >= maxDaysOffFor(d.level),
+        (d) =>
+          !usedIds.has(d.id) &&
+          !restLocks[d.id].has(dateStr) && // defensive: never force-work a rest-locked dispatcher
+          (weekOffDays[d.id][wLabel] ?? 0) >= maxDaysOffFor(d.level),
       )
       const cov = new Array(SLOTS.length).fill(0)
       for (const { pattern } of assignments) {
@@ -1651,7 +1795,10 @@ export function generateSchedule(
     // preserves the 2-days-off perk when coverage is already met.
     {
       const candidatePool = availablePool.filter(
-        (d) => !usedIds.has(d.id) && (weekOffDays[d.id][wLabel] ?? 0) === 1,
+        (d) =>
+          !usedIds.has(d.id) &&
+          !restLocks[d.id].has(dateStr) && // defensive: rest lock overrides 2nd-off-prevention
+          (weekOffDays[d.id][wLabel] ?? 0) === 1,
       )
       const cov = new Array(SLOTS.length).fill(0)
       for (const { pattern } of assignments) {
@@ -1811,6 +1958,25 @@ export function generateSchedule(
     }
 
     coverageActual[dateStr] = actualCov
+
+    // ── mandatory-rest warning ──────────────────────────────────────────
+    // If ≥1 dispatcher is on a locked weekly rest today AND coverage
+    // fell short on any slot, surface the shortfall as a `mandatory-rest`
+    // warning. This is the acknowledged coverage cost of the hard rest
+    // guarantee — the alternative (dropping the rest) is not allowed.
+    const restLockedToday = dispatchers.filter((d) => restLocks[d.id].has(dateStr))
+    if (restLockedToday.length > 0) {
+      for (let si = 0; si < SLOTS.length; si++) {
+        if (actualCov[si] < dayRequired[si]) {
+          const names = restLockedToday.map((d) => d.name).join(', ')
+          ;(coverageWarnings[dateStr] ??= []).push({
+            peak: 'mandatory-rest',
+            slotIndex: si,
+            reason: `${restLockedToday.length} on locked weekly rest (${names}) — coverage short at ${SLOTS[si].label}`,
+          })
+        }
+      }
+    }
   }
 
   // Build final DispatcherSchedule objects

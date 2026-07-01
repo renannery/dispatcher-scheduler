@@ -74,14 +74,17 @@ export interface GeneratedSchedule {
    *  used without re-deriving from the template. */
   coverageRequired?: Record<string, number[]>
   /** Non-blocking warnings the scheduler emits when a constraint can't
-   *  be satisfied — e.g. no eligible continuity anchor for a peak, or a
-   *  1-slot dip the transition-smoothing pass couldn't close. The UI
-   *  surfaces these as inline badges on the affected day, styled
-   *  differently by `peak` kind. For `transition`, `slotIndex` carries
-   *  the dip's slot so the badge can show the time. */
+   *  be satisfied. Rendered as inline chips on the affected day, styled
+   *  by `peak` kind (amber anchor / orange transition / red rest).
+   *    - `lunch` / `dinner`: no continuity anchor for that peak.
+   *    - `transition`: 1-slot dip the smoothing pass couldn't close;
+   *      `slotIndex` carries the dip's slot.
+   *    - `mandatory-rest`: coverage left short because ≥1 dispatcher
+   *      is on a locked weekly rest day; `slotIndex` carries the
+   *      shorted slot (may repeat per shorted slot per day). */
   coverageWarnings?: Record<
     string,
-    { peak: 'lunch' | 'dinner' | 'transition'; reason: string; slotIndex?: number }[]
+    { peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest'; reason: string; slotIndex?: number }[]
   >
 }
 

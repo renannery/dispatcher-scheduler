@@ -98,29 +98,50 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
             <th className="sticky left-0 z-10 min-w-[130px] bg-slate-800 px-3 py-2 text-left font-semibold text-white">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span>{dayLabel}</span>
-                {(schedule.coverageWarnings?.[date] ?? []).map((w, idx) => {
-                  if (w.peak === 'transition') {
-                    const label = w.slotIndex !== undefined ? shortHour(SLOTS[w.slotIndex].label) : 'dip'
-                    return (
-                      <span
-                        key={`t-${w.slotIndex ?? idx}`}
-                        className="rounded bg-orange-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-orange-300 ring-1 ring-orange-400/50"
-                        title={`Unsmoothed 1-slot dip — ${w.reason}`}
-                      >
-                        ↯ {label} dip
-                      </span>
-                    )
-                  }
+                {(() => {
+                  const warnings = schedule.coverageWarnings?.[date] ?? []
+                  // Collapse multiple mandatory-rest entries (one per shorted slot)
+                  // into a single chip with an aggregate count — keeps the header
+                  // scannable when several slots are short on a rest day.
+                  const restCount = warnings.filter((w) => w.peak === 'mandatory-rest').length
+                  const nonRest = warnings.filter((w) => w.peak !== 'mandatory-rest')
                   return (
-                    <span
-                      key={`a-${w.peak}`}
-                      className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-300 ring-1 ring-amber-400/50"
-                      title={`No anchor for ${w.peak}: ${w.reason}`}
-                    >
-                      ⚠ {w.peak} no anchor
-                    </span>
+                    <>
+                      {nonRest.map((w, idx) => {
+                        if (w.peak === 'transition') {
+                          const label = w.slotIndex !== undefined ? shortHour(SLOTS[w.slotIndex].label) : 'dip'
+                          return (
+                            <span
+                              key={`t-${w.slotIndex ?? idx}`}
+                              className="rounded bg-orange-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-orange-300 ring-1 ring-orange-400/50"
+                              title={`Unsmoothed 1-slot dip — ${w.reason}`}
+                            >
+                              ↯ {label} dip
+                            </span>
+                          )
+                        }
+                        return (
+                          <span
+                            key={`a-${w.peak}`}
+                            className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-300 ring-1 ring-amber-400/50"
+                            title={`No anchor for ${w.peak}: ${w.reason}`}
+                          >
+                            ⚠ {w.peak} no anchor
+                          </span>
+                        )
+                      })}
+                      {restCount > 0 && (
+                        <span
+                          key="rest-chip"
+                          className="rounded bg-red-500/25 px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-300 ring-1 ring-red-400/60"
+                          title={warnings.filter((w) => w.peak === 'mandatory-rest').map((w) => w.reason).join(' · ')}
+                        >
+                          🛌 rest → short {restCount}
+                        </span>
+                      )}
+                    </>
                   )
-                })}
+                })()}
               </div>
             </th>
             {visibleSlotIndices.map((si) => (
