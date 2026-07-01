@@ -84,12 +84,37 @@ export const SLOTS = [
 // low-requirement days.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Weekday Morning (9:00–16:00, meal break 2:00–2:30 PM; stretches 5h + 1.5h,
-// 6.5h worked). Lunch anchor: continuous through 11:30–2 PM, starts 9 AM.
+// STAGGERED starts and STAGGERED meal breaks. Every shape's break is
+// baked into its bitmap, so identical copies break in the same slot —
+// the original single-shape-per-period catalog collapsed coverage to 0
+// whenever a whole team broke at once (2–2:30 PM on 49 of 77 days).
+// The fix is break-variant + start-variant shapes: the gap-aware picker
+// then staggers breaks on its own, because the variant that covers the
+// current deficit outscores a duplicate of an already-picked shape.
+//
+// Weekday Morning 9 (9:00–16:00, meal 2:00–2:30 PM; 5h + 1.5h, 6.5h).
+// Lunch anchor: continuous through 11:30–2 PM, starts 9 AM.
 const WD_MORNING  = [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-// Weekend Morning (8:00–16:00, meal break 11:00–11:30 AM; stretches 3h + 4.5h,
-// 7.5h worked). Lunch anchor: break ends before the 11:30 peak start.
+// Weekday Morning 10 (10:00–17:00, meal 2:30–3 PM; 4.5h + 2h, 6.5h).
+// Staggered start (avoids stacking the low-req opening) AND staggered
+// break (covers 2–2:30 PM while Morning 9 is on its break). Lunch anchor.
+const WD_MORNING_10 = [0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Ramp (14:00–22:00, meal 6:00–6:30 PM; 4h + 3.5h, 7.5h). Starts on the
+// afternoon ramp: covers the 2–3 PM window (both morning break slots)
+// and the whole dinner peak — the body that "moves" from the overstacked
+// opening to the starved evening. Ends 10 PM (night-rest applies).
+const RAMP_14     = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0]
+// Weekend Morning 8a (8:00–16:00, meal 11:00–11:30 AM; 3h + 4.5h, 7.5h).
+// Lunch anchor: break ends before the 11:30 peak start.
 const WE_MORNING  = [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Weekend Morning 8b (8:00–16:00, meal 11:30–12; 3.5h + 4h, 7.5h).
+// Break-stagger twin of 8a — covers 11–11:30 while 8a breaks. Not an
+// anchor (break sits inside the lunch peak window).
+const WE_MORNING_B = [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Weekend Morning 10 (10:00–17:00, meal 2:00–2:30 PM; 4h + 2.5h, 6.5h).
+// Staggered start — keeps the 8 AM opening at its req-2 target instead
+// of stacking four bodies there. Lunch anchor.
+const WE_MORNING_10 = [0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // Evening A (15:00–23:30, meal break 8:00–8:30 PM; stretches 5h + 3h, 8h
 // worked). Dinner anchor: continuous through 5–8 PM, starts 3 PM.
 const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
@@ -97,6 +122,10 @@ const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
 // worked). Not an anchor (break inside dinner peak) — covers 8–8:30 PM
 // while Evening A is on its meal break.
 const EVENING_B   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+// Evening C (15:00–23:30, meal break 6:30–7 PM; stretches 3.5h + 4.5h,
+// 8h). Third evening break position — with A (8 PM), B (6 PM) and C
+// (6:30 PM) no two evening bodies must share a break slot.
+const EVENING_C   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1]
 
 // Mon–Wed SPLIT shapes — the one explicit exception to the 30-min paid
 // meal break: one dispatcher covers BOTH peaks with a long unpaid 3h gap
@@ -123,22 +152,32 @@ export const SPLIT_GAP_HOURS = 3
  *  election to simulate how many bodies a split saves on a given day. */
 export const SPLIT_COVERAGE: readonly number[] = SPLIT_B
 
+// Copy counts set the per-shape team capacity. ≤2 copies per break
+// position means no slot ever loses more than 2 bodies to a break, and
+// the pool leans evening-side (4 morning-start vs 8 evening-side) so
+// allocation follows the demand curve (dinner target 4 > lunch 3).
 const WEEKDAY_PATTERNS = [
-  WD_MORNING, WD_MORNING, WD_MORNING, WD_MORNING,
-  EVENING_A, EVENING_A, EVENING_A,
-  EVENING_B, EVENING_B, EVENING_B,
+  WD_MORNING, WD_MORNING,
+  WD_MORNING_10, WD_MORNING_10,
+  RAMP_14, RAMP_14,
+  EVENING_A, EVENING_A,
+  EVENING_B, EVENING_B,
+  EVENING_C, EVENING_C,
 ]
-// Mon–Wed: same two-team catalog PLUS the split shapes. Thu–Sun get no
-// splits — the two fixed teams stay pure there.
+// Mon–Wed: same catalog PLUS the split shapes. Thu–Sun get no splits.
 const MON_WED_PATTERNS = [
   ...WEEKDAY_PATTERNS,
   SPLIT_B, SPLIT_B,
   SPLIT_C, SPLIT_C,
 ]
 const WEEKEND_PATTERNS = [
-  WE_MORNING, WE_MORNING, WE_MORNING, WE_MORNING,
-  EVENING_A, EVENING_A, EVENING_A,
-  EVENING_B, EVENING_B, EVENING_B,
+  WE_MORNING, WE_MORNING,
+  WE_MORNING_B, WE_MORNING_B,
+  WE_MORNING_10, WE_MORNING_10,
+  RAMP_14, RAMP_14,
+  EVENING_A, EVENING_A,
+  EVENING_B, EVENING_B,
+  EVENING_C, EVENING_C,
 ]
 
 // Coverage targets are UNCHANGED from the pre-two-team template — where
@@ -260,12 +299,15 @@ export const MIN_TAIL_STRETCH_HOURS = 1.5
 export const EVENING_RAMP_SLOTS = new Set<number>([9, 10])
 
 /** Weekday-only requirement: every Mon–Fri shift must contain at least
- *  one worked stretch of this length. Both weekday team shapes satisfy
- *  it (Morning 5h + 1.5h, Evening 5h + 3h / 3h + 5h). Weekends are
- *  exempt so the 8 AM opener can split 3h + 4.5h around a late-morning
- *  break. Enforced in isValidShiftShape via the caller-supplied
- *  `dayOfWeek` argument. */
-export const WEEKDAY_PRIMARY_STRETCH_HOURS = 5
+ *  one worked stretch of this length. Relaxed from 5h to 4h to admit
+ *  the staggered-start shapes (Morning-10 4.5h + 2h, Ramp-14 4h + 3.5h,
+ *  Evening-C 3.5h + 4.5h) — the grid's half-slot positions make a 5h
+ *  stretch impossible for any start except 9:00/15:00/18:30, so 5h and
+ *  staggered starts were mutually exclusive. 4h still guarantees a real
+ *  stretch of work and still bans slivers. Weekends are exempt so the
+ *  8 AM opener can split 3h + 4.5h around a late-morning break.
+ *  Enforced in isValidShiftShape via the caller-supplied `dayOfWeek`. */
+export const WEEKDAY_PRIMARY_STRETCH_HOURS = 4
 
 /** Labor-law max consecutive work hours. Any single worked stretch over
  *  this triggers the mandatory 30-min meal break WITHIN the stretch —

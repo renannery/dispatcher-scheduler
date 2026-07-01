@@ -181,7 +181,12 @@ function assignMandatoryRest(
         // any low-demand day, then any valid day, when time-off pushed
         // lastRestDate off-cycle. This is a preference only — the
         // weekly-rest guarantee and 6-consecutive cap are unchanged.
-        const HOME_REST_DOWS = [1, 1, 2, 2, 3, 4, 4] // Mon,Mon,Tue,Tue,Wed,Thu,Thu
+        // Demand-spread quota: Tue is the lightest day (lunch 3, dinner 2,
+        // close 1) so it absorbs 3 rests; Wed and Thu take 1 each —
+        // stacking 2 rests on either gutted them to skeleton crews (Thu
+        // is a 5-need day + the week-start edge; Wed's close went to
+        // zero when 2 rests left it exactly tight). Mon keeps 2.
+        const HOME_REST_DOWS = [1, 1, 2, 2, 2, 3, 4] // Mon,Mon,Tue,Tue,Tue,Wed,Thu
         const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
         let pool = validRange.filter((dt) => dt.getDay() === homeDow)
         if (pool.length === 0) {
@@ -476,9 +481,10 @@ function enforceAnchors(
       const trial = [...a.pattern]
       for (const s of peak.slots) trial[s] = true
       if (!isValidShiftShape(trial, ctx.dow)) continue
-      // Weekly cap check — fill-break adds hours.
-      const oldH = slotHours(a.pattern), newH = slotHours(trial)
-      if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + (newH - oldH) > ctx.capForShift(a.dispatcher.id, lastActiveSlot(trial))) continue
+      // Weekly cap check — weekHours excludes today's shift, so the
+      // week total after the fill-break is weekHours + the FULL new day.
+      const newH = slotHours(trial)
+      if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + newH > ctx.capForShift(a.dispatcher.id, lastActiveSlot(trial))) continue
       a.pattern = trial
       fixed = true
       break
@@ -695,12 +701,22 @@ export function smoothTransitions(args: {
 
   // Cap a dispatcher gains by adding `delta` hours (net). Returns true
   // if all caps (weekly 45 h — night-aware trainee cap, weekly smoothing
-  // budget, daily smoothing budget) would still hold.
+  // budget, daily smoothing budget) would still hold. dailyNetAdd carries
+  // this pass's own intra-day additions so multiple dips on the same day
+  // budget correctly against each other. IMPORTANT: this pass must NOT
+  // write to the shared weekHours — the day-end accumulation adds the
+  // full (mutated) pattern, so booking here would double-count the delta
+  // and inflate reported weekly hours past the cap.
   const fitsBudget = (a: { dispatcher: Dispatcher; pattern: boolean[] }, delta: number): boolean => {
     if (delta <= 0) return true
-    if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + delta > capForShift(a.dispatcher.id, lastActiveSlot(a.pattern))) return false
+    const pending = dailyNetAdd.get(a.dispatcher.id) ?? 0
+    // weekHours excludes TODAY's shift (accumulated at day end), so add
+    // the current pattern's hours — a.pattern already includes any
+    // extensions applied earlier in this pass.
+    const todayH = slotHours(a.pattern)
+    if ((weekHours[a.dispatcher.id][wLabel] ?? 0) + todayH + delta > capForShift(a.dispatcher.id, lastActiveSlot(a.pattern))) return false
     if ((smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta > SMOOTHING_BUDGET_PER_WEEK) return false
-    if ((dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta > SMOOTHING_DAILY_NET_ADD) return false
+    if (pending + delta > SMOOTHING_DAILY_NET_ADD) return false
     return true
   }
 
@@ -712,9 +728,9 @@ export function smoothTransitions(args: {
   }
 
   // Apply hours-flat relocation: drop slot j, set slot i. Mutates a + cov.
-  // Slot hours may differ between j and i (0.5 vs 1) — book the delta
-  // into weekHours and (if positive) the smoothing budget so the pass
-  // doesn't leak unbooked hours.
+  // Slot hours may differ between j and i (0.5 vs 1) — track the delta
+  // locally (dailyNetAdd) and in the smoothing budget; weekHours is NOT
+  // touched (day-end accumulation picks up the mutated pattern).
   const applyRelocation = (
     a: { dispatcher: Dispatcher; pattern: boolean[] },
     j: number,
@@ -725,13 +741,10 @@ export function smoothTransitions(args: {
     cov[j]--
     cov[i]++
     const delta = SLOTS[i].hours - SLOTS[j].hours
-    if (delta !== 0) {
-      weekHours[a.dispatcher.id][wLabel] = (weekHours[a.dispatcher.id][wLabel] ?? 0) + delta
-      if (delta > 0) {
-        smoothingBudget[a.dispatcher.id][wLabel] =
-          (smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta
-        dailyNetAdd.set(a.dispatcher.id, (dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta)
-      }
+    if (delta > 0) {
+      smoothingBudget[a.dispatcher.id][wLabel] =
+        (smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + delta
+      dailyNetAdd.set(a.dispatcher.id, (dailyNetAdd.get(a.dispatcher.id) ?? 0) + delta)
     }
   }
 
@@ -742,7 +755,6 @@ export function smoothTransitions(args: {
     a.pattern[i] = true
     cov[i]++
     const addH = SLOTS[i].hours
-    weekHours[a.dispatcher.id][wLabel] = (weekHours[a.dispatcher.id][wLabel] ?? 0) + addH
     smoothingBudget[a.dispatcher.id][wLabel] =
       (smoothingBudget[a.dispatcher.id][wLabel] ?? 0) + addH
     dailyNetAdd.set(a.dispatcher.id, (dailyNetAdd.get(a.dispatcher.id) ?? 0) + addH)
@@ -1107,7 +1119,7 @@ export function generateSchedule(
     //    remaining day, the minimum shift after the rest.
     // Conservative: fully-blocked future days still count toward the
     // reserve (over-reserving means shorter shifts, never a violation).
-    const minShiftHoursFor = (dw: number) => (dw === 0 || dw === 6 ? 7.5 : 6.5)
+    const minShiftHoursFor = (_dw: number) => 6.5 // shortest shape any day (Morning-10 variants)
     const NIGHT_CHAIN_SHIFT_HOURS = 8
     const weeklyCapFor: Record<string, number> = {}
     const weeklyCapNightFor: Record<string, number> = {}
@@ -1343,8 +1355,19 @@ export function generateSchedule(
       const dropSort = [...scoredPatterns].sort((a, b) => a.unique - b.unique || a.p.hours - b.p.hours)
       const dropped = new Set<typeof sortedPatterns[number]>()
       const remainingCov = [...coverageCount]
+      // Track anchor-capable patterns per peak — never drop the last two
+      // (one to assign + one spare for the swap-repair pass). Without
+      // this, Evening A (the only 15:00-start dinner anchor) was dropped
+      // as "redundant" every Thursday: its coverage is a subset of
+      // B/C/Ramp combined, but none of those anchor the peak.
+      const anchorsLeft = new Map<string, number>()
+      for (const peak of PEAK_WINDOWS) {
+        anchorsLeft.set(peak.key, sortedPatterns.filter((pp) => isPeakAnchorPattern(pp.bool, peak.slots)).length)
+      }
       for (const cand of dropSort) {
         if (dropped.size >= patternsToDrop) break
+        const anchorFor = PEAK_WINDOWS.filter((peak) => isPeakAnchorPattern(cand.p.bool, peak.slots))
+        if (anchorFor.some((peak) => (anchorsLeft.get(peak.key) ?? 0) <= 2)) continue
         // Would dropping cand leave any required slot under-covered?
         // Was `< 1` (only protected against 0 cover) which let one of
         // {Early A, Early B} drop on Sun where both are needed (req=2,
@@ -1356,6 +1379,9 @@ export function generateSchedule(
         }
         if (unsafe) continue
         dropped.add(cand.p)
+        for (const peak of anchorFor) {
+          anchorsLeft.set(peak.key, (anchorsLeft.get(peak.key) ?? 1) - 1)
+        }
         for (let i = 0; i < cand.p.bool.length; i++) {
           if (cand.p.bool[i]) remainingCov[i] -= 1
         }
@@ -1419,12 +1445,29 @@ export function generateSchedule(
           if (cand.bool[i]) altCountPerSlot[i]++
         }
       }
+      // Peaks still missing a continuity anchor among today's picks.
+      // Anchor shapes get a bonus while their peak lacks one — without
+      // it, depth-weighted scoring anti-selects Evening A every Thursday
+      // (it breaks at 8 PM, the deepest evening deficit, so the
+      // non-anchor variants always outscore it) and enforceAnchors can't
+      // repair because every swap would drop the req-3 8 PM slot.
+      const peaksNeedingAnchor = PEAK_WINDOWS.filter(
+        (peak) => !assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+      )
       for (const cand of remainingPatterns) {
         let fill = 0, overTolerated = 0, overOff = 0, criticality = 0
+        for (const peak of peaksNeedingAnchor) {
+          if (isPeakAnchorPattern(cand.bool, peak.slots)) criticality += 50
+        }
         for (let i = 0; i < cand.bool.length; i++) {
           if (!cand.bool[i]) continue
           if (runningCov[i] < dayRequired[i]) {
-            fill++
+            // DEPTH-weighted fill: a slot 3 below target weighs 3× a
+            // slot 1 below. This is what allocates morning vs evening
+            // proportionally to each peak's target — with count-based
+            // fill, a morning shape covering nine req-1 slots outranked
+            // an evening covering a req-4 dinner sitting at 2.
+            fill += dayRequired[i] - runningCov[i]
             const deficit = dayRequired[i] - runningCov[i]
             // Mandatory or near-mandatory: deficit can only be filled by
             // a small set of patterns. Boost massively so critical
@@ -1593,7 +1636,7 @@ export function generateSchedule(
           let fill = 0, over = 0, blown = false
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
-            if (deficit[i] > 0) fill++
+            fill += deficit[i] // depth-weighted, matches the main picker
             // Evening-ramp slots are exempt from over-coverage — the full
             // evening team stands there by design (handoff + dinner ramp).
             if (EVENING_RAMP_SLOTS.has(i)) continue
@@ -1608,6 +1651,12 @@ export function generateSchedule(
           for (let i = 0; i < rescuePool.length; i++) {
             const d = rescuePool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue
+            // Un-electing a granted 2nd day off takes a REAL gap — the
+            // pattern must close ≥ 2 units of deficit. A lone 30-min
+            // break dip (the accepted warning residual) doesn't justify
+            // burning the perk. Unassigned-working dispatchers rescue
+            // freely — no perk at stake.
+            if (electedOffIds.has(d.id) && fill < 2) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
             if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
             if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
@@ -1649,6 +1698,9 @@ export function generateSchedule(
         (d) =>
           !usedIds.has(d.id) &&
           !restLocks[d.id].has(dateStr) && // defensive: never force-work a rest-locked dispatcher
+          !electedOffIds.has(d.id) && // TODAY's elected 2nd off put them AT the cap — that off is
+          // the granted perk, not an overshoot; forcing them back here
+          // silently killed every 2nd day off the elect gate approved
           (weekOffDays[d.id][wLabel] ?? 0) >= maxDaysOffFor(d.level),
       )
       const cov = new Array(SLOTS.length).fill(0)
@@ -1741,16 +1793,17 @@ export function generateSchedule(
           let fill = 0, overTolerated = 0, overOff = 0
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
-            if (cov[i] < dayRequired[i]) fill++
+            if (cov[i] < dayRequired[i]) fill += dayRequired[i] - cov[i]
             else if (cov[i] >= dayRequired[i]) {
               if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated++
               else overOff++
             }
           }
-          // Only pick when we genuinely close a gap. Off-peak over-cov
-          // costs 2× tolerated so surplus lands in the tolerated
-          // lunch/dinner windows first.
-          if (fill === 0) continue
+          // Cancel a 2nd day off only for a REAL gap — the pattern must
+          // close at least 2 units of deficit. A lone 30-min break dip
+          // (the accepted warning residual) is not worth burning the
+          // perk; transition-smoothing and the warnings handle those.
+          if (fill < 2) continue
           const score = fill * 2 - overTolerated - 2 * overOff
           if (score <= 0) continue
           const better =
