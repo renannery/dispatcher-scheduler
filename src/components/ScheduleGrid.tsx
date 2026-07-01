@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, patternMaxBreakHours, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import { generateSchedule, hoursStatusBg, hoursStatusColor, shuffleDispatcherAssignments } from '@/utils/scheduler'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
@@ -298,18 +298,13 @@ export function ScheduleGrid() {
     }
   }
 
-  // Peak weekly hours per dispatcher for the action bar, plus the
-  // period-total split-shift count (worked day with a mid-shift break
-  // ≥ 2 h — disruptive enough that the gap can't be used productively).
+  // Peak weekly hours per dispatcher for the action bar.
   const totalsByPerson = schedule.dispatcherSchedules.map((ds) => ({
     id:    ds.dispatcher.id,
     name:  ds.dispatcher.name,
     color: ds.dispatcher.color,
     level: ds.dispatcher.level,
     hours: Math.max(0, ...Object.values(ds.weeklyHours)),
-    totalSplits: ds.days.filter(
-      (d) => !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
-    ).length,
   }))
 
   // Weekend-rotation feasibility: for everyone to cycle through one Fri,
@@ -521,17 +516,10 @@ export function ScheduleGrid() {
 
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
           const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
-          // Split-shift = a worked day with a mid-shift break >= 2 h.
-          // Anything 2 h+ feels disruptive enough that the dispatcher
-          // can't really use the gap for anything productive.
-          const splits = ds.days.filter((d) =>
-            weekDateSet.has(d.date) && !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
-          ).length
           return {
             name:  ds.dispatcher.name,
             hours: ds.weeklyHours[wl] ?? 0,
             off,
-            splits,
           }
         })
 
@@ -682,7 +670,7 @@ export function ScheduleGrid() {
                   {filteredPills.length === 0 && (
                     <span className="text-xs text-slate-400">No dispatchers match &quot;{trimmedSearch}&quot;.</span>
                   )}
-                  {filteredPills.map(({ name, hours, splits }) => (
+                  {filteredPills.map(({ name, hours }) => (
                     <span
                       key={name}
                       className={clsx(
@@ -691,14 +679,6 @@ export function ScheduleGrid() {
                       )}
                     >
                       {name.split(' ')[0]} {hours.toFixed(1)}h
-                      {splits > 0 && (
-                        <span
-                          className="rounded-full bg-white/60 px-1 py-0 text-[10px] font-bold text-current/80"
-                          title={`${splits} split shift${splits === 1 ? '' : 's'} (break ≥ 2 h) this week`}
-                        >
-                          ⤳{splits}
-                        </span>
-                      )}
                     </span>
                   ))}
                 </div>
@@ -943,8 +923,11 @@ export function ScheduleGrid() {
         if (!ds) return null
         const { dispatcher, days, weeklyHours, totalHours } = ds
         const peak = Math.max(0, ...Object.values(weeklyHours))
-        const totalSplits = days.filter(
-          (d) => !d.isOff && patternMaxBreakHours(d.slots, SLOTS) >= 2,
+        // Evening shifts = starts 15:00 or later. Under the two-team
+        // model this is the interesting per-dispatcher stat (replaces
+        // the old split-shift count).
+        const eveningShifts = days.filter(
+          (d) => !d.isOff && d.slots.findIndex(Boolean) >= 9,
         ).length
         const daysWorked = days.filter((d) => !d.isOff).length
         const daysOff = days.length - daysWorked
@@ -1004,8 +987,8 @@ export function ScheduleGrid() {
                     <div className="text-[10px] uppercase text-slate-400">on/off</div>
                   </div>
                   <div>
-                    <div className={clsx('text-lg font-bold tabular-nums', totalSplits > 0 ? 'text-amber-700' : 'text-slate-700')}>{totalSplits}</div>
-                    <div className="text-[10px] uppercase text-slate-400">splits</div>
+                    <div className="text-lg font-bold tabular-nums text-slate-700">{eveningShifts}</div>
+                    <div className="text-[10px] uppercase text-slate-400">evenings</div>
                   </div>
                 </div>
                 {/* Per-week breakdown */}

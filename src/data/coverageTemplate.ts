@@ -4,23 +4,42 @@
  * Mon–Fri: 9 AM – 11:30 PM  (slot 0 = 8–9 AM, coverage = 0 → hidden in UI)
  * Sat–Sun: 8 AM – 11:30 PM  (slot 0 = 8–9 AM, coverage > 0)
  *
- * Shape rules enforced in every pattern (build-time assertion at the bottom
- * of this file fails the import on violation):
- *   Every work block ≥ MIN_BLOCK_HOURS (3 h)        — no 1-2 h tail blocks
- *   work ≤ 7 h           → no break required
- *   7 h < work < 8 h     → ≥ 30 min break
- *   work ≥ 8 h           → ≥ 1 h break
- *   Mid-shift break ≤ MAX_BREAK_HARD_HOURS (3 h)    — 2 h preferred, 3 h fallback
- * Max work per day = 9 h.
+ * TWO-TEAM MODEL. Every day is staffed by exactly two teams — no split
+ * shifts, no long midday gaps:
  *
- * Peak-time breaks (lunch 12–2 PM / dinner 5–8 PM) are *allowed* in
- * patterns — the picker decides whether to use them. Coverage targets
- * still need to be met overall; the picker prefers peak-safe patterns
- * unless using a peak-break variant earns extra morning/late coverage
- * from the same dispatcher. See PEAK_SLOT_INDICES below for the set.
+ *   Morning  (weekday 9:00–16:00 / weekend 8:00–16:00)
+ *   Evening  (15:00–23:30, to close)
  *
- * Where a break inside a pattern would reduce coverage below required,
- * the required number is adjusted down by 1 for that slot.
+ * Each dispatcher works one continuous presence with exactly ONE 30-min
+ * paid meal break (MEAL_BREAK_HOURS). The break is paid time but NOT
+ * coverage — the dispatcher is off the floor for that slot. Break
+ * placement is dictated by the labor-law 5h-consecutive cap and the
+ * slot grid:
+ *
+ *   WD Morning  9:00–14:00 + brk 2:00–2:30 PM + 14:30–16:00  (6.5h worked)
+ *   WE Morning  8:00–11:00 + brk 11:00–11:30 + 11:30–16:00   (7.5h worked)
+ *   Evening A   15:00–20:00 + brk 8:00–8:30 PM + 20:30–23:30 (8h worked)
+ *   Evening B   15:00–18:00 + brk 6:00–6:30 PM + 18:30–23:30 (8h worked)
+ *
+ * Evening A/B stagger the meal break so the floor never fully empties in
+ * the evening; the whole Morning team shares the 2:00–2:30 PM break by
+ * construction (no legal alternative position on the grid) — the 2–2:30
+ * dip surfaces as a coverage warning, intentionally kept as a signal.
+ *
+ * The two teams overlap 15:00–16:00 for the daily handoff (driver
+ * situation, open orders, restaurants). The scheduler validates the
+ * overlap and warns if a day would leave the Evening team starting cold.
+ *
+ * Shape rules (enforced by the build-time assertion below AND at runtime
+ * via isValidShiftShape):
+ *   ≤ 1 break per day, exactly MEAL_BREAK_HOURS (30 min) when present
+ *   No worked stretch over MAX_CONSECUTIVE_HOURS (5 h) — labor law
+ *   First stretch ≥ MIN_BLOCK_HOURS (3 h); the post-break tail may be
+ *     shorter (e.g. weekday Morning's 1.5h tail) because the paid meal
+ *     break does not fragment the continuous presence
+ *   > 5 h worked → the meal break is mandatory
+ *   Mon–Fri: at least one stretch ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5 h)
+ *   Max work per day = 9 h
  *
  * Slot index reference:
  *  0: 8–9 AM   1: 9–10 AM   2: 10–11 AM
@@ -56,59 +75,52 @@ export const SLOTS = [
   { label: '11–11:30 PM',   hours: 0.5 },  // 19
 ]
 
+// ───────────────────────────────────────────────────────────────────────────
+// The two-team shift catalog. Duplicate copies of each shape give the
+// picker per-day team capacity — each copy is assignable to one
+// dispatcher (usedPatternIdx is per-copy). 4 Morning + 3 Evening A +
+// 3 Evening B covers the largest team any day needs (4); the
+// over-coverage cap self-limits how many copies actually get picked on
+// low-requirement days.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Weekday Morning (9:00–16:00, meal break 2:00–2:30 PM; stretches 5h + 1.5h,
+// 6.5h worked). Lunch anchor: continuous through 11:30–2 PM, starts 9 AM.
+const WD_MORNING  = [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Weekend Morning (8:00–16:00, meal break 11:00–11:30 AM; stretches 3h + 4.5h,
+// 7.5h worked). Lunch anchor: break ends before the 11:30 peak start.
+const WE_MORNING  = [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Evening A (15:00–23:30, meal break 8:00–8:30 PM; stretches 5h + 3h, 8h
+// worked). Dinner anchor: continuous through 5–8 PM, starts 3 PM.
+const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
+// Evening B (15:00–23:30, meal break 6:00–6:30 PM; stretches 3h + 5h, 8h
+// worked). Not an anchor (break inside dinner peak) — covers 8–8:30 PM
+// while Evening A is on its meal break.
+const EVENING_B   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+
+const WEEKDAY_PATTERNS = [
+  WD_MORNING, WD_MORNING, WD_MORNING, WD_MORNING,
+  EVENING_A, EVENING_A, EVENING_A,
+  EVENING_B, EVENING_B, EVENING_B,
+]
+const WEEKEND_PATTERNS = [
+  WE_MORNING, WE_MORNING, WE_MORNING, WE_MORNING,
+  EVENING_A, EVENING_A, EVENING_A,
+  EVENING_B, EVENING_B, EVENING_B,
+]
+
+// Coverage targets are UNCHANGED from the pre-two-team template — where
+// the fixed team model can't meet them (Sat needs 4+4 bodies, the shared
+// Morning meal break at 2–2:30 PM, the staggered Evening breaks at
+// 6–6:30 / 8–8:30 PM) the shortfall surfaces as daily warnings. That is
+// deliberate: the warnings are the headcount signal.
+
 // ─── THURSDAY (dayOfWeek=4) ─────────────────────────────────────────────────
 const THU: DayTemplate = {
   dayOfWeek: 4, dayName: 'Thursday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 2, 2, 3, 3, 2, 3, 1, 1],
-  //                                              ↑  ↑ adjusted down 1 (staggered late breaks)
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Morning Anchor (9 AM–2 PM, 5 h — weekday LUNCH anchor.)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Dinner Anchor (3–8 PM, 5 h — weekday DINNER anchor.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
-    // Late Anchor (3–8 PM + 8:30–11:30 PM, 8 h — weekday DINNER anchor + closer.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break at
-    //   11:30-12 — preserves the original 9-3 PM time range while
-    //   satisfying the law's >5h consecutive break requirement.)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
-    //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
-    //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
-    //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
-    //   4-10 PM range so the tail meets MIN_BLOCK while keeping the
-    //   break out of dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, 30 min break at 8:30-9 PM — A
-    //   variant: break shifted to slot 16 instead of 15, fills the
-    //   8-8:30 PM gap that the standard Late A leaves behind)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, 30 min break at 8:30-9 PM — B
-    //   variant: same break-slot shift for the closer.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Afternoon (2-7 PM, 5 h single block — fills the 2-4 PM lull gap
-    //   that morning shifts taper out of and dinner shifts haven't
-    //   started yet. Exactly at legal max consecutive, no break.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-    // Morning Mini (9-11 AM, 2 h single block — minimum-length filler for
-    //   the 9-11 AM gap when full-length morning shifts are already
-    //   covering peak. Gap-aware picker uses it when fill > over.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h single block — surgically fills
-    //   the 2-4 PM lull slots without committing a dispatcher to a
-    //   long shift that would over-cover dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKDAY_PATTERNS,
 }
 
 // ─── FRIDAY (dayOfWeek=5) ───────────────────────────────────────────────────
@@ -116,57 +128,7 @@ const FRI: DayTemplate = {
   dayOfWeek: 5, dayName: 'Friday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 2, 3, 3, 2, 2, 2, 2, 3, 4, 3, 3, 4, 3, 2, 3, 3, 1],
-  //                                    ↑ adjusted (Early A on lunch break)
-  //                                                      ↑  ↑ adjusted (Late B on break)
-  //                                                               ↑ adjusted (Late A on break)
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Early A  (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (10 AM-3 PM, 5 h single block — exactly at the legal max
-    //   consecutive limit; no break required.)
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
-    //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
-    //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
-    //   4-10 PM range so the tail meets MIN_BLOCK while keeping the
-    //   break out of dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
-    //   Fri slot 19 (req=1) + slot 18 (req=3) can stack 2 bodies)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
-    //   covers dinner-peak + the full closer block, skips slot 15-16)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
-    // Closer Split B (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break 8-8:30 PM —
-    //   ends at 11 PM, covers slot 18 (req=3) which was the biggest
-    //   Fri deficit. User's manual no-gaps fix used this exact shape.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
-    //   3rd pattern covering slot 9 (3-4 PM) so Fri's req=2 there can
-    //   actually be met. Early A + Early B + this gives 3 candidates.)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, 30 min break at 8:30-9 PM —
-    //   break shifted to slot 16 fills the 8-8:30 PM gap.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, 30 min break at 8:30-9 PM —
-    //   closer variant with the break-slot shift.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Afternoon (2-7 PM, 5 h single block — fills the 2-4 PM lull gap.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-    // Morning Mini (9-11 AM, 2 h single block — surgical filler.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h single block — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKDAY_PATTERNS,
 }
 
 // ─── SATURDAY (dayOfWeek=6) ─────────────────────────────────────────────────
@@ -174,34 +136,7 @@ const SAT: DayTemplate = {
   dayOfWeek: 6, dayName: 'Saturday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    2, 2, 2, 2, 4, 4, 4, 2, 2, 1, 1, 4, 4, 4, 4, 3, 3, 2, 1, 1],
-  //                                                           ↑  ↑ adjusted (Late A on break)
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Early A  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30)
-    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (8 AM–4 PM, 7 h + 1 h break at 11–12, blocks 3 h + 4 h —
-    //   covers the 3–4 PM gap that Early A leaves)
-    [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split A  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Split B  (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
-    //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
-    //   4-10 PM range so the tail meets MIN_BLOCK while keeping the
-    //   break out of dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKEND_PATTERNS,
 }
 
 // ─── SUNDAY (dayOfWeek=0) ───────────────────────────────────────────────────
@@ -209,32 +144,7 @@ const SUN: DayTemplate = {
   dayOfWeek: 0, dayName: 'Sunday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    2, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3, 1],
-  //                                                            ↑ adjusted (Early A on lunch)
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Early A  (8 AM–3 PM, 6 h + 1 h break at 11 AM–12 PM, blocks 3 h + 3 h)
-    [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early B  (8 AM–3 PM, 6.5 h + 30 m break at 11–11:30, blocks 3 h + 3.5 h)
-    [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Late A   (3-6 PM + 6:30-10 PM, 6.5 h, 30 min break — law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0],
-    // Late C   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late D   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
-    //   Sun slots 17/18 (req=3, only Late C otherwise) can stack a 2nd
-    //   body. Uniqueness scoring credits both C+D for slot 18 deficit.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-    // Mid Split (11 AM–2 PM + 3 PM–8 PM, 8 h, 1 h break 2-3 PM — covers
-    //   lunch + dinner peaks but SKIPS slot 16 to avoid the 8:30-9 PM
-    //   stack that blocks evening closer assignments.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
-    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
-    //   covers dinner-peak + the full closer block, breaks BEFORE slot
-    //   16 so it doesn't stack the low-req 8:30 PM slot.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
-  ],
+  shiftPatterns: WEEKEND_PATTERNS,
 }
 
 // ─── MONDAY (dayOfWeek=1) ───────────────────────────────────────────────────
@@ -242,53 +152,7 @@ const MON: DayTemplate = {
   dayOfWeek: 1, dayName: 'Monday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 3, 3, 3, 3, 1, 2, 2, 1],
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Morning Anchor (9 AM–2 PM, 5 h single block — 5h continuous through
-    //   lunch peak; qualifies as a weekday LUNCH anchor under the primary-
-    //   stretch rule.)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Long Morning (9 AM–2 PM + 3–6 PM, 8 h, 1 h break 2–3 PM — 5h primary
-    //   through lunch peak + 3h tail. Weekday LUNCH anchor.)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Dinner Anchor (3–8 PM, 5 h single block — 5h continuous through
-    //   dinner peak; qualifies as a weekday DINNER anchor.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
-    // Long split (11 AM–3 PM + 5 PM–10 PM, 9 h, 2 h break 3–5 PM — 4h
-    //   through lunch peak + 5h primary through dinner peak. Weekday
-    //   LUNCH + DINNER anchor.)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
-    //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    //Split    (11 AM–3 PM + 5 PM–8:30 PM, 7.5 h, 2 h break 3–5 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
-    //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
-    //   4-10 PM range so the tail meets MIN_BLOCK while keeping the
-    //   break out of dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late C   (7 PM–11:30 PM, 4.5 h single block — 2nd closer body so
-    //   Mon dinner-peak + closer slots can stack a 2nd body)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-    // Closer Split (4-7 PM + 8:30-11:30 PM, 6 h, 1 h break 7-8:30 PM —
-    //   covers dinner-peak + the full closer block, skips slot 15-16)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
-    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKDAY_PATTERNS,
 }
 
 // ─── TUESDAY (dayOfWeek=2) ──────────────────────────────────────────────────
@@ -296,34 +160,7 @@ const TUE: DayTemplate = {
   dayOfWeek: 2, dayName: 'Tuesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1],
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Morning Anchor (9 AM–2 PM, 5 h — weekday LUNCH anchor.)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Dinner Anchor (3–8 PM, 5 h — weekday DINNER anchor.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
-    // Late Anchor (3–8 PM + 8:30–11:30 PM, 8 h — weekday DINNER anchor + closer.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Early A  (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    //Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
-    //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Split    (11 AM–2 PM + 4-9 PM, 8 h, 2 h break 2–4 PM — 2nd block
-    //   trimmed from 5.5h to 5h max consecutive per labor law)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Late     (4-8 PM + 8:30-11:30 PM, 7 h, 30 min break — covers closer
-    //   with no consecutive block over 5 h)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Late'    (4-8:30 PM + 9-11:30 PM, 7 h, break at 8:30-9 PM — fills slot 15)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKDAY_PATTERNS,
 }
 
 // ─── WEDNESDAY (dayOfWeek=3) ────────────────────────────────────────────────
@@ -331,58 +168,7 @@ const WED: DayTemplate = {
   dayOfWeek: 3, dayName: 'Wednesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
   requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2, 1],
-  //                                       ↑ adjusted (Early A on lunch break)
-  //                                                                              ↑ closer slot
-  shiftPatterns: [
-    // Morning Anchor (9 AM–2 PM, 5 h — weekday LUNCH anchor.)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Dinner Anchor (3–8 PM, 5 h — weekday DINNER anchor.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
-    // Late Anchor (3–8 PM + 8:30–11:30 PM, 8 h — weekday DINNER anchor + closer.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Early    (9 AM-11:30 + 12-3 PM, 5.5 h, 30 min lunch break — law: >5h needs break)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Morning split (9 AM–6 PM, 8 h work + 1 h break 2–3 PM — covers
-    //   morning gap + lunch peak + early dinner peak in a single shift)
-    [0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    //Split    (11 AM–2 PM + 4 PM–8:30 PM, 7.5 h, 2 h break 2–4 PM — covers both peaks)
-    [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    // Bridge   (11 AM-2 PM + 2:30-5 PM, 5.5 h, 30 min break at 2-2:30 PM —
-    //   preserves the original 11 AM-5 PM range with a non-peak break.)
-    [0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Late A   (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break at 8-8:30 PM —
-    //   non-peak break, blocks 4h + 2.5h. Slightly extended past original
-    //   4-10 PM range so the tail meets MIN_BLOCK while keeping the
-    //   break out of dinner peak.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late B   (5-8 PM + 8:30-11:30 PM, 6 h, 30 min break — closer; law: >5h needs break)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
-    // Bridge Late (2:30-4 PM + 6-11 PM, 7.5 h, 1 h break 5-6 PM —
-    //   user's no-gaps fix used this exact shape on Wed: tiny
-    //   afternoon slice + dinner-to-close, filling Wed's evening
-    //   peak that one-block patterns can't cover after off-day
-    //   clustering eats the working pool.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
-    // Closer Split B (4-8 PM + 8:30-11 PM, 6.5 h, 30 min break —
-    //   ends at 11 PM to fill Wed slot 18 deficit without piling on
-    //   slot 19 which is already covered by Late B.)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-    // Late A'  (4-8:30 PM + 9-11 PM, 6.5 h, break at 8:30-9 PM — fills slot 15)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-    // Late B'  (5-8:30 PM + 9-11:30 PM, 6 h, break at 8:30-9 PM — closer + slot 15 fill)
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
-    // Afternoon (2-7 PM, 5 h single block — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-    // Morning Mini (9-11 AM, 2 h — surgical filler for morning gap.)
-    [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Afternoon Mini (2-4 PM, 2.5 h — fills 2-4 PM lull.)
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    // Early Bridge (9-11:30 AM + 12-4 PM, 6.5 h, 30 min lunch break —
-    //   3rd pattern covering slots 1, 2 (9-11 AM, req=2) and slot 9
-    //   (3-4 PM, req=2) so the picker has options when the existing
-    //   2 morning patterns can't both reach those slots.)
-    [0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  ],
+  shiftPatterns: WEEKDAY_PATTERNS,
 }
 
 /** Map from JS getDay() → DayTemplate */
@@ -410,54 +196,62 @@ export function effectiveCoverage(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Break-shape rules
+// Shift-shape rules
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Preferred max mid-shift break. Patterns over this are scored lower. */
-export const MAX_BREAK_PREFERRED_HOURS = 2
+/** The one break a dispatcher gets per day: 30 minutes, paid, off the
+ *  floor (not coverage). It's the labor-law meal break, mandatory once
+ *  the day exceeds 5h of work. Exactly one slot on the grid. */
+export const MEAL_BREAK_HOURS = 0.5
 
-/** Hard cap on mid-shift break. Patterns over this are rejected at import. */
-export const MAX_BREAK_HARD_HOURS = 3
-
-/** Minimum length of any single work block in a pattern. Raised to 3h
- *  so dispatchers get a real straight stretch of work — 2h blocks were
- *  too short and produced fragmented shifts. Applies to every day of
- *  the week; the weekday-primary rule below adds a further constraint
- *  on Mon–Fri (at least one block ≥ 5h). */
+/** Minimum length of the FIRST worked stretch — the meal break comes
+ *  after a real stretch of work, never after a token hour. The
+ *  post-break tail may be shorter (weekday Morning runs 5h + 1.5h)
+ *  because the paid meal break doesn't fragment the continuous
+ *  presence; the shift is one 9-to-4 block with a lunch pause, not a
+ *  split shift. */
 export const MIN_BLOCK_HOURS = 3
 
+/** Minimum length of the post-break tail. Matches the weekday Morning's
+ *  1.5h tail (14:30–16:00) — the shortest legal tail in the catalog.
+ *  Stops the trim/smoothing passes from whittling a tail down to a
+ *  useless 30-min stub. */
+export const MIN_TAIL_STRETCH_HOURS = 1.5
+
+/** The evening-ramp window (3–5 PM, slots 9–10). The whole Evening team
+ *  is on the floor from 15:00 by design — first for the 15:00–16:00
+ *  handoff overlap with the Morning team, then ramping toward dinner —
+ *  even though the coverage requirement in this window is low (often 1).
+ *  Over-coverage here is INTENTIONAL: the over-coverage caps skip these
+ *  slots and the trim pass never shaves them, otherwise the optimizer
+ *  dismantles the handoff to satisfy a 3 PM req of 1. */
+export const EVENING_RAMP_SLOTS = new Set<number>([9, 10])
+
 /** Weekday-only requirement: every Mon–Fri shift must contain at least
- *  one continuous work block of this length. Combined with MAX_CONSECUTIVE_HOURS
- *  (5h), a weekday shift is either exactly one 5h block, or 5h + break +
- *  ≥3h tail (up to the 9h daily cap). Weekends (Sat/Sun) skip this rule
- *  because openers on those days want to be short. Enforced in
- *  isValidShiftShape via the caller-supplied `dayOfWeek` argument. */
+ *  one worked stretch of this length. Both weekday team shapes satisfy
+ *  it (Morning 5h + 1.5h, Evening 5h + 3h / 3h + 5h). Weekends are
+ *  exempt so the 8 AM opener can split 3h + 4.5h around a late-morning
+ *  break. Enforced in isValidShiftShape via the caller-supplied
+ *  `dayOfWeek` argument. */
 export const WEEKDAY_PRIMARY_STRETCH_HOURS = 5
 
-/** Required break for an 8 h+ shift. */
-export const LONG_SHIFT_BREAK_MIN = 1
-
-/** Required break for any shift over 5 h. Labor-law floor (Section 23):
- *  any employee working more than 5 consecutive hours in a day is
- *  entitled to a 30-min uninterrupted meal break. */
-export const MED_SHIFT_BREAK_MIN = 0.5
-
-/** Labor-law max consecutive work hours. Any single work block over this
- *  triggers the same 30-min break requirement WITHIN the block — i.e. a
- *  pattern can't have a single block above this length, even if its
+/** Labor-law max consecutive work hours. Any single worked stretch over
+ *  this triggers the mandatory 30-min meal break WITHIN the stretch —
+ *  i.e. a pattern can't have a stretch above this length, even if its
  *  total work hours are small. */
 export const MAX_CONSECUTIVE_HOURS = 5
 
 /** Slot indices that fall within peak hours — lunch (12–2 PM) and dinner
- *  (5–8 PM). Used by the legacy build-time pattern assertion; the live
- *  scheduler now governs peaks via the continuity-anchor rule below. */
+ *  (5–8 PM). Used by the build-time pattern assertion; the live
+ *  scheduler governs peaks via the continuity-anchor rule below. */
 export const PEAK_SLOT_INDICES = [5, 6, 11, 12, 13, 14]
 
 /** Continuity-anchor peak windows. For each peak, at least one
  *  dispatcher on duty must have STARTED before the peak began AND
  *  remain continuously on duty through every slot in the window — no
- *  break and no shift end inside the peak. Other dispatchers may
- *  freely start, break, or end mid-peak as long as the anchor holds.
+ *  break and no shift end inside the peak. Under the two-team model
+ *  each team owns its peak: Morning anchors lunch, Evening A anchors
+ *  dinner. The validation stays in place as a safety net.
  *
  *  Lunch  = 11:30 AM – 2:00 PM → slots 4, 5, 6
  *  Dinner = 5:00 PM – 8:00 PM  → slots 11, 12, 13, 14
@@ -469,6 +263,14 @@ export const PEAK_WINDOWS = [
   { key: 'dinner' as const, label: 'Dinner (5–8 PM)',   slots: DINNER_PEAK_SLOTS },
 ]
 export type PeakKey = (typeof PEAK_WINDOWS)[number]['key']
+
+/** The daily handoff window — the Morning team must still be on the
+ *  floor when the Evening team arrives so context (driver situation,
+ *  open orders, restaurants) transfers warm. Evening starts 15:00
+ *  (slot 9); Morning runs to 16:00, so the structural overlap is
+ *  15:00–16:00. The scheduler warns when a day would leave the Evening
+ *  team starting cold (no morning shift covering slot 9). */
+export const HANDOFF_SLOT = 9
 
 /** Windows where over-coverage is tolerated — surplus hours (e.g. from a
  *  trainee's forced 6th workday) can sit here without pushing the picker
@@ -563,44 +365,45 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
   return out
 }
 
-// Build-time assertion: every pattern must satisfy the shape rules.
-// Peak-time breaks are no longer rejected here — the picker decides
-// whether to use peak-break patterns based on real coverage need.
+// Build-time assertion: with the small fixed two-team catalog, every
+// pattern MUST satisfy the shape rules — a violation is a typo in this
+// file, so fail the import loudly.
 ;(() => {
   const violations: string[] = []
   for (const day of Object.values(DAY_TEMPLATES)) {
+    const isWeekend = day.dayOfWeek === 0 || day.dayOfWeek === 6
     day.shiftPatterns.forEach((pat, idx) => {
-      const brk = patternMaxBreakHours(pat, day.slots)
       const blocks = patternWorkBlocks(pat, day.slots)
-      const minBlock = blocks.length === 0 ? 0 : Math.min(...blocks)
+      const brk = patternMaxBreakHours(pat, day.slots)
       const work = totalWorkHours(pat, day.slots)
-      if (brk > MAX_BREAK_HARD_HOURS) {
-        violations.push(`${day.dayName} #${idx}: ${brk}h break > ${MAX_BREAK_HARD_HOURS}h hard cap`)
+      if (blocks.length === 0 || blocks.length > 2) {
+        violations.push(`${day.dayName} #${idx}: ${blocks.length} stretches (need 1 or 2)`)
+        return
       }
-      // Every block (single or split) must meet the 3h minimum.
-      if (blocks.length > 0 && minBlock < MIN_BLOCK_HOURS) {
-        violations.push(`${day.dayName} #${idx}: ${minBlock}h work block < ${MIN_BLOCK_HOURS}h min (blocks=[${blocks.join(',')}])`)
+      if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) {
+        violations.push(`${day.dayName} #${idx}: break ${brk}h ≠ the ${MEAL_BREAK_HOURS}h paid meal break`)
       }
-      // Labor-law: no single block can exceed MAX_CONSECUTIVE_HOURS (5h).
-      // > 5h consecutive triggers the legal 30-min meal break.
-      const maxBlock = blocks.length === 0 ? 0 : Math.max(...blocks)
-      if (maxBlock > MAX_CONSECUTIVE_HOURS) {
-        violations.push(`${day.dayName} #${idx}: ${maxBlock}h consecutive block > ${MAX_CONSECUTIVE_HOURS}h legal max (blocks=[${blocks.join(',')}])`)
+      if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) {
+        violations.push(`${day.dayName} #${idx}: ${Math.max(...blocks)}h stretch > ${MAX_CONSECUTIVE_HOURS}h legal max`)
       }
-      if (work >= 8 && brk < LONG_SHIFT_BREAK_MIN) {
-        violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${LONG_SHIFT_BREAK_MIN}h break, has ${brk}h`)
-      } else if (work > MAX_CONSECUTIVE_HOURS && work < 8 && brk < MED_SHIFT_BREAK_MIN) {
-        // Labor law: > 5h work needs a 30-min meal break.
-        violations.push(`${day.dayName} #${idx}: ${work}h shift needs ≥${MED_SHIFT_BREAK_MIN}h break, has ${brk}h`)
+      if (blocks[0] < MIN_BLOCK_HOURS) {
+        violations.push(`${day.dayName} #${idx}: first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
+      }
+      if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
+        violations.push(`${day.dayName} #${idx}: tail ${blocks[1]}h < ${MIN_TAIL_STRETCH_HOURS}h`)
+      }
+      if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) {
+        violations.push(`${day.dayName} #${idx}: ${work}h worked with no meal break`)
+      }
+      if (work > 9) {
+        violations.push(`${day.dayName} #${idx}: ${work}h > 9h daily max`)
+      }
+      if (!isWeekend && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) {
+        violations.push(`${day.dayName} #${idx}: no ${WEEKDAY_PRIMARY_STRETCH_HOURS}h primary stretch (weekday)`)
       }
     })
   }
-  // Historical patterns that no longer satisfy the tightened shape rules
-  // (MIN_BLOCK_HOURS 2 → 3 + WEEKDAY_PRIMARY_STRETCH_HOURS = 5) are silently
-  // ignored — the runtime `isValidShiftShape(dow)` filter is the sole
-  // authority on what the picker uses. Keeping them in the pool is
-  // harmless (skip-cost only) and preserves the historical shape catalog
-  // for reference. If truly-impossible shapes (e.g. block > 5h consecutive)
-  // are introduced, they will still be filtered at runtime.
-  void violations
+  if (violations.length > 0) {
+    throw new Error(`Dispatcher pattern shape violations:\n  ${violations.join('\n  ')}`)
+  }
 })()

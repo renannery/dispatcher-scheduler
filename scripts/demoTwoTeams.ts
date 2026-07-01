@@ -1,0 +1,157 @@
+/**
+ * Verify the two-team (Morning/Evening) restructure on the 11-week window
+ * with the 7-dispatcher production roster. PASS/FAIL gates:
+ *
+ *   Gate S — shape: every emitted shift has ≤2 stretches, every stretch
+ *            ≤5h, the break (when present) is exactly the 30-min paid
+ *            meal break, first stretch ≥3h, work ≤9h, and every Mon–Fri
+ *            shift has a ≥5h primary stretch.
+ *   Gate H — hours: no dispatcher exceeds the 45h weekly cap; report
+ *            evening-shift counts (should be ≤4/week each).
+ *   Gate O — handoff: every day that has an evening shift either has a
+ *            morning shift covering the 15:00 handoff slot OR carries a
+ *            `handoff` warning (no silent cold starts).
+ *
+ * Also reports: per-day-of-week team sizes, warning counts by kind, and
+ * the expected structural shortfalls (Sat, 2–2:30 PM, evening breaks).
+ *
+ * Run with: npx tsx scripts/demoTwoTeams.ts
+ */
+import { generateSchedule } from '@/utils/scheduler'
+import type { Dispatcher } from '@/types/schedule'
+import {
+  HANDOFF_SLOT,
+  MAX_CONSECUTIVE_HOURS,
+  MEAL_BREAK_HOURS,
+  MIN_BLOCK_HOURS,
+  WEEKDAY_PRIMARY_STRETCH_HOURS,
+  patternMaxBreakHours,
+  patternWorkBlocks,
+  SLOTS,
+} from '@/data/coverageTemplate'
+
+const roster: Dispatcher[] = [
+  { id: 'd1', name: 'Ayrton',   color: '#ef4444', level: 'Senior'  },
+  { id: 'd2', name: 'Adorre',   color: '#f97316', level: 'Regular' },
+  { id: 'd3', name: 'Kimberly', color: '#eab308', level: 'Regular' },
+  { id: 'd4', name: 'Michelle', color: '#22c55e', level: 'Regular' },
+  { id: 'd5', name: 'Paula',    color: '#06b6d4', level: 'Regular' },
+  { id: 'd6', name: 'Resgie',   color: '#3b82f6', level: 'Trainee' },
+  { id: 'd7', name: 'Shamika',  color: '#a855f7', level: 'Trainee' },
+]
+
+const schedule = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42)
+const isWeekendDow = (dow: number) => dow === 0 || dow === 6
+const DOW_NAMES: Record<number, string> = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' }
+
+// ── Gate S: emitted shift shapes ────────────────────────────────────────
+let gateSFail = 0
+const shapeViolations: string[] = []
+for (const ds of schedule.dispatcherSchedules) {
+  for (const day of ds.days) {
+    if (day.isOff) continue
+    const blocks = patternWorkBlocks(day.slots, SLOTS)
+    if (blocks.length === 0) continue
+    const brk = patternMaxBreakHours(day.slots, SLOTS)
+    const work = blocks.reduce((s, h) => s + h, 0)
+    const problems: string[] = []
+    if (blocks.length > 2) problems.push(`${blocks.length} stretches`)
+    if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h`)
+    if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) problems.push(`stretch ${Math.max(...blocks)}h > 5h`)
+    if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < 3h`)
+    if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) problems.push(`${work}h no meal break`)
+    if (work > 9) problems.push(`${work}h > 9h`)
+    if (!isWeekendDow(day.dayOfWeek) && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) {
+      problems.push(`no 5h primary (weekday)`)
+    }
+    if (problems.length > 0) {
+      gateSFail++
+      if (shapeViolations.length < 8) {
+        shapeViolations.push(`${ds.dispatcher.name} ${day.date}: ${problems.join('; ')} (blocks=[${blocks.join(',')}])`)
+      }
+    }
+  }
+}
+console.log('══════════════════════════════════════════════════════════════════════')
+console.log(' Gate S — two-team shift shapes on every emitted shift')
+console.log('══════════════════════════════════════════════════════════════════════')
+console.log(`  Violations: ${gateSFail}${gateSFail === 0 ? ' ✓' : ' ← FAIL'}`)
+for (const v of shapeViolations) console.log(`    ${v}`)
+
+// ── Gate H: weekly hours + evening counts ───────────────────────────────
+let gateHFail = 0
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Gate H — weekly hours ≤ 45h; evening shifts per week ≤ 4')
+console.log('══════════════════════════════════════════════════════════════════════')
+for (const ds of schedule.dispatcherSchedules) {
+  const weeks = Object.entries(ds.weeklyHours)
+  const maxWk = Math.max(0, ...weeks.map(([, h]) => h))
+  // Evening shifts per week (first worked slot ≥ HANDOFF_SLOT).
+  const evByWeek = new Map<string, number>()
+  for (const day of ds.days) {
+    if (day.isOff) continue
+    const wl = schedule.dates.find((d) => d.date === day.date)?.weekLabel ?? ''
+    if (day.slots.findIndex(Boolean) >= HANDOFF_SLOT) {
+      evByWeek.set(wl, (evByWeek.get(wl) ?? 0) + 1)
+    }
+  }
+  const maxEv = Math.max(0, ...evByWeek.values())
+  const capFlag = maxWk > 45 ? ' ← FAIL >45h' : ' ✓'
+  if (maxWk > 45) gateHFail++
+  console.log(`  ${ds.dispatcher.name.padEnd(10)} peak week ${maxWk.toFixed(1).padStart(5)}h · max evenings/wk ${maxEv}${capFlag}`)
+}
+console.log(`  → ${gateHFail === 0 ? 'PASS' : 'FAIL'}`)
+
+// ── Gate O: handoff overlap on every day with an evening shift ─────────
+let gateOFail = 0
+const handoffWarned: string[] = []
+for (const dInfo of schedule.dates) {
+  const dayShifts = schedule.dispatcherSchedules
+    .map((ds) => ds.days.find((x) => x.date === dInfo.date))
+    .filter((x): x is NonNullable<typeof x> => !!x && !x.isOff)
+  const hasEvening = dayShifts.some((s) => s.slots.findIndex(Boolean) >= HANDOFF_SLOT)
+  if (!hasEvening) continue
+  const hasOverlap = dayShifts.some((s) => {
+    const first = s.slots.findIndex(Boolean)
+    return first >= 0 && first < HANDOFF_SLOT && s.slots[HANDOFF_SLOT]
+  })
+  const warned = (schedule.coverageWarnings?.[dInfo.date] ?? []).some((w) => w.peak === 'handoff')
+  if (!hasOverlap && !warned) {
+    gateOFail++
+  }
+  if (warned) handoffWarned.push(dInfo.date)
+}
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Gate O — 15:00 handoff overlap (or explicit warning) every day')
+console.log('══════════════════════════════════════════════════════════════════════')
+console.log(`  Silent cold starts: ${gateOFail}${gateOFail === 0 ? ' ✓' : ' ← FAIL'}`)
+console.log(`  Days carrying a handoff warning: ${handoffWarned.length}${handoffWarned.length ? ` (${handoffWarned.slice(0, 5).join(', ')}${handoffWarned.length > 5 ? '…' : ''})` : ''}`)
+
+// ── Team sizes by day-of-week (first full week) ─────────────────────────
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Team sizes per day (first full week) — morning / evening / off')
+console.log('══════════════════════════════════════════════════════════════════════')
+for (const dInfo of schedule.dates.slice(0, 7)) {
+  let m = 0, e = 0, off = 0
+  for (const ds of schedule.dispatcherSchedules) {
+    const day = ds.days.find((x) => x.date === dInfo.date)
+    if (!day || day.isOff) { off++; continue }
+    if (day.slots.findIndex(Boolean) >= HANDOFF_SLOT) e++
+    else m++
+  }
+  console.log(`  ${dInfo.date} ${DOW_NAMES[dInfo.dayOfWeek]}: ${m}M / ${e}E / ${off} off`)
+}
+
+// ── Warning counts by kind ──────────────────────────────────────────────
+const counts: Record<string, number> = {}
+for (const ws of Object.values(schedule.coverageWarnings ?? {})) {
+  for (const w of ws) counts[w.peak] = (counts[w.peak] ?? 0) + 1
+}
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Warning counts across 11-week horizon')
+console.log('══════════════════════════════════════════════════════════════════════')
+for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`)
+
+const allPass = gateSFail === 0 && gateHFail === 0 && gateOFail === 0
+console.log(`\n FINAL — Gate S: ${gateSFail === 0 ? 'PASS' : 'FAIL'}   Gate H: ${gateHFail === 0 ? 'PASS' : 'FAIL'}   Gate O: ${gateOFail === 0 ? 'PASS' : 'FAIL'}`)
+if (!allPass) process.exit(1)

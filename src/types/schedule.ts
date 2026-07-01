@@ -75,16 +75,23 @@ export interface GeneratedSchedule {
   coverageRequired?: Record<string, number[]>
   /** Non-blocking warnings the scheduler emits when a constraint can't
    *  be satisfied. Rendered as inline chips on the affected day, styled
-   *  by `peak` kind (amber anchor / orange transition / red rest).
+   *  by `peak` kind (amber anchor / orange transition / red rest /
+   *  sky handoff).
    *    - `lunch` / `dinner`: no continuity anchor for that peak.
    *    - `transition`: 1-slot dip the smoothing pass couldn't close;
    *      `slotIndex` carries the dip's slot.
    *    - `mandatory-rest`: coverage left short because ≥1 dispatcher
    *      is on a locked weekly rest day; `slotIndex` carries the
-   *      shorted slot (may repeat per shorted slot per day). */
+   *      shorted slot (may repeat per shorted slot per day).
+   *    - `handoff`: no morning dispatcher works through the 15:00
+   *      handoff slot — the evening team would start cold. */
   coverageWarnings?: Record<
     string,
-    { peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest'; reason: string; slotIndex?: number }[]
+    {
+      peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest' | 'handoff'
+      reason: string
+      slotIndex?: number
+    }[]
   >
 }
 

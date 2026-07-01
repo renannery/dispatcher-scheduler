@@ -3,11 +3,12 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 import {
   DAY_TEMPLATES,
   effectiveCoverage,
-  LONG_SHIFT_BREAK_MIN,
-  MAX_BREAK_HARD_HOURS,
-  MAX_BREAK_PREFERRED_HOURS,
-  MED_SHIFT_BREAK_MIN,
+  EVENING_RAMP_SLOTS,
+  HANDOFF_SLOT,
+  MAX_CONSECUTIVE_HOURS,
+  MEAL_BREAK_HOURS,
   MIN_BLOCK_HOURS,
+  MIN_TAIL_STRETCH_HOURS,
   PEAK_WINDOWS,
   patternMaxBreakHours,
   patternWorkBlocks,
@@ -95,9 +96,10 @@ const MAX_CONSECUTIVE_WORK_DAYS = 6
  * authority on the weekly-rest and consecutive-day cap; no other pass
  * may set, refund, or override a lock.
  *
- * Rotation: dispatchers with the same valid range get different picks
- * via (seed × dispIdx × weekIdx) offset, so nobody always rests on
- * the same weekday.
+ * Placement: each dispatcher gets a stable HOME rest weekday from the
+ * low-demand set (Mon–Thu) — same day every week means the rest gap is
+ * exactly 7 days (streak exactly 6, always legal) and Fri/Sat/Sun keep
+ * the full roster for the two-team model. Seed rotates the assignment.
  */
 function assignMandatoryRest(
   dispatchers: Dispatcher[],
@@ -126,7 +128,7 @@ function assignMandatoryRest(
     // needing a rest, regardless of unknown pre-schedule state.
     let lastRestDate: Date = addDays(allDates[0], -1)
 
-    weekOrder.forEach((wLbl, weekIdx) => {
+    weekOrder.forEach((wLbl) => {
       const weekDates = weekBuckets.get(wLbl)!
 
       // Step 1 — pre-existing full-day off satisfies the weekly guarantee.
@@ -164,13 +166,28 @@ function assignMandatoryRest(
 
       let chosen: Date
       if (validRange.length > 0) {
-        // Bias toward the LATEST valid date (leaves the most flexibility
-        // for the next week), rotated by (seed, dispIdx, weekIdx) so
-        // dispatchers don't all cluster on Wednesday. Offset picks a
-        // slightly earlier valid day for some (disp, week) combos.
-        const N = validRange.length
-        const offset = ((seed >>> 0) + dispIdx + weekIdx * (dispIdx + 3)) % N
-        chosen = validRange[N - 1 - offset]
+        // Placement preference: rest on the LOW-DEMAND days (Mon–Thu)
+        // so Fri/Sat/Sun keep the full roster — the two-team model
+        // needs 7 bodies on Fri/Sun and 8 on Sat. Each dispatcher gets
+        // a stable HOME rest weekday (same day every week → rest gap is
+        // exactly 7 days, streak exactly 6, always legal, no drift).
+        // The quota follows demand: Wed needs 6 of 7 bodies so it takes
+        // only 1 home rest; Mon/Tue/Thu absorb 2 each. Seed rotates the
+        // assignment so Regenerate varies who rests when. Falls back to
+        // any low-demand day, then any valid day, when time-off pushed
+        // lastRestDate off-cycle. This is a preference only — the
+        // weekly-rest guarantee and 6-consecutive cap are unchanged.
+        const HOME_REST_DOWS = [1, 1, 2, 2, 3, 4, 4] // Mon,Mon,Tue,Tue,Wed,Thu,Thu
+        const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
+        let pool = validRange.filter((dt) => dt.getDay() === homeDow)
+        if (pool.length === 0) {
+          pool = validRange.filter((dt) => {
+            const dw = dt.getDay()
+            return dw === 1 || dw === 2 || dw === 3 || dw === 4 // Mon–Thu
+          })
+        }
+        if (pool.length === 0) pool = validRange
+        chosen = pool[pool.length - 1] // latest in pool
       } else {
         // Only reachable when lastRestDate is more than 7 days before
         // ThuOfCurrentWeek — implies a prior week had no in-range rest
@@ -283,170 +300,40 @@ const MORNING_SLOT_THRESHOLD = 2 // starts ≤ 10 AM
  *  piling people onto a slot we don't actually need them at. */
 const MAX_OVER_COVERAGE = 1
 
-// ---------------------------------------------------------------------------
-// Coverage-aware swap pass — runs after the main greedy assignment to
-// extend single-block shifts into peak-break splits when it closes a
-// real coverage gap on the morning/late edge. A peak-time break is only
-// allowed when the peak slot is currently over-covered (slack to lend).
-// ---------------------------------------------------------------------------
-
-/** True when this shift bitmap satisfies every dispatcher shape rule:
- *  every block ≥ MIN_BLOCK_HOURS (3h), max 1 break, max 5h consecutive
- *  (labor-law Section 23), 30 min break required over 5h, 1h break over
- *  8h, ≤9h daily total. When `dayOfWeek` is supplied AND is Mon–Fri
- *  (dow ∈ {1,2,3,4,5}), the shift must additionally contain at least one
- *  block ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5h) — the primary-stretch rule.
- *  Sat (6) and Sun (0) are exempt because openers on those days want to
- *  be short. A missing `dayOfWeek` defaults to the strict weekday rule
- *  so an omitted arg cannot accidentally admit a weekend-shaped shift
- *  into a weekday context. */
+/** True when this shift bitmap satisfies every two-team shape rule:
+ *  - 1 or 2 worked stretches (i.e. at most one break)
+ *  - when a break exists it is EXACTLY the 30-min paid meal break
+ *  - no worked stretch over MAX_CONSECUTIVE_HOURS (5h, labor law)
+ *  - first stretch ≥ MIN_BLOCK_HOURS (3h) — the meal break comes after
+ *    a real stretch; the post-break tail may be short (weekday Morning
+ *    runs 5h + 1.5h) because the paid break doesn't fragment the
+ *    continuous presence
+ *  - > 5h worked → the meal break is mandatory
+ *  - 4h ≤ total work ≤ 9h
+ *  - Mon–Fri: at least one stretch ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5h).
+ *    Sat (6) / Sun (0) are exempt so the 8 AM opener can split 3h + 4.5h.
+ *    A missing `dayOfWeek` defaults to the strict weekday rule so an
+ *    omitted arg cannot accidentally admit a weekend-shaped shift into
+ *    a weekday context. */
 function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   const blocks = patternWorkBlocks(slots, SLOTS)
   if (blocks.length === 0) return false
   if (blocks.length > 2) return false
-  if (Math.min(...blocks) < MIN_BLOCK_HOURS) return false
-  // Labor law: no single block over 5h.
-  if (Math.max(...blocks) > 5) return false
+  const maxBreak = patternMaxBreakHours(slots, SLOTS)
+  if (blocks.length === 2 && maxBreak !== MEAL_BREAK_HOURS) return false
+  // Labor law: no single worked stretch over 5h.
+  if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
   if (totalWork < 4) return false
   if (totalWork > 9) return false
-  const maxBreak = patternMaxBreakHours(slots, SLOTS)
-  if (maxBreak > MAX_BREAK_HARD_HOURS) return false
-  if (totalWork >= 8 && maxBreak < LONG_SHIFT_BREAK_MIN) return false
-  if (totalWork > 5 && totalWork < 8 && maxBreak < MED_SHIFT_BREAK_MIN) return false
+  // > 5h worked requires the meal break.
+  if (totalWork > MAX_CONSECUTIVE_HOURS && blocks.length < 2) return false
+  if (blocks[0] < MIN_BLOCK_HOURS) return false
+  if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) return false
   // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt.
   const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
   if (!isWeekendDay && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) return false
   return true
-}
-
-/** Net coverage gain of replacing oldSlots with newSlots, where `cov` is
- *  the current per-slot coverage. Gains count for under-target slots and
- *  losses count when dropping at-target slots below target. Over-target
- *  slots can be lent freely (no penalty). */
-function computeCoverageGain(
-  oldSlots: boolean[],
-  newSlots: boolean[],
-  cov: number[],
-  req: number[],
-): number {
-  let net = 0
-  for (let i = 0; i < oldSlots.length; i++) {
-    const old = oldSlots[i] ? 1 : 0
-    const nw = newSlots[i] ? 1 : 0
-    if (old === nw) continue
-    if (old === 0 && nw === 1) {
-      // Adding coverage: gain if slot is under target
-      if (cov[i] < req[i]) net += 1
-      // small penalty for over-covering (still counts a tiny bit so we don't
-      // expand into already-saturated slots for no reason)
-      else net -= 0.1
-    } else {
-      // Removing coverage: loss only if it pushes us below target
-      const after = cov[i] - 1
-      if (after < req[i]) net -= 2
-    }
-  }
-  return net
-}
-
-/** Attempts to extend a single-block shift into a peak-break split that
- *  closes a morning/late coverage gap. Returns the new bitmap or null. */
-function trySwapForCoverage(
-  slots: boolean[],
-  cov: number[],
-  req: number[],
-  dayOfWeek: number,
-): boolean[] | null {
-  const blocks = patternWorkBlocks(slots, SLOTS)
-  // Only attempt swaps on simple single-block shifts. Multi-block patterns
-  // already have a break placed by the template designer.
-  if (blocks.length !== 1) return null
-  const totalWork = blocks[0]
-  if (totalWork >= 9) return null // already at daily max
-
-  const firstOn = slots.findIndex((v) => v)
-  const lastOn = (() => { for (let i = slots.length - 1; i >= 0; i--) if (slots[i]) return i; return -1 })()
-  if (firstOn < 0 || lastOn < 0) return null
-
-  // Find contiguous adjacent under-covered slots we could extend into.
-  const morningGain: number[] = []
-  for (let j = firstOn - 1; j >= 0; j--) {
-    if (cov[j] < req[j]) morningGain.unshift(j)
-    else break
-  }
-  const eveningGain: number[] = []
-  for (let j = lastOn + 1; j < slots.length; j++) {
-    if (cov[j] < req[j]) eveningGain.push(j)
-    else break
-  }
-  if (morningGain.length === 0 && eveningGain.length === 0) return null
-
-  // Try each side independently, prefer the side with more gap to close.
-  const sides = [
-    { ext: morningGain, hours: morningGain.reduce((s, j) => s + SLOTS[j].hours, 0) },
-    { ext: eveningGain, hours: eveningGain.reduce((s, j) => s + SLOTS[j].hours, 0) },
-  ].filter((s) => s.ext.length > 0).sort((a, b) => b.hours - a.hours)
-
-  for (const side of sides) {
-    // Build the extended shift (no break yet)
-    const extended = [...slots]
-    side.ext.forEach((j) => (extended[j] = true))
-    const extFirstOn = extended.findIndex((v) => v)
-    let extLastOn = -1
-    for (let i = extended.length - 1; i >= 0; i--) if (extended[i]) { extLastOn = i; break }
-
-    // Quick win: if extension keeps total ≤ 5h AND remains a single block
-    // ≤ 5h we don't need any break (labor law: > 5h consecutive needs
-    // a 30 min break).
-    const extWork = slotHours(extended)
-    const extBlocks = patternWorkBlocks(extended, SLOTS)
-    const extMaxBlock = extBlocks.length > 0 ? Math.max(...extBlocks) : 0
-    if (extWork <= 5 && extMaxBlock <= 5 && isValidShiftShape(extended, dayOfWeek) && computeCoverageGain(slots, extended, cov, req) > 0) {
-      return extended
-    }
-
-    // Otherwise we need a break. Required break duration by shift length.
-    const needBreak = extWork > 8 ? LONG_SHIFT_BREAK_MIN
-                    : extWork > 5 ? MED_SHIFT_BREAK_MIN
-                    : 0
-
-    // Try every contiguous break position that keeps both blocks ≥ 3 h
-    // and respects the peak-slot rule (peak slot in the break must be
-    // currently over-covered — we can only LEND slack we have).
-    let best: boolean[] | null = null
-    let bestGain = 0
-    for (let bs = extFirstOn + 1; bs < extLastOn; bs++) {
-      for (let bl = 1; bl <= 4; bl++) {
-        const be = bs + bl - 1
-        if (be >= extLastOn) break
-        // Build the break slot list
-        const breakSlots: number[] = []
-        let bh = 0
-        for (let k = bs; k <= be; k++) {
-          breakSlots.push(k)
-          bh += SLOTS[k].hours
-        }
-        if (bh < needBreak - 0.01) continue
-        // Only constraint: the dispatcher stepping off this slot can't
-        // push it BELOW required coverage. Peak slots no longer get any
-        // special protection — the user's directive is "as long as the
-        // numbers match, peak breaks are fine."
-        const dropsBelow = breakSlots.some((s) => cov[s] - 1 < req[s])
-        if (dropsBelow) continue
-        const candidate = [...extended]
-        breakSlots.forEach((s) => (candidate[s] = false))
-        if (!isValidShiftShape(candidate, dayOfWeek)) continue
-        const gain = computeCoverageGain(slots, candidate, cov, req)
-        if (gain > bestGain) {
-          best = candidate
-          bestGain = gain
-        }
-      }
-    }
-    if (best) return best
-  }
-  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +383,6 @@ interface SeedCtx {
   dateStr: string
   dow: number
   workedNightYesterday: (id: string) => boolean
-  splitsSoFar: Record<string, number>
 }
 
 /** Before the main picker runs, count viable (dispatcher × anchor-pattern)
@@ -524,20 +410,18 @@ function seedAnchors(ctx: SeedCtx): PeakKey[] {
     // let the main picker handle it. Seeding here just removes flexibility.
     if (distinctDispatchers.size > 1 && anchorPatterns.length > 1) continue
     // Constrained — reserve the best pair: prefer lowest weekly hours,
-    // then non-split pattern (lower maxBreak), then shorter shift to
-    // avoid burning a long-pattern slot on a small dispatcher.
+    // then shorter shift to avoid burning a long-pattern slot on a
+    // small dispatcher.
     pairs.sort((a, b) => {
       const ha = ctx.weekHours[a.d.id][ctx.wLabel] ?? 0
       const hb = ctx.weekHours[b.d.id][ctx.wLabel] ?? 0
       if (ha !== hb) return ha - hb
-      if (a.p.maxBreak !== b.p.maxBreak) return a.p.maxBreak - b.p.maxBreak
       return a.p.hours - b.p.hours
     })
     const pick = pairs[0]
     ctx.assignments.push({ dispatcher: pick.d, pattern: pick.p.bool })
     ctx.usedIds.add(pick.d.id)
     ctx.usedPatternIdx.add(pick.p.idx)
-    if (pick.p.maxBreak >= 2) ctx.splitsSoFar[pick.d.id] = (ctx.splitsSoFar[pick.d.id] ?? 0) + 1
     pick.p.bool.forEach((on, i) => { if (on) ctx.runningCov[i]++ })
   }
   return unseedable
@@ -693,6 +577,9 @@ function trimToExactCoverage(
   while (changed) {
     changed = false
     for (let si = 0; si < cov.length; si++) {
+      // Never trim the evening-ramp window (3–5 PM): the over-coverage
+      // there is the deliberate handoff overlap + dinner ramp, not waste.
+      if (EVENING_RAMP_SLOTS.has(si)) continue
       if (cov[si] <= required[si]) continue
       for (let ai = 0; ai < assignments.length; ai++) {
         const a = assignments[ai]
@@ -1006,42 +893,6 @@ export function smoothTransitions(args: {
   return { resolved, unresolved }
 }
 
-/** Iterate the day's assignments and apply at most one swap per dispatcher
- *  that improves coverage. Mutates the assignments array in place. */
-function coverageAwareSwapPass(
-  assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
-  required: number[],
-  /** Day-of-week (0=Sun..6=Sat) — needed by isValidShiftShape to enforce
-   *  the weekday 5h primary-stretch rule via trySwapForCoverage. */
-  dayOfWeek: number,
-  /** Pre-shift weekly hours per dispatcher id. Used to reject swaps
-   *  that would push the dispatcher past the 45 h legal cap. */
-  preShiftWeekHours?: Record<string, number>,
-): void {
-  const cov = new Array(SLOTS.length).fill(0)
-  for (const { pattern } of assignments) {
-    pattern.forEach((on, si) => { if (on) cov[si]++ })
-  }
-  for (let i = 0; i < assignments.length; i++) {
-    const orig = assignments[i].pattern
-    const swapped = trySwapForCoverage(orig, cov, required, dayOfWeek)
-    if (!swapped) continue
-    // Cap check: the original shift's hours were already in weekHours
-    // counted upstream; the SWAP adds (newHours - oldHours). Reject the
-    // swap if that delta pushes the dispatcher past the legal cap.
-    if (preShiftWeekHours) {
-      const id = assignments[i].dispatcher.id
-      const delta = slotHours(swapped) - slotHours(orig)
-      const projected = (preShiftWeekHours[id] ?? 0) + slotHours(swapped)
-      if (delta > 0 && projected > WEEKLY_CAP_HOURS) continue
-    }
-    // Apply swap + update running coverage
-    orig.forEach((v, k) => { if (v) cov[k]-- })
-    swapped.forEach((v, k) => { if (v) cov[k]++ })
-    assignments[i].pattern = swapped
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Main generator
 // ---------------------------------------------------------------------------
@@ -1158,14 +1009,6 @@ export function generateSchedule(
   const lastSlotWorked: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (lastSlotWorked[d.id] = {}))
 
-  // Per-dispatcher running count of split shifts (worked day with a
-  // mid-shift break ≥ 2 h). Used as a tiebreak in the picker so split
-  // patterns rotate fairly across the roster — without it the same
-  // dispatcher tends to absorb every split because they happen to sort
-  // lowest on week-hours after one.
-  const splitsSoFar: Record<string, number> = {}
-  dispatchers.forEach((d) => (splitsSoFar[d.id] = 0))
-
   const scheduleMap: Record<string, DispatcherDayEntry[]> = {}
   dispatchers.forEach((d) => (scheduleMap[d.id] = []))
   const coverageActual: Record<string, number[]> = {}
@@ -1202,20 +1045,13 @@ export function generateSchedule(
       .filter((p) => isValidShiftShape(p.bool, dow))
 
     // Sort patterns: morning first, then LONGEST shifts first so they go
-    // to the least-loaded dispatcher. Break-size penalty (over the 2 h
-    // preferred cap) is the last tiebreak. Peak-time breaks no longer get
-    // a sort penalty — coverage targets + the over-coverage cap (req+1)
-    // are the constraints that matter.
-    const byLengthThenBreak = (a: typeof patternMeta[number], b: typeof patternMeta[number]) => {
-      if (a.hours !== b.hours) return b.hours - a.hours
-      const aOverPref = a.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
-      const bOverPref = b.maxBreak > MAX_BREAK_PREFERRED_HOURS ? 1 : 0
-      if (aOverPref !== bOverPref) return aOverPref - bOverPref
-      return a.maxBreak - b.maxBreak
-    }
+    // to the least-loaded dispatcher. All shapes carry the same 30-min
+    // meal break so break size is no longer a tiebreak.
+    const byLength = (a: typeof patternMeta[number], b: typeof patternMeta[number]) =>
+      b.hours - a.hours
     const sortedPatterns = [
-      ...patternMeta.filter((p) => p.isMorning).sort(byLengthThenBreak),
-      ...patternMeta.filter((p) => !p.isMorning).sort(byLengthThenBreak),
+      ...patternMeta.filter((p) => p.isMorning).sort(byLength),
+      ...patternMeta.filter((p) => !p.isMorning).sort(byLength),
     ]
 
     // Rotate dispatcher order for variety (step 3 per day visits all positions)
@@ -1225,6 +1061,10 @@ export function generateSchedule(
       ...dispatchers.slice(rotationOffset),
       ...dispatchers.slice(0, rotationOffset),
     ]
+
+    // Day's required coverage — needed up here so Phase B's coverage-gated
+    // off election and the picker's over-coverage cap both see it.
+    const dayRequired = effectiveCoverage(dow, coverageOverrides)
 
     // Phase A — classify dispatchers into:
     //   blockedToday  — fully blocked by recurring/per-date time-off,
@@ -1272,21 +1112,17 @@ export function generateSchedule(
     }
 
     // Phase B — fairness pick: how many in availablePool to elect OFF today.
-    // The day needs at most `patternsNeeded` dispatchers; everyone past that
-    // is potentially off. Cap each dispatcher at MAX_DAYS_OFF_PER_WEEK total.
-    //
-    // On Fri/Sat/Sun, ALWAYS elect exactly 1 person off (counting anyone
-    // already blocked by time-off) — busy days, only 7 dispatchers, so
-    // we can't afford more than 1 off. If a dispatcher is already
-    // blocked off today, NO extra election (else we'd have 2 off
-    // and lose coverage).
-    const patternsNeeded = template.shiftPatterns.length
-    let desiredElectedOff = Math.max(0, availablePool.length - patternsNeeded)
-    if (isWeekend) {
-      const alreadyOff = blockedToday.length + cappedToday.length
-      // Cap weekend election so blocked + capped + elected ≤ 1.
-      desiredElectedOff = Math.max(0, 1 - alreadyOff)
-    }
+    // Coverage-gated: elect an off only when the day's peak demand still
+    // fits in the remaining pool. Under the two-team model the day needs
+    // roughly (max morning-window req) + (max evening-window req) bodies;
+    // any pool beyond that is genuine slack that can become a 2nd day
+    // off. With the current 7-person roster there is usually no slack —
+    // the perk auto-revives the moment headcount allows it (that plus
+    // the daily warnings is the hiring signal).
+    const morningNeed = Math.max(...dayRequired.slice(0, HANDOFF_SLOT))
+    const eveningNeed = Math.max(...dayRequired.slice(HANDOFF_SLOT))
+    const bodiesNeeded = morningNeed + eveningNeed
+    const desiredElectedOff = Math.max(0, availablePool.length - bodiesNeeded)
 
     let eligibleForOff = availablePool.filter(
       (d) => (weekOffDays[d.id][wLabel] ?? 0) < maxDaysOffFor(d.level),
@@ -1385,10 +1221,6 @@ export function generateSchedule(
     const assignments: Array<{ dispatcher: (typeof dispatchers)[0]; pattern: boolean[] }> = []
     let seniorAssigned = false
 
-    // Day's required coverage — needed up here so the picker can enforce
-    // the over-coverage cap (no slot > required + 1). Used again later
-    // by the swap pass + rescue.
-    const dayRequired = effectiveCoverage(dow, coverageOverrides)
     const runningCov = new Array(SLOTS.length).fill(0)
 
     // ── Smart pattern ordering + drop ──────────────────────────────────
@@ -1456,11 +1288,11 @@ export function generateSchedule(
     // Reserves one (dispatcher, anchor-pattern) pair per peak BEFORE the
     // main picker runs when supply is constrained (≤ 1 viable pair).
     // Returns peaks with zero viable supply — emitted as warnings below.
-    // Mutates: assignments, usedIds, usedPatternIdx, runningCov, splitsSoFar.
+    // Mutates: assignments, usedIds, usedPatternIdx, runningCov.
     const seedCtx = {
       patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
       runningCov, weekHours, wLabel, timeOff, dateStr, dow,
-      workedNightYesterday, splitsSoFar,
+      workedNightYesterday,
     }
     const unseedablePeaks = seedAnchors(seedCtx)
     for (const peakKey of unseedablePeaks) {
@@ -1526,7 +1358,7 @@ export function generateSchedule(
             // those windows costs 2× so the picker routes surplus to
             // the tolerated windows first, and only spills into off-peak
             // when no tolerated capacity remains.
-            if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
+            if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated++
             else overOff++
           }
         }
@@ -1557,6 +1389,10 @@ export function generateSchedule(
       const cap = MAX_OVER_COVERAGE + (fillsDeficit ? 1 : 0)
       let overShoots = false
       for (let i = 0; i < p.bool.length; i++) {
+        // Evening-ramp slots (3–5 PM) are exempt: the whole Evening team
+        // is on the floor from 15:00 by design (handoff + dinner ramp),
+        // so their low req must not throttle evening team size.
+        if (EVENING_RAMP_SLOTS.has(i)) continue
         if (p.bool[i] && runningCov[i] + 1 > dayRequired[i] + cap) {
           overShoots = true; break
         }
@@ -1590,22 +1426,6 @@ export function generateSchedule(
       )
       let pickFrom = withinSoft.length > 0 ? withinSoft : eligible
 
-      // Split-shift fairness: when this pattern IS a split (≥ 2 h
-      // mid-shift break), HARD-FILTER to the candidates with the
-      // fewest splits so far — not just a tiebreak. Sorting alone
-      // wasn't strong enough: the lowest-hours dispatcher kept
-      // sorting first on `withinSoft` regardless of split count, so
-      // one person absorbed 5 splits while another had 1. User
-      // observed and manually rebalanced (resgie 5→4, kimberly 1→2).
-      if (p.maxBreak >= 2 && pickFrom.length > 1) {
-        const minSplits = Math.min(...pickFrom.map((d) => splitsSoFar[d.id] ?? 0))
-        const lowest = pickFrom.filter((d) => (splitsSoFar[d.id] ?? 0) === minSplits)
-        if (lowest.length > 0) pickFrom = lowest
-        pickFrom = [...pickFrom].sort((a, b) =>
-          (weekHours[a.id][wLabel] ?? 0) - (weekHours[b.id][wLabel] ?? 0),
-        )
-      }
-
       // If no Senior has been assigned yet and Seniors are available, promote
       // the least-hours Senior to the front of the candidate list.
       let dispatcher: (typeof dispatchers)[0]
@@ -1619,7 +1439,6 @@ export function generateSchedule(
       if (dispatcher.level === 'Senior') seniorAssigned = true
       assignments.push({ dispatcher, pattern: p.bool })
       usedIds.add(dispatcher.id)
-      if (p.maxBreak >= 2) splitsSoFar[dispatcher.id]++
       p.bool.forEach((on, i) => { if (on) runningCov[i]++ })
     }
 
@@ -1632,16 +1451,6 @@ export function generateSchedule(
       if (idx >= 0) usedPatternIdx.add(idx)
     }
 
-    // Coverage-aware swap pass: extend single-block shifts into peak-break
-    // splits when adjacent slots are under-covered AND the peak slot we'd
-    // break at is currently over-covered (slack to lend). This is what
-    // lets michelle's Bridge 11a-5p become 9a-6p with a non-peak break
-    // when 9-10a is missing a body and the dispatcher has the headroom.
-    // dayRequired was computed earlier (before the picker) so the
-    // over-coverage cap could use it. Just pass it through.
-    const preShiftWeekHours: Record<string, number> = {}
-    for (const d of dispatchers) preShiftWeekHours[d.id] = weekHours[d.id][wLabel] ?? 0
-    coverageAwareSwapPass(assignments, dayRequired, dow, preShiftWeekHours)
     coverageRequired[dateStr] = dayRequired
 
     // ── Coverage rescue pass ───────────────────────────────────────────
@@ -1698,6 +1507,9 @@ export function generateSchedule(
           for (let i = 0; i < p.bool.length; i++) {
             if (!p.bool[i]) continue
             if (deficit[i] > 0) fill++
+            // Evening-ramp slots are exempt from over-coverage — the full
+            // evening team stands there by design (handoff + dinner ramp).
+            if (EVENING_RAMP_SLOTS.has(i)) continue
             if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE) over++
             if (cov[i] + 1 > dayRequired[i] + MAX_OVER_COVERAGE + 2) { blown = true; break }
           }
@@ -1721,7 +1533,6 @@ export function generateSchedule(
         const d = rescuePool[best.dIdx]
         assignments.push({ dispatcher: d, pattern: best.p.bool })
         usedIds.add(d.id)
-        if (best.p.maxBreak >= 2) splitsSoFar[d.id]++
         best.p.bool.forEach((on, j) => { if (on) cov[j]++ })
         usedPatternIdx.add(patternMeta.indexOf(best.p))
         // Roll back off-day accounting only for elected-off dispatchers —
@@ -1782,7 +1593,7 @@ export function generateSchedule(
             if (cov[i] < dayRequired[i]) fill++
             if (newCov > dayRequired[i]) {
               const excess = newCov - dayRequired[i]
-              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated += excess
+              if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated += excess
               else overOff += excess
             }
           }
@@ -1805,7 +1616,6 @@ export function generateSchedule(
         if (pick) {
           assignments.push({ dispatcher: d, pattern: pick.p.bool })
           usedIds.add(d.id)
-          if (pick.p.maxBreak >= 2) splitsSoFar[d.id]++
           usedPatternIdx.add(pick.pIdx)
           pick.p.bool.forEach((on, i) => { if (on) cov[i]++ })
         }
@@ -1846,7 +1656,7 @@ export function generateSchedule(
             if (!p.bool[i]) continue
             if (cov[i] < dayRequired[i]) fill++
             else if (cov[i] >= dayRequired[i]) {
-              if (SURPLUS_TOLERATED_SLOTS.has(i)) overTolerated++
+              if (SURPLUS_TOLERATED_SLOTS.has(i) || EVENING_RAMP_SLOTS.has(i)) overTolerated++
               else overOff++
             }
           }
@@ -1865,7 +1675,6 @@ export function generateSchedule(
         if (pick) {
           assignments.push({ dispatcher: d, pattern: pick.p.bool })
           usedIds.add(d.id)
-          if (pick.p.maxBreak >= 2) splitsSoFar[d.id]++
           usedPatternIdx.add(pick.pIdx)
           pick.p.bool.forEach((on, i) => { if (on) cov[i]++ })
         }
@@ -1887,7 +1696,7 @@ export function generateSchedule(
     const enforceCtx = {
       patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
       runningCov, weekHours, wLabel, timeOff, dateStr, dow,
-      workedNightYesterday, splitsSoFar,
+      workedNightYesterday,
     }
     const failedPeaks = enforceAnchors(enforceCtx, dayRequired)
     for (const peakKey of failedPeaks) {
@@ -2005,6 +1814,26 @@ export function generateSchedule(
           })
         }
       }
+    }
+
+    // ── handoff warning ─────────────────────────────────────────────────
+    // The two-team model relies on the Morning team staying past the
+    // Evening team's 15:00 start (structural overlap 15:00–16:00) so the
+    // Evening team never arrives cold. Warn when a day has an evening
+    // shift but NO morning-side shift still working the handoff slot.
+    const hasEvening = assignments.some(
+      (a) => firstActiveSlot(a.pattern) >= HANDOFF_SLOT,
+    )
+    const hasHandoffOverlap = assignments.some((a) => {
+      const first = firstActiveSlot(a.pattern)
+      return first >= 0 && first < HANDOFF_SLOT && a.pattern[HANDOFF_SLOT]
+    })
+    if (hasEvening && !hasHandoffOverlap) {
+      ;(coverageWarnings[dateStr] ??= []).push({
+        peak: 'handoff',
+        slotIndex: HANDOFF_SLOT,
+        reason: 'no morning dispatcher working through 3–4 PM — evening team starts cold, no context handoff',
+      })
     }
   }
 
