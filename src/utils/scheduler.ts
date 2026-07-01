@@ -13,6 +13,7 @@ import {
   patternWorkBlocks,
   SLOTS,
   SURPLUS_TOLERATED_SLOTS,
+  WEEKDAY_PRIMARY_STRETCH_HOURS,
 } from '@/data/coverageTemplate'
 import type { PeakKey } from '@/data/coverageTemplate'
 import type {
@@ -290,28 +291,32 @@ const MAX_OVER_COVERAGE = 1
 // ---------------------------------------------------------------------------
 
 /** True when this shift bitmap satisfies every dispatcher shape rule:
- *  min 2h block (lowered to allow law-mandated breaks), max 1 break,
- *  max 5h consecutive (Section 23 — labor law), 30 min break required
- *  over 5h, 1 h break over 8h, ≤9h daily total. */
-function isValidShiftShape(slots: boolean[]): boolean {
+ *  every block ≥ MIN_BLOCK_HOURS (3h), max 1 break, max 5h consecutive
+ *  (labor-law Section 23), 30 min break required over 5h, 1h break over
+ *  8h, ≤9h daily total. When `dayOfWeek` is supplied AND is Mon–Fri
+ *  (dow ∈ {1,2,3,4,5}), the shift must additionally contain at least one
+ *  block ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5h) — the primary-stretch rule.
+ *  Sat (6) and Sun (0) are exempt because openers on those days want to
+ *  be short. A missing `dayOfWeek` defaults to the strict weekday rule
+ *  so an omitted arg cannot accidentally admit a weekend-shaped shift
+ *  into a weekday context. */
+function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   const blocks = patternWorkBlocks(slots, SLOTS)
   if (blocks.length === 0) return false
   if (blocks.length > 2) return false
-  if (blocks.length > 1 && Math.min(...blocks) < MIN_BLOCK_HOURS) return false
+  if (Math.min(...blocks) < MIN_BLOCK_HOURS) return false
   // Labor law: no single block over 5h.
   if (Math.max(...blocks) > 5) return false
   const totalWork = blocks.reduce((s, h) => s + h, 0)
-  // Minimum 4h per worked day. Was 5h, lowered after the user's manual
-  // Wed-Jul-1 fix used 4h blocks for kimberly + michelle to trim out
-  // 1.5-3h mid-shift breaks — short clean shifts beat long shifts with
-  // dead time in the middle. Off days handled separately (electedOff).
   if (totalWork < 4) return false
   if (totalWork > 9) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
   if (maxBreak > MAX_BREAK_HARD_HOURS) return false
   if (totalWork >= 8 && maxBreak < LONG_SHIFT_BREAK_MIN) return false
-  // Labor law: > 5h work needs a 30 min meal break.
   if (totalWork > 5 && totalWork < 8 && maxBreak < MED_SHIFT_BREAK_MIN) return false
+  // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt.
+  const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
+  if (!isWeekendDay && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) return false
   return true
 }
 
@@ -351,6 +356,7 @@ function trySwapForCoverage(
   slots: boolean[],
   cov: number[],
   req: number[],
+  dayOfWeek: number,
 ): boolean[] | null {
   const blocks = patternWorkBlocks(slots, SLOTS)
   // Only attempt swaps on simple single-block shifts. Multi-block patterns
@@ -396,7 +402,7 @@ function trySwapForCoverage(
     const extWork = slotHours(extended)
     const extBlocks = patternWorkBlocks(extended, SLOTS)
     const extMaxBlock = extBlocks.length > 0 ? Math.max(...extBlocks) : 0
-    if (extWork <= 5 && extMaxBlock <= 5 && isValidShiftShape(extended) && computeCoverageGain(slots, extended, cov, req) > 0) {
+    if (extWork <= 5 && extMaxBlock <= 5 && isValidShiftShape(extended, dayOfWeek) && computeCoverageGain(slots, extended, cov, req) > 0) {
       return extended
     }
 
@@ -430,7 +436,7 @@ function trySwapForCoverage(
         if (dropsBelow) continue
         const candidate = [...extended]
         breakSlots.forEach((s) => (candidate[s] = false))
-        if (!isValidShiftShape(candidate)) continue
+        if (!isValidShiftShape(candidate, dayOfWeek)) continue
         const gain = computeCoverageGain(slots, candidate, cov, req)
         if (gain > bestGain) {
           best = candidate
@@ -564,7 +570,7 @@ function enforceAnchors(
       // filling only the false slots inside the peak.
       const trial = [...a.pattern]
       for (const s of peak.slots) trial[s] = true
-      if (!isValidShiftShape(trial)) continue
+      if (!isValidShiftShape(trial, ctx.dow)) continue
       // Weekly cap check — fill-break adds hours.
       const oldH = slotHours(a.pattern), newH = slotHours(trial)
       if ((ctx.weekHours[a.dispatcher.id][ctx.wLabel] ?? 0) + (newH - oldH) > WEEKLY_CAP_HOURS) continue
@@ -624,6 +630,7 @@ function stretchToFillGaps(
   required: number[],
   weekHours: Record<string, Record<string, number>>,
   wLabel: string,
+  dayOfWeek: number,
 ): void {
   const cov = new Array(SLOTS.length).fill(0)
   for (const { pattern } of assignments) {
@@ -641,7 +648,7 @@ function stretchToFillGaps(
         if (!hasPrev && !hasNext) continue
         const trial = [...a.pattern]
         trial[si] = true
-        if (!isValidShiftShape(trial)) continue
+        if (!isValidShiftShape(trial, dayOfWeek)) continue
         const newHours = slotHours(trial)
         // weekHours is pre-shift (today's hours added at accumulation step
         // after all passes), so the cap check is pre-shift + this day's
@@ -668,6 +675,7 @@ function stretchToFillGaps(
 function trimToExactCoverage(
   assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
   required: number[],
+  dayOfWeek: number,
 ): void {
   const cov = new Array(SLOTS.length).fill(0)
   for (const { pattern } of assignments) {
@@ -691,7 +699,7 @@ function trimToExactCoverage(
         if (!a.pattern[si]) continue
         const trial = [...a.pattern]
         trial[si] = false
-        if (!isValidShiftShape(trial)) continue
+        if (!isValidShiftShape(trial, dayOfWeek)) continue
         if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) continue
         a.pattern = trial
         cov[si]--
@@ -877,7 +885,7 @@ export function smoothTransitions(args: {
       for (const j of findSurplusSources(a, i)) {
         const trial = [...a.pattern]
         trial[j] = false; trial[i] = true
-        if (!isValidShiftShape(trial)) continue
+        if (!isValidShiftShape(trial, dow)) continue
         if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
         const delta = SLOTS[i].hours - SLOTS[j].hours
         if (!fitsBudget(a, delta)) continue
@@ -890,7 +898,7 @@ export function smoothTransitions(args: {
       if (isBlocked(a, i)) continue
       const trial = [...a.pattern]
       trial[i] = true
-      if (!isValidShiftShape(trial)) continue
+      if (!isValidShiftShape(trial, dow)) continue
       applyExtension(a, i)
       return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} break-fill (+${addH}h net)`
     }
@@ -912,7 +920,7 @@ export function smoothTransitions(args: {
       for (const j of findSurplusSources(a, i)) {
         const trial = [...a.pattern]
         trial[j] = false; trial[i] = true
-        if (!isValidShiftShape(trial)) continue
+        if (!isValidShiftShape(trial, dow)) continue
         if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
         const delta = SLOTS[i].hours - SLOTS[j].hours
         if (!fitsBudget(a, delta)) continue
@@ -925,7 +933,7 @@ export function smoothTransitions(args: {
       if (isBlocked(a, i)) continue
       const trial = [...a.pattern]
       trial[i] = true
-      if (!isValidShiftShape(trial)) continue
+      if (!isValidShiftShape(trial, dow)) continue
       applyExtension(a, i)
       return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} handoff-${side} (+${addH}h net)`
     }
@@ -944,7 +952,7 @@ export function smoothTransitions(args: {
       for (const j of findSurplusSources(a, i)) {
         const trial = [...a.pattern]
         trial[j] = false; trial[i] = true
-        if (!isValidShiftShape(trial)) continue
+        if (!isValidShiftShape(trial, dow)) continue
         if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaks)) continue
         const delta = SLOTS[i].hours - SLOTS[j].hours
         if (!fitsBudget(a, delta)) continue
@@ -966,7 +974,7 @@ export function smoothTransitions(args: {
       if (!fitsBudget(a, addH)) continue
       const trial = [...a.pattern]
       trial[i] = true
-      if (!isValidShiftShape(trial)) continue
+      if (!isValidShiftShape(trial, dow)) continue
       applyExtension(a, i)
       return `${dateStr} ${SLOTS[i].label}: ${a.dispatcher.name} extend +${addH}h (nearest neighbor)`
     }
@@ -1003,6 +1011,9 @@ export function smoothTransitions(args: {
 function coverageAwareSwapPass(
   assignments: Array<{ dispatcher: Dispatcher; pattern: boolean[] }>,
   required: number[],
+  /** Day-of-week (0=Sun..6=Sat) — needed by isValidShiftShape to enforce
+   *  the weekday 5h primary-stretch rule via trySwapForCoverage. */
+  dayOfWeek: number,
   /** Pre-shift weekly hours per dispatcher id. Used to reject swaps
    *  that would push the dispatcher past the 45 h legal cap. */
   preShiftWeekHours?: Record<string, number>,
@@ -1013,7 +1024,7 @@ function coverageAwareSwapPass(
   }
   for (let i = 0; i < assignments.length; i++) {
     const orig = assignments[i].pattern
-    const swapped = trySwapForCoverage(orig, cov, required)
+    const swapped = trySwapForCoverage(orig, cov, required, dayOfWeek)
     if (!swapped) continue
     // Cap check: the original shift's hours were already in weekHours
     // counted upstream; the SWAP adds (newHours - oldHours). Reject the
@@ -1097,6 +1108,20 @@ export function generateSchedule(
   const weekOffDays: Record<string, Record<string, number>> = {}
   dispatchers.forEach((d) => (weekOffDays[d.id] = {}))
 
+  // Pre-populate weekOffDays with the mandatory rest locks so the fairness
+  // picker (and every other per-day pass) sees the accurate weekly
+  // off-count from day 1 — including future lock days later in the same
+  // week. Without this the picker could elect a trainee off on a Monday
+  // whose Wednesday rest lock hasn't been "seen" yet, producing 2 off in
+  // one week and violating the Trainee cap.
+  for (const d of dispatchers) {
+    for (const lockDateStr of restLocks[d.id]) {
+      const lockDt = parseISO(lockDateStr)
+      const lockWk = weekLabel(lockDt)
+      weekOffDays[d.id][lockWk] = (weekOffDays[d.id][lockWk] ?? 0) + 1
+    }
+  }
+
   // Per-dispatcher total weekend (Fri/Sat/Sun) off-days across the whole
   // schedule. Used by the fairness picker to spread weekend off-days evenly.
   const weekendOffTotal: Record<string, number> = {}
@@ -1174,7 +1199,7 @@ export function generateSchedule(
           maxBreak: patternMaxBreakHours(bool, SLOTS),
         }
       })
-      .filter((p) => isValidShiftShape(p.bool))
+      .filter((p) => isValidShiftShape(p.bool, dow))
 
     // Sort patterns: morning first, then LONGEST shifts first so they go
     // to the least-loaded dispatcher. Break-size penalty (over the 2 h
@@ -1229,7 +1254,11 @@ export function generateSchedule(
       const restLocked = restLocks[d.id].has(dateStr)
       if (fullyBlocked || restLocked) {
         blockedToday.push(d)
-        weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        // Rest locks are pre-counted into weekOffDays at Phase 0, so bump
+        // only for non-lock fully-blocked days (user-entered time-off).
+        if (!restLocked) {
+          weekOffDays[d.id][wLabel] = (weekOffDays[d.id][wLabel] ?? 0) + 1
+        }
         offByDow[d.id][dow] = (offByDow[d.id][dow] ?? 0) + 1
         if (isWeekend) {
           weekendOffTotal[d.id] += 1
@@ -1612,7 +1641,7 @@ export function generateSchedule(
     // over-coverage cap could use it. Just pass it through.
     const preShiftWeekHours: Record<string, number> = {}
     for (const d of dispatchers) preShiftWeekHours[d.id] = weekHours[d.id][wLabel] ?? 0
-    coverageAwareSwapPass(assignments, dayRequired, preShiftWeekHours)
+    coverageAwareSwapPass(assignments, dayRequired, dow, preShiftWeekHours)
     coverageRequired[dateStr] = dayRequired
 
     // ── Coverage rescue pass ───────────────────────────────────────────
@@ -1847,7 +1876,7 @@ export function generateSchedule(
     // dispatcher's tail/head by 0.5-1h. Mirrors the manual closer
     // extensions (Thu shamika → slot 19, Fri resgie → slot 19, etc).
     // Runs BEFORE trim so any incidental over-cov can still be reclaimed.
-    stretchToFillGaps(assignments, dayRequired, weekHours, wLabel)
+    stretchToFillGaps(assignments, dayRequired, weekHours, wLabel, dow)
 
     // ── enforceAnchors — peak-continuity repair pass ───────────────────
     // Validate each peak has at least one anchor (started pre-peak +
@@ -1874,7 +1903,7 @@ export function generateSchedule(
     // Trim over-covered slots down to the requirement. Runs LAST so it
     // sees the full final coverage from picker + swap + rescue + must-work.
     // Now also protects the sole anchor's peak slots (see trimToExactCoverage).
-    trimToExactCoverage(assignments, dayRequired)
+    trimToExactCoverage(assignments, dayRequired, dow)
 
     // ── smoothTransitions — final transition-smoothing polish ───────────
     // Close 1-slot, 1-below dips at shift transitions the way an admin
