@@ -155,13 +155,16 @@ function assignMandatoryRest(
 
     // Stable HOME rest weekday for this dispatcher (constant across
     // weeks; used by Step 1's cadence rescue and Step 2's placement).
-    // Demand-spread quota: Tue is the lightest day (lunch 3, dinner 2,
-    // close 1) so it absorbs 3 rests; Wed and Thu take 1 each —
-    // stacking 2 rests on either gutted them to skeleton crews (Thu
-    // is a 5-need day + the week-start edge; Wed's close went to
-    // zero when 2 rests left it exactly tight). Mon keeps 2. Seed
-    // rotates the assignment so Regenerate varies who rests when.
-    const HOME_REST_DOWS = [1, 1, 2, 2, 2, 3, 4] // Mon,Mon,Tue,Tue,Tue,Wed,Thu
+    // Demand-spread quota: Mon absorbs 3 rests — it's the lightest
+    // day under the lean catalog (9 AM and 3 PM targets are 1 where
+    // Tue's are 2). Tue takes 2: stacking 3 rests there left 4 workers
+    // against a tiling that needs 5 (9–10 AM and 3–4 PM ran −1 every
+    // single week; with the Mon–Wed split gap parked over 14:00–17:00
+    // no 4-body arrangement can cover both). Wed and Thu keep 1 each
+    // (Thu is a 5-need day + the week-start edge; Wed's close went to
+    // zero when 2 rests left it exactly tight). Seed rotates the
+    // assignment so Regenerate varies who rests when.
+    const HOME_REST_DOWS = [1, 1, 2, 2, 3, 3, 4] // Mon,Mon,Tue,Tue,Wed,Wed,Thu
     const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
 
     weekOrder.forEach((wLbl) => {
@@ -1859,9 +1862,12 @@ export function generateSchedule(
             const d = rescuePool[i]
             if (p.isMorning && workedNightYesterday(d.id)) continue
             // Un-electing a granted 2nd day off takes a REAL gap — the
-            // pattern must close ≥ 2 units of deficit. A lone 30-min
-            // break dip (the accepted warning residual) doesn't justify
-            // burning the perk. Unassigned-working dispatchers rescue
+            // pattern must close ≥ 2 units of deficit. Mid-pipeline
+            // 1-unit dips routinely get fixed for free by the later
+            // repair passes (swaps + break relocation); canceling the
+            // perk for them burns a day off with zero coverage gain
+            // (measured: fill≥1 removed 10 elective offs, final missing
+            // units unchanged). Unassigned-working dispatchers rescue
             // freely — no perk at stake.
             if (electedOffIds.has(d.id) && fill < 2) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
@@ -2007,9 +2013,10 @@ export function generateSchedule(
             }
           }
           // Cancel a 2nd day off only for a REAL gap — the pattern must
-          // close at least 2 units of deficit. A lone 30-min break dip
-          // (the accepted warning residual) is not worth burning the
-          // perk; transition-smoothing and the warnings handle those.
+          // close at least 2 units of deficit. Mid-pipeline 1-unit dips
+          // routinely get fixed for free by the later repair passes
+          // (swaps + break relocation); canceling the perk for them
+          // burns a day off with zero coverage gain (measured).
           if (fill < 2) continue
           const score = fill * 2 - overTolerated - 2 * overOff
           if (score <= 0) continue

@@ -156,7 +156,7 @@ export function ScheduleGrid() {
   const [search, setSearch] = useState('')
   // Drill-down modal: click any hour-summary or days-off pill to see the
   // filtered dispatcher list for that bucket.
-  type DrillKind = 'atCap' | 'target' | 'under' | 'off' | '1d' | '2d' | '3d' | '4d+'
+  type DrillKind = 'atCap' | 'target' | 'under' | 'off' | '0d' | '1d' | '2d' | '3d' | '4d+'
   const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
   // Per-dispatcher detail modal — fired from a peak-wk pill click.
   const [dispatcherDetailId, setDispatcherDetailId] = useState<string | null>(null)
@@ -534,10 +534,17 @@ export function ScheduleGrid() {
         // all this week — those are blocked / on leave, not under-utilized).
         // Semantics tuned for dispatchers: 2 days off is the target (emerald),
         // 1 day off is the shortfall week (amber), 3+ days off is under-used.
-        const dayOffBuckets = { '1d': 0, '2d': 0, '3d': 0, '4d+': 0 }
+        // 0 days off is a mandatory-weekly-rest VIOLATION (red) — the
+        // current scheduler can't produce it, so it flags hand edits or a
+        // schedule generated before the rest rule existed (regenerate!).
+        const dayOffBuckets = { '0d': 0, '1d': 0, '2d': 0, '3d': 0, '4d+': 0 }
+        const isFullWeek = weekDates.length === 7
         for (const d of weekHoursSummary) {
           if (d.hours === 0) continue
-          if (d.off === 1) dayOffBuckets['1d']++
+          // Partial edge weeks can legitimately have 0 offs (someone
+          // working a 2-day stub week) — only full weeks violate.
+          if (d.off === 0) { if (isFullWeek) dayOffBuckets['0d']++ }
+          else if (d.off === 1) dayOffBuckets['1d']++
           else if (d.off === 2) dayOffBuckets['2d']++
           else if (d.off === 3) dayOffBuckets['3d']++
           else if (d.off >= 4) dayOffBuckets['4d+']++
@@ -596,6 +603,17 @@ export function ScheduleGrid() {
                       3+d off = under-utilized. Hidden for non-admins. */}
                   {isAdmin && (
                   <div className="flex items-center gap-1 text-xs">
+                    {dayOffBuckets['0d'] > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setDrillDown({ wl, kind: '0d' })}
+                        title={`Click to see the ${dayOffBuckets['0d']} dispatcher${dayOffBuckets['0d'] === 1 ? '' : 's'} with NO day off this week — violates the mandatory weekly rest. Regenerate the schedule to fix.`}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-red-600 px-2 py-0.5 font-semibold text-white ring-2 ring-red-200 hover:bg-red-700"
+                      >
+                        {dayOffBuckets['0d']}
+                        <span className="text-[10px] font-normal opacity-90">× 0d off ⚠</span>
+                      </button>
+                    )}
                     {dayOffBuckets['1d'] > 0 && (
                       <button
                         type="button"
@@ -841,6 +859,10 @@ export function ScheduleGrid() {
         } else if (kind === 'off') {
           rows = allRows.filter((r) => r.hours === 0)
           title = 'Dispatchers fully off this week'
+        } else if (kind === '0d') {
+          rows = allRows.filter((r) => r.hours > 0 && r.daysOff === 0)
+          title = 'Dispatchers with NO day off — rest violation'
+          subtitle = `${wl} · 7 days worked · regenerate the schedule to fix`
         } else {
           const wanted = kind === '4d+' ? (n: number) => n >= 4
             : kind === '3d' ? (n: number) => n === 3
