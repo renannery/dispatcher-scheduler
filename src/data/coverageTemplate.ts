@@ -130,9 +130,9 @@ const WD_MORNING_L = [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 // instead of breaking inside the peak the shape simply ends at 7 PM —
 // the closers own 7 PM onward.
 const RAMP_14     = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
-// Weekend Morning 8a (8:00–14:00, meal 11:00–11:30 AM; 3h + 2.5h, 5.5h).
-// Lunch anchor: break ends before the 11:30 peak start.
-const WE_MORNING  = [1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// (Weekend Morning 8a (8:00–14:00) was RETIRED — strictly dominated by
+// the 8:00–15:00 edge shape below, and picking it produced a 14:00
+// morning end instead of the human 15:00 edge.)
 // (Weekend Morning 8b — the 11:30–12 break twin — was RETIRED: its
 // break sat inside the lunch peak. A 6h 8 AM shift can only break at
 // 11:00 or 11:30, and only 11:00 is outside the peak.)
@@ -143,14 +143,17 @@ const WE_MORNING  = [1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // 8a and Morning 10 — carry the peak through 2 PM).
 const WE_MORNING_C = [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //
-// Weekend Morning 10 (10:00–15:00, 5h straight). Staggered start —
-// keeps the 8 AM opening at its req-2 target instead of stacking four
-// bodies there — and holds 2–3 PM after the 8 AM shifts leave. Anchor.
-const WE_MORNING_10 = [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-// Weekend Morning LONG (8:00–16:00, meal 11:00–11:30 AM; 3h + 4.5h,
-// 7.5h). Body-efficient weekend opener: break before the lunch peak,
-// carries the whole peak plus the 2–4 PM tail. Lunch anchor.
-const WE_MORNING_L = [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// (Weekend Morning 10 (10:00–15:00) and Weekend Morning LONG (8:00–16:00)
+// were RETIRED from the weekend pool: both break the human team's
+// staggered weekend edge — the validated pair is 8:00–15:00 plus
+// 9:00–16:00, staggered at both ends, overlapping through lunch.)
+// Weekend Morning 8–15 (8:00–15:00, meal 11:00–11:30 AM; 3h + 3.5h,
+// 6.5h). The 8 AM half of the STAGGERED WEEKEND EDGE the human team
+// uses: one dispatcher opens alone at 8 and leaves at 15:00, the other
+// (WD_MORNING_L, 9:00–16:00) arrives at 9 and closes the morning alone
+// — both overlap the whole lunch peak, breaks staggered (11:00 vs
+// 2 PM), both outside the peak. Lunch anchor.
+const WE_MORNING_8_15 = [1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // Evening A (15:00–23:30, meal break 8:00–8:30 PM; stretches 5h + 3h, 8h
 // worked). Dinner anchor: continuous through 5–8 PM, starts 3 PM.
 const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
@@ -188,15 +191,24 @@ const EVENING_E2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]
 // keep their bodies while the earlier shapes take their post-peak
 // breaks. Weekday-legal (5h primary).
 const EVENING_L   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+// Evening L2 (18:00–23:00, 5h straight — no break). The RAMP
+// SMOOTHER: the only shape that serves the 6 PM dinner slots plus the
+// shoulders WITHOUT spanning 5–6 PM — every other dinner-capable
+// shape must cross 17:00–18:00, which is what piled the dinner ramp
+// to target+2 (the humans reach their dinner number without ever
+// hitting 5 at 5 PM). Ends 23:00; the 23:30-enders own the last
+// half-slot. Weekday-legal (5h primary).
+const EVENING_L2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0]
 
-// Mon–Wed SPLIT shapes — the one explicit exception to the 30-min paid
-// meal break: one dispatcher covers BOTH peaks with a long unpaid 3h gap
+// SPLIT shapes — the one explicit exception to the 30-min paid meal
+// break: one dispatcher covers BOTH peaks with an unpaid 2–3h gap
 // through the 14:00–17:00 lull (slots 7–10). The gap clears the lunch
 // peak (ends 14:00) and the dinner peak (starts 17:00), both blocks are
-// ≥3h and ≤5h, and the shape carries the weekday 5h primary stretch.
+// ≥3h and ≤5h, and the shape carries the weekday primary stretch.
 // A split dispatcher anchors BOTH peaks (starts before each, continuous
-// through each). Splits free a body-day on Tue/Wed, which funds the
-// rotating 2nd day off for Regular/Senior dispatchers.
+// through each). Splits are allowed on ANY day — the human team uses
+// them situationally whenever one dispatcher covering both peaks helps
+// meet the targets (validated against the real hand-made schedule).
 //
 // Split B (11:00–14:00 + 17:00–22:00, 3h + 5h, 8h worked — dinner-heavy;
 // ends 10 PM so night-rest blocks a next-day morning.)
@@ -204,11 +216,25 @@ const SPLIT_B = [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0]
 // Split C (9:00–14:00 + 17:00–20:00, 5h + 3h, 8h worked — morning-heavy;
 // helps the 9–11 AM open, ends 8 PM.)
 const SPLIT_C = [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+// Split D (11:00–14:00 + 16:00–21:00, 3h + 5h, 8h worked) — the exact
+// shape the human team uses (Adorre's real Friday split): a SHORT 2h
+// gap through 14:00–16:00, back for the 4 PM pre-dinner ramp, through
+// the whole dinner peak, off at 9 PM. Anchors both peaks.
+const SPLIT_D = [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+// Split E (9:00–14:00 + 17:00–21:00, 5h + 4h, 9h worked) — the second
+// 9 AM starter AND an 8–9 PM shoulder body in one dispatcher: morning
+// block through the whole lunch peak, back for dinner through 9 PM.
+// Anchors both peaks. This is the shape that closes the two spots the
+// formal 30-min break otherwise leaves −1 (9–10 AM and the post-peak
+// shoulders) on the tight calibrated weekdays.
+const SPLIT_E = [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0]
 
-/** Slots a Mon–Wed split gap may occupy (14:00–17:00 lull) and its
- *  exact length. Used by isValidShiftShape to admit the split shape. */
+/** Slots a split gap may occupy (the 14:00–17:00 lull) and its length
+ *  range — the humans use both 2h and 3h gaps (Adorre's split has 2h).
+ *  Used by isValidShiftShape to admit the split shape on any day. */
 export const SPLIT_GAP_SLOTS = [7, 8, 9, 10] as const
-export const SPLIT_GAP_HOURS = 3
+export const SPLIT_GAP_MIN_HOURS = 2
+export const SPLIT_GAP_MAX_HOURS = 3
 
 /** Canonical split coverage bitmap — used by the coverage-gated off
  *  election to simulate how many bodies a split saves on a given day. */
@@ -217,6 +243,14 @@ export const SPLIT_COVERAGE: readonly number[] = SPLIT_B
 // Copy counts set the per-shape team capacity. Break positions across
 // the evening pool: A/D2/E at 8:00 PM, D/E2 at 8:30 PM, S/RAMP none —
 // the picker staggers among them, and no position sits inside a peak.
+// Splits ride in EVERY day's pool — the picker uses one only when it
+// helps both peaks (deficit-driven; over-cap rejects it otherwise).
+const SPLIT_PATTERNS = [
+  SPLIT_B, SPLIT_B,
+  SPLIT_C, SPLIT_C,
+  SPLIT_D, SPLIT_D,
+  SPLIT_E, SPLIT_E,
+]
 const WEEKDAY_PATTERNS = [
   WD_MORNING, WD_MORNING,
   WD_MORNING_10, WD_MORNING_10,
@@ -227,18 +261,19 @@ const WEEKDAY_PATTERNS = [
   EVENING_D2, EVENING_D2,
   EVENING_S, EVENING_S,
   EVENING_L, EVENING_L,
+  EVENING_L2, EVENING_L2,
+  ...SPLIT_PATTERNS,
 ]
-// Mon–Wed: same catalog PLUS the split shapes. Thu–Sun get no splits.
-const MON_WED_PATTERNS = [
-  ...WEEKDAY_PATTERNS,
-  SPLIT_B, SPLIT_B,
-  SPLIT_C, SPLIT_C,
-]
+// Mon–Wed shares the weekday catalog (splits are no longer day-gated).
+const MON_WED_PATTERNS = WEEKDAY_PATTERNS
+// Weekend mornings are the STAGGERED PAIR the humans run: one 8:00–15:00
+// and one 9:00–16:00 (WD_MORNING_L). WE_MORNING (8–14) and the breakless
+// 8–13 stay as fallbacks for absence-thinned days; the 10–15 and 8–16
+// shapes are retired from weekends — they break the staggered edge.
 const WEEKEND_PATTERNS = [
-  WE_MORNING, WE_MORNING,
+  WE_MORNING_8_15, WE_MORNING_8_15,
   WE_MORNING_C, WE_MORNING_C,
-  WE_MORNING_L,
-  WE_MORNING_10, WE_MORNING_10,
+  WD_MORNING_L, // 9:00–16:00 — the 9 AM half of the staggered weekend edge
   RAMP_14, RAMP_14,
   EVENING_A, EVENING_A,
   EVENING_D, EVENING_D,
@@ -247,6 +282,8 @@ const WEEKEND_PATTERNS = [
   EVENING_E, EVENING_E,
   EVENING_E2, EVENING_E2,
   EVENING_L, EVENING_L,
+  EVENING_L2, EVENING_L2,
+  ...SPLIT_PATTERNS,
 ]
 
 // Coverage targets are UNCHANGED from the pre-two-team template — where
@@ -259,7 +296,7 @@ const WEEKEND_PATTERNS = [
 const THU: DayTemplate = {
   dayOfWeek: 4, dayName: 'Thursday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 2, 2, 3, 3, 2, 3, 1, 1],
+  requiredCoverage: [    0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 1],
   shiftPatterns: WEEKDAY_PATTERNS,
 }
 
@@ -267,7 +304,7 @@ const THU: DayTemplate = {
 const FRI: DayTemplate = {
   dayOfWeek: 5, dayName: 'Friday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    0, 2, 2, 2, 3, 3, 2, 2, 2, 2, 3, 4, 3, 3, 4, 3, 2, 3, 3, 1],
+  requiredCoverage: [    0, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 4, 3, 3, 4, 3, 2, 2, 2, 1],
   shiftPatterns: WEEKDAY_PATTERNS,
 }
 
@@ -275,7 +312,7 @@ const FRI: DayTemplate = {
 const SAT: DayTemplate = {
   dayOfWeek: 6, dayName: 'Saturday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    2, 2, 2, 2, 4, 4, 4, 2, 2, 1, 1, 4, 4, 4, 4, 3, 3, 2, 1, 1],
+  requiredCoverage: [    1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 4, 4, 4, 4, 3, 3, 2, 1, 1],
   shiftPatterns: WEEKEND_PATTERNS,
 }
 
@@ -283,7 +320,7 @@ const SAT: DayTemplate = {
 const SUN: DayTemplate = {
   dayOfWeek: 0, dayName: 'Sunday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    2, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3, 1],
+  requiredCoverage: [    1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 3, 4, 4, 4, 4, 3, 2, 3, 3, 1],
   shiftPatterns: WEEKEND_PATTERNS,
 }
 
@@ -299,7 +336,7 @@ const MON: DayTemplate = {
 const TUE: DayTemplate = {
   dayOfWeek: 2, dayName: 'Tuesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1],
+  requiredCoverage: [    0, 2, 2, 2, 3, 3, 3, 1, 2, 2, 1, 1, 3, 3, 3, 3, 3, 3, 2, 1],
   shiftPatterns: MON_WED_PATTERNS,
 }
 
@@ -307,7 +344,7 @@ const TUE: DayTemplate = {
 const WED: DayTemplate = {
   dayOfWeek: 3, dayName: 'Wednesday', slots: SLOTS,
   //                     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
-  requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2, 1],
+  requiredCoverage: [    0, 2, 2, 3, 3, 3, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 2, 1],
   shiftPatterns: MON_WED_PATTERNS,
 }
 
@@ -320,6 +357,35 @@ export const DAY_TEMPLATES: Record<number, DayTemplate> = {
   4: THU,
   5: FRI,
   6: SAT,
+}
+
+/** One-time calibration of legacy stored coverage overrides to the
+ *  human-validated targets (July 2026 calibration). The hand-made
+ *  schedule runs weekend opens at 1 and Saturday lunch at 2 — stored
+ *  overrides created before the calibration carry the old values and
+ *  would silently pin the old targets forever. Only cells still holding
+ *  the exact legacy value are rewritten, so any later manual edit
+ *  survives. Applied on store rehydrate (persist migrate) and on
+ *  snapshot import. */
+export function calibrateLegacyWeekendOverrides(
+  overrides: Record<number, number[]> | undefined,
+): Record<number, number[]> | undefined {
+  if (!overrides) return overrides
+  const out: Record<number, number[]> = { ...overrides }
+  const sat = out[6]
+  if (sat) {
+    const next = [...sat]
+    if (next[0] === 2) next[0] = 1 // Sat 8–9 AM open → 1 (staggered edge)
+    for (const i of [4, 5, 6]) if (next[i] === 3) next[i] = 2 // Sat lunch → 2
+    out[6] = next
+  }
+  const sun = out[0]
+  if (sun) {
+    const next = [...sun]
+    if (next[0] === 2) next[0] = 1 // Sun 8–9 AM open → 1
+    out[0] = next
+  }
+  return out
 }
 
 /** Coverage targets for a given day-of-week, with per-day per-slot overrides
@@ -420,7 +486,13 @@ export const HANDOFF_SLOT = 9
  *  the one whose semantic matches their pass (continuity check → anchor
  *  sets; over-cov scoring → surplus sets). */
 export const SURPLUS_TOLERATED_LUNCH_SLOTS  = [3, 4, 5] as const
-export const SURPLUS_TOLERATED_DINNER_SLOTS = [11, 12, 13, 14] as const
+// 5–6 PM (slot 11) was REMOVED from the tolerated-dinner window: it is
+// the dinner RAMP, not the peak core, and tolerating surplus there let
+// every scoring pass park bodies at 17:00 for free — the ramp spiked
+// to target+2 while the humans climb to their dinner number without
+// overshooting. Surplus at 5–6 PM now costs 2× like any off-peak slot,
+// steering the picker toward the 18:00 ramp-smoother shape.
+export const SURPLUS_TOLERATED_DINNER_SLOTS = [12, 13, 14] as const
 export const SURPLUS_TOLERATED_SLOTS = new Set<number>([
   ...SURPLUS_TOLERATED_LUNCH_SLOTS,
   ...SURPLUS_TOLERATED_DINNER_SLOTS,
@@ -505,7 +577,6 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
   const violations: string[] = []
   for (const day of Object.values(DAY_TEMPLATES)) {
     const isWeekend = day.dayOfWeek === 0 || day.dayOfWeek === 6
-    const splitsAllowed = day.dayOfWeek >= 1 && day.dayOfWeek <= 3 // Mon–Wed
     day.shiftPatterns.forEach((pat, idx) => {
       const blocks = patternWorkBlocks(pat, day.slots)
       const brk = patternMaxBreakHours(pat, day.slots)
@@ -515,17 +586,17 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
         return
       }
       if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) {
-        // Mon–Wed split exception: a 3h unpaid gap confined to the
+        // Split exception (any day): a 2–3h unpaid gap confined to the
         // 14:00–17:00 lull, both blocks ≥ 3h.
         const gap = midShiftBreakSlots(pat)
         const isSplit =
-          splitsAllowed &&
-          brk === SPLIT_GAP_HOURS &&
+          brk >= SPLIT_GAP_MIN_HOURS &&
+          brk <= SPLIT_GAP_MAX_HOURS &&
           gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
           blocks[0] >= MIN_BLOCK_HOURS &&
           blocks[1] >= MIN_BLOCK_HOURS
         if (!isSplit) {
-          violations.push(`${day.dayName} #${idx}: break ${brk}h is neither the ${MEAL_BREAK_HOURS}h meal break nor a legal Mon–Wed split gap`)
+          violations.push(`${day.dayName} #${idx}: break ${brk}h is neither the ${MEAL_BREAK_HOURS}h meal break nor a legal split gap`)
         }
       } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
         violations.push(`${day.dayName} #${idx}: tail ${blocks[1]}h < ${MIN_TAIL_STRETCH_HOURS}h`)

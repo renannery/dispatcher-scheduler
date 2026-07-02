@@ -25,7 +25,8 @@ import {
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
-  SPLIT_GAP_HOURS,
+  SPLIT_GAP_MIN_HOURS,
+  SPLIT_GAP_MAX_HOURS,
   SPLIT_GAP_SLOTS,
   WEEKDAY_PRIMARY_STRETCH_HOURS,
   patternMaxBreakHours,
@@ -64,8 +65,7 @@ for (const ds of schedule.dispatcherSchedules) {
       // lull, both blocks ≥ 3h.
       const gap = midShiftBreakSlots(day.slots)
       const isSplit =
-        day.dayOfWeek >= 1 && day.dayOfWeek <= 3 &&
-        brk === SPLIT_GAP_HOURS &&
+        brk >= SPLIT_GAP_MIN_HOURS && brk <= SPLIT_GAP_MAX_HOURS &&
         gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
         blocks[0] >= MIN_BLOCK_HOURS && blocks[1] >= MIN_BLOCK_HOURS
       if (!isSplit) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h and not a legal Mon–Wed split`)
@@ -156,7 +156,7 @@ console.log(' Mon–Wed splits + 2nd days off per week')
 console.log('══════════════════════════════════════════════════════════════════════')
 const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
 const isSplitShift = (slots: boolean[]) =>
-  patternMaxBreakHours(slots, SLOTS) === SPLIT_GAP_HOURS
+  patternMaxBreakHours(slots, SLOTS) >= SPLIT_GAP_MIN_HOURS
 let totalSecondOffs = 0
 const secondOffByName = new Map<string, number>()
 for (const wl of weekLabels) {

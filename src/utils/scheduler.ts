@@ -14,7 +14,8 @@ import {
   patternWorkBlocks,
   SLOTS,
   SPLIT_COVERAGE,
-  SPLIT_GAP_HOURS,
+  SPLIT_GAP_MIN_HOURS,
+  SPLIT_GAP_MAX_HOURS,
   SPLIT_GAP_SLOTS,
   SURPLUS_TOLERATED_SLOTS,
   WEEKDAY_PRIMARY_STRETCH_HOURS,
@@ -109,6 +110,7 @@ function assignMandatoryRest(
   allDates: Date[],
   timeOff: DispatcherTimeOff,
   seed: number,
+  coverageOverrides: Record<number, number[]> = {},
 ): { restLocks: Record<string, Set<string>>; streakWarnings: string[] } {
   const restLocks: Record<string, Set<string>> = {}
   const streakWarnings: string[] = []
@@ -155,16 +157,17 @@ function assignMandatoryRest(
 
     // Stable HOME rest weekday for this dispatcher (constant across
     // weeks; used by Step 1's cadence rescue and Step 2's placement).
-    // Demand-spread quota: Mon absorbs 3 rests — it's the lightest
-    // day under the lean catalog (9 AM and 3 PM targets are 1 where
-    // Tue's are 2). Tue takes 2: stacking 3 rests there left 4 workers
-    // against a tiling that needs 5 (9–10 AM and 3–4 PM ran −1 every
-    // single week; with the Mon–Wed split gap parked over 14:00–17:00
-    // no 4-body arrangement can cover both). Wed and Thu keep 1 each
-    // (Thu is a 5-need day + the week-start edge; Wed's close went to
-    // zero when 2 rests left it exactly tight). Seed rotates the
-    // assignment so Regenerate varies who rests when.
-    const HOME_REST_DOWS = [1, 1, 2, 2, 3, 3, 4] // Mon,Mon,Tue,Tue,Wed,Wed,Thu
+    // Demand-spread quota under the CALIBRATED (human-matched)
+    // targets: at ~29–42h of demand per day, every weekday except
+    // Monday needs 6 workers to tile (2 openers + midday bridge +
+    // 3 closers), so rests spread ONE per day Tue–Fri with Monday —
+    // the humans' 29h lightest day — absorbing the remaining three.
+    // The weekend carries NO rest locks (a Saturday rest forced a −1
+    // INSIDE the dinner peak; Monday absorbs the same −1 on an
+    // off-peak shoulder instead, and the humans never rest weekends
+    // either). Seed rotates the assignment so Regenerate varies who
+    // rests when.
+    const HOME_REST_DOWS = [1, 1, 1, 2, 3, 4, 5] // Mon,Mon,Mon,Tue,Wed,Thu,Fri
     const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
 
     weekOrder.forEach((wLbl) => {
@@ -253,8 +256,18 @@ function assignMandatoryRest(
           })
           if (wide.length === 0) wide = validRange
           const minP = Math.min(...wide.map(totalOf))
-          const calm = wide.filter((dt) => totalOf(dt) === minP)
-          // Among least-crowded days prefer the home day, else latest.
+          let calm = wide.filter((dt) => totalOf(dt) === minP)
+          // Among equally calm days, prefer the LIGHTEST day (hours-
+          // weighted demand) — a deviated rest landing on Wednesday
+          // (38.5h) instead of the equally-calm Tuesday (36h) gutted
+          // Wednesday under the calibrated targets.
+          const demandOf = (dt: Date) => {
+            const req = effectiveCoverage(dt.getDay(), coverageOverrides)
+            return req.reduce((s, r, i) => s + r * SLOTS[i].hours, 0)
+          }
+          const minDemand = Math.min(...calm.map(demandOf))
+          calm = calm.filter((dt) => demandOf(dt) === minDemand)
+          // Then prefer the home day, else latest.
           const calmHome = calm.filter((dt) => dt.getDay() === homeDow)
           pool = calmHome.length > 0 ? calmHome : calm
         }
@@ -400,14 +413,13 @@ function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   if (blocks.length > 2) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
   if (blocks.length === 2 && maxBreak !== MEAL_BREAK_HOURS) {
-    // Mon–Wed split exception: one dispatcher covers both peaks with a
-    // 3h UNPAID gap confined to the 14:00–17:00 lull (never touching
+    // Split exception (ANY day — the human team uses splits whenever
+    // covering both peaks with one dispatcher helps the targets): a
+    // 2–3h UNPAID gap confined to the 14:00–17:00 lull (never touching
     // the lunch or dinner peak). Both blocks must be real stretches
     // (≥ 3h). This is the only shape allowed to deviate from the
-    // 30-min paid meal break, and only on dow 1–3.
-    const isSplitDay = dayOfWeek === 1 || dayOfWeek === 2 || dayOfWeek === 3
-    if (!isSplitDay) return false
-    if (maxBreak !== SPLIT_GAP_HOURS) return false
+    // 30-min paid meal break.
+    if (maxBreak < SPLIT_GAP_MIN_HOURS || maxBreak > SPLIT_GAP_MAX_HOURS) return false
     const gap = midShiftBreakSlots(slots)
     if (!gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s))) return false
     if (blocks[1] < MIN_BLOCK_HOURS) return false
@@ -626,6 +638,12 @@ function improveCoverageBySwaps(ctx: SeedCtx, required: number[]): void {
       if (required[i] > 0 && cov[i] < required[i]) {
         const rel = (required[i] - cov[i]) / required[i]
         u += rel * (PEAK_SLOT_SET.has(i) ? 3 : 1)
+      } else if (cov[i] > required[i] && !SURPLUS_TOLERATED_SLOTS.has(i)) {
+        // Tiny surplus term — never trades against a deficit (weight
+        // 0.01 vs ≥0.25 per missing body) but lets an otherwise-equal
+        // swap shed untolerated surplus, e.g. a 15:00 closer swapped to
+        // the 18:00 ramp-smoother to deflate the 5 PM pile-up.
+        u += 0.01 * (cov[i] - required[i])
       }
     }
     return u
@@ -654,6 +672,30 @@ function improveCoverageBySwaps(ctx: SeedCtx, required: number[]): void {
           after += Math.max(0, required[i] - c)
         }
         if (overShoot) continue
+        // Weekend split limits (mirror the picker — protect the
+        // staggered-edge morning pair).
+        if (
+          (ctx.dow === 0 || ctx.dow === 6) &&
+          newP.maxBreak >= SPLIT_GAP_MIN_HOURS &&
+          firstActiveSlot(newP.bool) <= 2
+        ) continue
+        if (
+          (ctx.dow === 0 || ctx.dow === 6) &&
+          newP.maxBreak >= SPLIT_GAP_MIN_HOURS &&
+          patternMaxBreakHours(a.pattern, SLOTS) < SPLIT_GAP_MIN_HOURS &&
+          ctx.assignments.some(
+            (other) => other !== a && patternMaxBreakHours(other.pattern, SLOTS) >= SPLIT_GAP_MIN_HOURS,
+          )
+        ) continue
+        // Tactic 1b: swaps never create a second 8:00 opener past the
+        // open target (mirrors the picker's opener cap).
+        if (firstActiveSlot(newP.bool) === 0 && firstActiveSlot(a.pattern) !== 0) {
+          let openers = 0
+          for (const other of ctx.assignments) {
+            if (firstActiveSlot(other.pattern) === 0) openers++
+          }
+          if (openers >= required[0]) continue
+        }
         if (!dropPreservesAnchors(newP.bool, a, a.pattern, ctx.assignments, startingPeaks)) continue
         if (after < (best ? best.after : base)) best = { a, newP, after }
       }
@@ -738,14 +780,30 @@ function trimToExactCoverage(
   const startingPeaksWithAnchor = PEAK_WINDOWS.filter((peak) =>
     assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
   )
+  // Trim late starters first: shaving a surplus slot almost always
+  // moves a shift EDGE (an interior drop creates an illegal second
+  // break), and the morning shapes' edges ARE the staggered weekend
+  // edge the humans run (8→15:00 / 9→16:00) — letting an afternoon or
+  // evening shape absorb the trim keeps those edges intact.
+  const byLatestStart = [...assignments].sort(
+    (x, y) => firstActiveSlot(y.pattern) - firstActiveSlot(x.pattern),
+  )
   let changed = true
   while (changed) {
     changed = false
     for (let si = 0; si < cov.length; si++) {
       if (cov[si] <= required[si]) continue
-      for (let ai = 0; ai < assignments.length; ai++) {
-        const a = assignments[ai]
+      for (const a of byLatestStart) {
         if (!a.pattern[si]) continue
+        // Weekend morning EDGES are load-bearing (the humans' staggered
+        // 8→15:00 / 9→16:00 pair) — never shave them; a +1 surplus on a
+        // shoulder slot is tolerated instead.
+        const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
+        if (
+          isWeekendDay &&
+          firstActiveSlot(a.pattern) <= 2 &&
+          (si === firstActiveSlot(a.pattern) || si === lastActiveSlot(a.pattern))
+        ) continue
         const trial = [...a.pattern]
         trial[si] = false
         if (!isValidShiftShape(trial, dayOfWeek)) continue
@@ -830,6 +888,55 @@ function repairBreaks(
         if (moved) { changed = true; break }
       }
       if (changed) break
+    }
+  }
+
+  // ── De-collision sweep (Tactic 3: no two breaks in the same slot) ──
+  // Even when a shared break slot still meets its target, relocate one
+  // of the colliding breaks to a free legal slot: outside every peak
+  // window, not already carrying a break, and with headroom so the
+  // vacated landing slot never drops below target. Where no such slot
+  // exists (heavy evenings: 3+ closers against two legal post-peak
+  // positions) the share stays — the headroom guard keeps it on the
+  // deeper-staffed shoulder.
+  let swept = true
+  while (swept) {
+    swept = false
+    const breakersBySlot = new Map<number, Array<{ dispatcher: Dispatcher; pattern: boolean[] }>>()
+    for (const a of assignments) {
+      const first = firstActiveSlot(a.pattern)
+      const last = lastActiveSlot(a.pattern)
+      if (first < 0 || patternMaxBreakHours(a.pattern, SLOTS) !== MEAL_BREAK_HOURS) continue
+      for (let k = first + 1; k < last; k++) {
+        if (!a.pattern[k]) {
+          if (!breakersBySlot.has(k)) breakersBySlot.set(k, [])
+          breakersBySlot.get(k)!.push(a)
+        }
+      }
+    }
+    for (const [si, breakers] of breakersBySlot) {
+      if (swept) break
+      if (breakers.length < 2) continue
+      for (const a of breakers.slice(1)) {
+        if (swept) break
+        const first = firstActiveSlot(a.pattern)
+        const last = lastActiveSlot(a.pattern)
+        for (let j = first + 1; j < last && !swept; j++) {
+          if (j === si || !a.pattern[j]) continue
+          if (PEAK_SLOT_SET.has(j)) continue
+          if (breakersBySlot.has(j)) continue // must land uncollided
+          if (cov[j] - 1 < required[j]) continue // landing keeps target
+          const trial = [...a.pattern]
+          trial[si] = true
+          trial[j] = false
+          if (!isValidShiftShape(trial, dayOfWeek)) continue
+          if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) continue
+          a.pattern = trial
+          cov[si]++
+          cov[j]--
+          swept = true
+        }
+      }
     }
   }
 }
@@ -1182,7 +1289,7 @@ export function generateSchedule(
   // workdays at MAX_CONSECUTIVE_WORK_DAYS across week boundaries.
   // These locks are INVIOLABLE — every subsequent pass filters them out
   // via `restLocks`. No pass may set, refund, or override a lock.
-  const { restLocks, streakWarnings } = assignMandatoryRest(dispatchers, allDates, timeOff, seed)
+  const { restLocks, streakWarnings } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides)
   // Streak warnings only fire when user-entered time-off creates a gap
   // > 7 days that Phase 0 can't fix (it can't override user input).
   // Surface as console.warn — extremely rare on non-adversarial input.
@@ -1426,7 +1533,7 @@ export function generateSchedule(
     // Without it the elect pass sheds workers down to the bare
     // peak-sum and the shoulders (8–9 PM) run structurally short.
     let bodiesNeeded = morningNeed + eveningNeed + 1
-    const splitsAllowed = dow >= 1 && dow <= 3
+    const splitsAllowed = true // splits serve any day (human practice)
     if (splitsAllowed) {
       for (let s = 1; s <= 2; s++) {
         let mNeed = 0
@@ -1777,6 +1884,14 @@ export function generateSchedule(
       for (let i = 0; i < p.bool.length; i++) {
         if (p.bool[i] && runningCov[i] < dayRequired[i]) { fillsDeficit = true; break }
       }
+      // NOTE on the 5-PM ramp: on 5-worker Thursdays the slot can reach
+      // target+2 — that surplus is GEOMETRIC, not a picker error. All
+      // five shapes that day (two 9AM+dinner splits, the 15:00 and
+      // 16:00 closers, the 2–6 PM ramp) legally MUST span 17:00–18:00:
+      // in-peak breaks are banned, split gaps must end by 17:00, and
+      // the 4h daily minimum stops the ramp from shrinking out of the
+      // slot. Capping the tier at peaks was measured to re-open a
+      // 0-coverage slot and three dinner gaps — strictly worse.
       const cap = MAX_OVER_COVERAGE + (fillsDeficit ? 1 : 0)
       let overShoots = false
       for (let i = 0; i < p.bool.length; i++) {
@@ -1795,16 +1910,48 @@ export function generateSchedule(
       // the low-target opening never stacks bodies the evening ramp
       // will be missing.
       const isCapMorning =
-        firstActiveSlot(p.bool) < 2 && p.maxBreak < SPLIT_GAP_HOURS
+        firstActiveSlot(p.bool) < 2 && p.maxBreak < SPLIT_GAP_MIN_HOURS
       if (isCapMorning) {
         let morningCount = 0
         for (const a of assignments) {
           const f = firstActiveSlot(a.pattern)
-          if (f >= 0 && f < 2 && patternMaxBreakHours(a.pattern, SLOTS) < SPLIT_GAP_HOURS) {
+          if (f >= 0 && f < 2 && patternMaxBreakHours(a.pattern, SLOTS) < SPLIT_GAP_MIN_HOURS) {
             morningCount++
           }
         }
         if (morningCount >= morningNeed) continue
+      }
+      // Situational splits: a split's gap doubles as its meal break and
+      // parks the off-floor time in the low-demand 2–5 PM lull — on
+      // tight weekdays that's the ONLY way to deliver the calibrated
+      // evening without a break landing on a full shoulder (the humans
+      // exploit exactly this). Weekends cap at ONE split so the
+      // staggered-edge morning pair (8–15 + 9–16) isn't dissolved into
+      // split gaps; weekdays allow up to three (deficit scoring and
+      // over-cap keep them situational).
+      if (p.maxBreak >= SPLIT_GAP_MIN_HOURS) {
+        // 9 AM-starting splits cannibalize the weekend staggered-edge
+        // pair (they win the second-morning slot, killing the 9→16:00
+        // straight shape) — weekends only admit the 11 AM splits.
+        if (isWeekend && firstActiveSlot(p.bool) <= 2) continue
+        let splitsToday = 0
+        for (const a of assignments) {
+          if (patternMaxBreakHours(a.pattern, SLOTS) >= SPLIT_GAP_MIN_HOURS) splitsToday++
+        }
+        if (splitsToday >= (isWeekend ? 1 : 3)) continue
+      }
+      // Tactic 1b hard edge: 8:00 starters never exceed the OPEN target
+      // itself. With the weekend open calibrated to 1, exactly one
+      // dispatcher opens at 8 and the second morning body starts at 9 —
+      // the staggered edge the human team runs. (An 8–16 shape also
+      // fills 2–3 PM deficits, which otherwise out-scores the stagger
+      // and double-books the open at target+1.)
+      if (firstActiveSlot(p.bool) === 0) {
+        let openers = 0
+        for (const a of assignments) {
+          if (firstActiveSlot(a.pattern) === 0) openers++
+        }
+        if (openers >= dayRequired[0]) continue
       }
       // Symmetric evening cap: the breakless/short evening shapes need
       // MORE bodies to tile the same span, and without this cap the

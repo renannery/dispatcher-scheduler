@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 
-import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, SLOTS, calibrateLegacyWeekendOverrides } from '@/data/coverageTemplate'
 import type { Dispatcher, DispatcherLevel, DispatcherTimeOff, GeneratedSchedule, Step } from '@/types/schedule'
 import type { AbsenceReason } from '@/utils/absence'
 import { datesInRange } from '@/utils/absence'
@@ -344,7 +344,9 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
-      coverageOverrides: data.coverageOverrides ?? {},
+      // Snapshots exported before the July 2026 target calibration carry
+      // the legacy weekend override values — rewrite matching cells.
+      coverageOverrides: calibrateLegacyWeekendOverrides(data.coverageOverrides) ?? {},
       schedule: data.schedule,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
@@ -381,11 +383,22 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   storage: createJSONStorage(() => localStorage),
   // v2: persist full working set (was just weekendRotationOffset). Refresh
   // / browser close no longer drops in-flight schedule edits.
-  version: 2,
+  // v3: July 2026 target calibration — rewrite legacy weekend override
+  // cells (Sat open 2→1, Sat lunch 3→2, Sun open 2→1) to the
+  // human-validated targets. Cells the user edited since don't match
+  // the legacy values and are left alone.
+  version: 3,
   migrate: (persisted: unknown, fromVersion: number) => {
     if (fromVersion < 2 && persisted && typeof persisted === 'object') {
       const p = persisted as Partial<SchedulerStore>
       return { weekendRotationOffset: p.weekendRotationOffset ?? 0 }
+    }
+    if (fromVersion < 3 && persisted && typeof persisted === 'object') {
+      const p = persisted as Partial<SchedulerStore>
+      return {
+        ...p,
+        coverageOverrides: calibrateLegacyWeekendOverrides(p.coverageOverrides) ?? {},
+      }
     }
     return persisted as Partial<SchedulerStore>
   },
