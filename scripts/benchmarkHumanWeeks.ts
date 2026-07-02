@@ -173,7 +173,41 @@ for (const r of s.secondOffLog ?? []) {
   console.log(`   ${r.weekLabel}: ${r.granted ? `GRANT ${r.candidateName} ${r.date} (Δ${r.unitDelta})` : `skip ${r.candidateName} — ${r.reason}`}`)
 }
 
-const pass = zeroFails === 0 && dinnerFails === 0 && edgeFails.length === 0 && avgAbs <= 0.6 &&
+const pass1 = zeroFails === 0 && dinnerFails === 0 && edgeFails.length === 0 && avgAbs <= 0.6 &&
   depthFails === 0 && peakResidualFails === 0 && residualOffDays <= B5_ALLOWANCE
-console.log(`\n FINAL — ${pass ? 'PASS' : 'FAIL'}`)
+
+// ── Phase 2 — full-horizon zero audit (hard invariant) ──────────────
+// A slot with target > 0 at coverage 0 is NEVER acceptable, on any date,
+// granted week or skipped. Regression pinned here: seed 68 on the real
+// Jun 25 → Sep 9 2026 inputs stacked a vacation-displaced rest onto the
+// Mon×3 quota day (4 of 7 rest-locked Mon Jun 29) and 2–3 PM shipped at
+// 0 (slots 7–9). Seeds 57/48 are the neighbouring production seeds.
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Phase 2 — full-horizon zero audit (2026-06-25 → 2026-09-09)')
+console.log('══════════════════════════════════════════════════════════════════════')
+const horizonTimeOff: DispatcherTimeOff = {
+  'xb9f7rj': { '2026-06-25': fullDay() },
+  '75pmgeu': { '2026-06-25': fullDay(), '2026-07-03': fullDay() },
+  'fmvecxr': { '2026-07-05': fullDay(), '2026-07-19': fullDay(), '2026-08-05': fullDay() },
+}
+let horizonZeroFails = 0
+for (const hSeed of [68, 57, 48]) {
+  const h = generateSchedule(roster, '2026-06-25', '2026-09-09', horizonTimeOff, hSeed, overrides, 0)
+  const zeros: string[] = []
+  for (const dInfo of h.dates) {
+    const req = h.coverageRequired?.[dInfo.date] ?? []
+    const act = h.coverageActual[dInfo.date] ?? []
+    req.forEach((r, i) => {
+      if (r > 0 && (act[i] ?? 0) === 0) zeros.push(`${dInfo.date}#${SLOTS[i].label}`)
+    })
+  }
+  const grants = (h.secondOffLog ?? []).filter((r) => r.granted).length
+  const skips = (h.secondOffLog ?? []).length - grants
+  console.log(`  seed ${hSeed}: zero-coverage slots = ${zeros.length} ${zeros.length === 0 ? '✓' : '← FAIL'} · grants ${grants} · skips ${skips}`)
+  for (const z of zeros) console.log(`      ${z}`)
+  horizonZeroFails += zeros.length
+}
+
+const pass = pass1 && horizonZeroFails === 0
+console.log(`\n FINAL — ${pass ? 'PASS' : 'FAIL'}${horizonZeroFails > 0 ? ` (${horizonZeroFails} horizon zero slots)` : ''}`)
 if (!pass) process.exit(1)

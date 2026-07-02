@@ -106,12 +106,17 @@ const MAX_CONSECUTIVE_WORK_DAYS = 6
  * exactly 7 days (streak exactly 6, always legal) and Fri/Sat/Sun keep
  * the full roster for the two-team model. Seed rotates the assignment.
  */
-function assignMandatoryRest(
+export function assignMandatoryRest(
   dispatchers: Dispatcher[],
   allDates: Date[],
   timeOff: DispatcherTimeOff,
   seed: number,
   coverageOverrides: Record<number, number[]> = {},
+  // (dispatcherId → dates) this pass must NOT lock a rest on — fed back
+  // by generateSchedule's final zero-guard when a rest placement left a
+  // slot at 0. Legality always wins: when avoiding would break the
+  // weekly-rest guarantee, the avoid is ignored.
+  restAvoid?: Record<string, Set<string>>,
 ): { restLocks: Record<string, Set<string>>; streakWarnings: string[] } {
   const restLocks: Record<string, Set<string>> = {}
   const streakWarnings: string[] = []
@@ -147,6 +152,20 @@ function assignMandatoryRest(
   // Locks placed so far — used only to pick WHERE a deviating rest goes,
   // so two displaced rests don't re-stack on the same calm day.
   const lockPressure = new Map<string, number>()
+  // Every dispatcher's HOME rest weekday is known before any lock is
+  // placed. A deviating rest must see the quota locks of dispatchers
+  // processed AFTER it, or roster order decides who is blind to whom:
+  // adorre (roster #0) deviated off a vacation-crowded Thursday onto
+  // Monday scoring it empty, then the Mon×3 home quota landed on top —
+  // 4 of 7 rest-locked on one day and 2–3 PM collapsed to 0 (seed 68,
+  // Jun 29 2026). anticipatedPressure(dowOf(date), i) = home-quota
+  // locks still to come from dispatchers i+1…n.
+  const HOME_REST_DOWS_TABLE = [1, 1, 1, 2, 3, 4, 5]
+  const homeDowOf = dispatchers.map(
+    (d2, j) => fullDayRecurringDow(d2) ?? HOME_REST_DOWS_TABLE[(j + (seed >>> 0)) % HOME_REST_DOWS_TABLE.length],
+  )
+  const anticipatedPressure = (dow: number, afterIdx: number) =>
+    homeDowOf.reduce((n, hd, j) => n + (j > afterIdx && hd === dow ? 1 : 0), 0)
 
   dispatchers.forEach((d, dispIdx) => {
     restLocks[d.id] = new Set()
@@ -264,13 +283,22 @@ function assignMandatoryRest(
         // breaks the weekly guarantee or the 6-day cap.
         const vacOf = (dt: Date) => vacPressure.get(format(dt, 'yyyy-MM-dd')) ?? 0
         const totalOf = (dt: Date) =>
-          vacOf(dt) + (lockPressure.get(format(dt, 'yyyy-MM-dd')) ?? 0)
+          vacOf(dt) +
+          (lockPressure.get(format(dt, 'yyyy-MM-dd')) ?? 0) +
+          anticipatedPressure(dt.getDay(), dispIdx)
         if (vacOf(pool[pool.length - 1]) > 0) {
           let wide = validRange.filter((dt) => {
             const dw = dt.getDay()
             return dw === 1 || dw === 2 || dw === 3 || dw === 4 // Mon–Thu
           })
           if (wide.length === 0) wide = validRange
+          // Hard cap: a deviated rest never lands where projected offs
+          // (vacations + locks + anticipated quota) already reach 3 —
+          // that would leave ≤ 3 of 7 bodies, and 3 bodies cannot span
+          // the 2–3 PM transition zone under the lean-handoff shapes.
+          // Only relaxed when EVERY legal alternative is that crowded.
+          const roomy = wide.filter((dt) => totalOf(dt) < 3)
+          if (roomy.length > 0) wide = roomy
           const minP = Math.min(...wide.map(totalOf))
           let calm = wide.filter((dt) => totalOf(dt) === minP)
           // Among equally calm days, prefer the LIGHTEST day (hours-
@@ -286,6 +314,17 @@ function assignMandatoryRest(
           // Then prefer the home day, else latest.
           const calmHome = calm.filter((dt) => dt.getDay() === homeDow)
           pool = calmHome.length > 0 ? calmHome : calm
+        }
+        // Zero-guard feedback: skip avoided dates when any legal
+        // alternative exists (weekly guarantee outranks the avoid).
+        const avoided = restAvoid?.[d.id]
+        if (avoided && avoided.size > 0) {
+          const poolNA = pool.filter((dt) => !avoided.has(format(dt, 'yyyy-MM-dd')))
+          if (poolNA.length > 0) pool = poolNA
+          else {
+            const rangeNA = validRange.filter((dt) => !avoided.has(format(dt, 'yyyy-MM-dd')))
+            if (rangeNA.length > 0) pool = rangeNA
+          }
         }
         chosen = pool[pool.length - 1] // latest in pool
       } else {
@@ -1303,7 +1342,7 @@ function blockedBitmap(
 /** One full generation pass. `grantPlan` (weekLabel → {dispId, date})
  *  injects the rotating 2nd-day-off grants through the elect channel —
  *  the wrapper below plans, audits and defers them. */
-function generateCore(
+export function generateCore(
   dispatchers: Dispatcher[],
   startDate: string,
   endDate: string,
@@ -1311,6 +1350,7 @@ function generateCore(
   seed = 0,
   coverageOverrides: Record<number, number[]> = {},
   grantPlan?: Map<string, { dispId: string; date: string }>,
+  restAvoid?: Record<string, Set<string>>,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -1323,7 +1363,7 @@ function generateCore(
   // workdays at MAX_CONSECUTIVE_WORK_DAYS across week boundaries.
   // These locks are INVIOLABLE — every subsequent pass filters them out
   // via `restLocks`. No pass may set, refund, or override a lock.
-  const { restLocks, streakWarnings } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides)
+  const { restLocks, streakWarnings } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides, restAvoid)
   // Streak warnings only fire when user-entered time-off creates a gap
   // > 7 days that Phase 0 can't fix (it can't override user input).
   // Surface as console.warn — extremely rare on non-adversarial input.
@@ -2655,7 +2695,55 @@ export function generateSchedule(
   coverageOverrides: Record<number, number[]> = {},
   secondOffCursor = 0,
 ): GeneratedSchedule {
-  const baseline = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides)
+  const start = parseISO(startDate)
+  const nDays = differenceInDays(parseISO(endDate), start) + 1
+  const allDates = Array.from({ length: nDays }, (_, i) => addDays(start, i))
+
+  // ── Hard zero invariant ─────────────────────────────────────────────
+  // A slot with target > 0 and coverage 0 is never acceptable — it
+  // outranks the rotation, rest-placement equity, and exact targets.
+  // Feedback channel: (dispatcher → dates) whose rest lock must move.
+  const restAvoid: Record<string, Set<string>> = {}
+  const zeroSlots = (s: GeneratedSchedule) => {
+    const out: { date: string; slot: number }[] = []
+    for (const dInfo of s.dates) {
+      const req = s.coverageRequired?.[dInfo.date] ?? []
+      const act = s.coverageActual[dInfo.date] ?? []
+      req.forEach((r, i) => {
+        if (r > 0 && (act[i] ?? 0) === 0) out.push({ date: dInfo.date, slot: i })
+      })
+    }
+    return out
+  }
+  // Move ONE rest lock off a zero-carrying day (re-placed legally within
+  // the same week by Phase 0 on the next generation). Returns false when
+  // no rest lock sits on any zero day — nothing left to re-place.
+  const addRestAvoidFor = (zeroDates: Set<string>): boolean => {
+    const locks = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides, restAvoid).restLocks
+    for (const date of zeroDates) {
+      for (const d of dispatchers) {
+        if (!locks[d.id]?.has(date)) continue
+        const cur = (restAvoid[d.id] ??= new Set())
+        if (cur.has(date)) continue
+        cur.add(date)
+        return true
+      }
+    }
+    return false
+  }
+
+  // Baseline must be zero-clean BEFORE planning: grants are audited
+  // against it, and an inherited zero would both block the week's grant
+  // (spurious skip) and ship anyway (seed 68, Mon Jun 29 2026 — a
+  // vacation-displaced rest stacked a 4th lock on the Mon×3 day).
+  let baseline = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides, undefined, restAvoid)
+  for (let r = 0; r < 6; r++) {
+    const zs = zeroSlots(baseline)
+    if (zs.length === 0) break
+    if (!addRestAvoidFor(new Set(zs.map((z) => z.date)))) break
+    baseline = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides, undefined, restAvoid)
+  }
+
   const eligible = dispatchers.filter((d) => d.level !== 'Trainee')
   if (eligible.length === 0 || baseline.dates.length === 0) {
     return { ...baseline, secondOffLog: [] }
@@ -2670,12 +2758,9 @@ export function generateSchedule(
   const fullWeeks = [...weekMap.entries()].filter(([, ds]) => ds.length === 7)
   if (fullWeeks.length === 0) return { ...baseline, secondOffLog: [] }
 
-  // Rest locks are deterministic — re-derive them for plan-time
-  // knowledge of each candidate's existing offs.
-  const start = parseISO(startDate)
-  const nDays = differenceInDays(parseISO(endDate), start) + 1
-  const allDates = Array.from({ length: nDays }, (_, i) => addDays(start, i))
-  const { restLocks } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides)
+  // Rest locks are deterministic — re-derive them (with the zero-guard's
+  // avoids applied) for plan-time knowledge of existing offs.
+  const { restLocks } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides, restAvoid)
 
   const dayUnits = (s: GeneratedSchedule, date: string) => {
     const req = s.coverageRequired?.[date] ?? []
@@ -2736,11 +2821,21 @@ export function generateSchedule(
     dayOffPressure.set(dInfo.date, n)
   }
 
+  // Total people off per day in the baseline (rests + vacations +
+  // fairness elects) — a grant may never turn a 3-off day into 4-off.
+  const baselineOffCount = new Map<string, number>()
+  for (const ds of baseline.dispatcherSchedules) {
+    for (const day of ds.days) {
+      if (day.isOff) baselineOffCount.set(day.date, (baselineOffCount.get(day.date) ?? 0) + 1)
+    }
+  }
+
   const ptr0 = ((secondOffCursor % eligible.length) + eligible.length) % eligible.length
   // (weekLabel → set of "dispId|date") combos that failed the bar.
   const failedCombos = new Map<string, Set<string>>()
   let result: GeneratedSchedule = baseline
   let finalLog: SecondOffRecord[] = []
+  let finalPlan = new Map<string, { dispId: string; date: string }>()
 
   const MAX_PASSES = 12
   for (let pass = 0; pass < MAX_PASSES; pass++) {
@@ -2764,8 +2859,17 @@ export function generateSchedule(
         continue // defer — pointer stays on this person
       }
       const tried = failedCombos.get(wl)
+      // Placement guards: the grant never lands on the week's heaviest
+      // rest-pressure day (Monday carries the Mon×3 quota under every
+      // seed), and never turns a 3-off day into a 4-off day — 3 of 7
+      // bodies cannot span the 2–3 PM transition zone.
+      const weekPressures = dates.map((d) => dayOffPressure.get(d.date) ?? 0)
+      const maxPressure = Math.max(...weekPressures)
+      const minPressure = Math.min(...weekPressures)
       const candidateDays = dates
         .filter((d) => !known.has(d.date) && !tried?.has(cand.id + '|' + d.date))
+        .filter((d) => maxPressure === minPressure || (dayOffPressure.get(d.date) ?? 0) < maxPressure)
+        .filter((d) => (baselineOffCount.get(d.date) ?? 0) < 3)
         .sort((a, b) => {
           const pa = dayOffPressure.get(a.date) ?? 0
           const pb = dayOffPressure.get(b.date) ?? 0
@@ -2793,10 +2897,11 @@ export function generateSchedule(
     if (plan.size === 0) {
       result = baseline
       finalLog = draft
+      finalPlan = new Map()
       break
     }
 
-    const attempt = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides, plan)
+    const attempt = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides, plan, restAvoid)
 
     // Audit every planned grant against feasibility bar (b).
     let violations = 0
@@ -2834,18 +2939,65 @@ export function generateSchedule(
     if (violations === 0) {
       result = attempt
       finalLog = draft
+      finalPlan = plan
       break
     }
     if (pass === MAX_PASSES - 1) {
       // Pass budget exhausted — fall back to the no-grant baseline: the
       // perk defers entirely rather than ever shipping a bar violation.
       result = baseline
+      finalPlan = new Map()
       finalLog = draft.map((r) =>
         r.granted
           ? { ...r, granted: false, date: undefined, unitDelta: undefined, reason: 'grant audit did not converge — turn carried' }
           : r,
       )
     }
+  }
+
+  // ── Final hard zero-guard — no feature can bypass this ─────────────
+  // Scan the EXACT artifact being returned, full horizon, every slot
+  // with target > 0. Repairs in cost order: (1) withdraw the rotation
+  // grant of any zero-carrying week (turn carried), (2) re-place a rest
+  // lock off the zero day via Phase 0 (legally, within the same week).
+  // The bar-(b) audit above only gates GRANTED weeks; this pass owns
+  // the artifact itself, granted or skipped.
+  for (let guard = 0; guard < 6; guard++) {
+    const zs = zeroSlots(result)
+    if (zs.length === 0) break
+    const zDates = new Set(zs.map((z) => z.date))
+    let changed = false
+    for (const rec of finalLog) {
+      if (!rec.granted) continue
+      const wdates = weekMap.get(rec.weekLabel)
+      if (!wdates?.some((x) => zDates.has(x.date))) continue
+      finalPlan.delete(rec.weekLabel)
+      rec.granted = false
+      rec.date = undefined
+      rec.unitDelta = undefined
+      rec.reason = 'zero-guard: grant withdrawn — the week carried a 0-coverage slot; turn carried'
+      changed = true
+    }
+    if (!changed) changed = addRestAvoidFor(zDates)
+    if (!changed) break // no grant and no re-placeable rest on any zero day
+    result = generateCore(
+      dispatchers, startDate, endDate, timeOff, seed, coverageOverrides,
+      finalPlan.size > 0 ? finalPlan : undefined, restAvoid,
+    )
+  }
+  const unfixed = zeroSlots(result)
+  if (unfixed.length > 0) {
+    // Only reachable when vacations alone strip the roster below what
+    // the targets need. Surface loudly — and the CI gate fails on it.
+    const warnings = { ...(result.coverageWarnings ?? {}) }
+    for (const z of unfixed) {
+      ;(warnings[z.date] ??= []).push({
+        peak: 'mandatory-rest' as const,
+        reason: `0 coverage at ${SLOTS[z.slot].label} — could not be repaired without breaking a legal rest or user time-off`,
+        slotIndex: z.slot,
+      })
+    }
+    result = { ...result, coverageWarnings: warnings }
   }
 
   return { ...result, secondOffLog: finalLog }
