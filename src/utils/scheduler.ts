@@ -287,6 +287,12 @@ function firstActiveSlot(pattern: boolean[]): number {
   return pattern.findIndex((v) => v)
 }
 
+/** Every slot inside a peak window. No meal break may ever land on one
+ *  of these — the catalog carries no in-peak break shapes, and the
+ *  relocation passes (repairBreaks, smoothTransitions) refuse to move a
+ *  break onto them. Unavoidable break −1s go to shoulder slots instead. */
+const PEAK_SLOT_SET = new Set<number>(PEAK_WINDOWS.flatMap((p) => [...p.slots]))
+
 /** Continuity-anchor predicate for one peak. A pattern qualifies iff:
  *  - it STARTED before the peak's first slot (strict; a shift starting
  *    exactly at the peak boundary doesn't count — the rule wants someone
@@ -608,9 +614,20 @@ function enforceAnchors(
  * peak-anchor continuity.
  */
 function improveCoverageBySwaps(ctx: SeedCtx, required: number[]): void {
+  // DEPTH-RELATIVE deficit with a PEAK premium: each missing body
+  // counts as its share of the slot's target ((req−cov)/req — a −1 on
+  // a req-2 open is half the staff, worse than a −1 on a req-3
+  // shoulder), and peak slots weigh 3× so a deep dinner target never
+  // becomes the cheapest place to park a deficit. Resulting priority
+  // for unavoidable −1s: peak > opening > shoulder — the MVP's shape.
   const deficitUnits = (cov: number[]) => {
     let u = 0
-    for (let i = 0; i < required.length; i++) u += Math.max(0, required[i] - cov[i])
+    for (let i = 0; i < required.length; i++) {
+      if (required[i] > 0 && cov[i] < required[i]) {
+        const rel = (required[i] - cov[i]) / required[i]
+        u += rel * (PEAK_SLOT_SET.has(i) ? 3 : 1)
+      }
+    }
     return u
   }
   for (let iter = 0; iter < 20; iter++) {
@@ -778,22 +795,39 @@ function repairBreaks(
         // must be THIS dispatcher's mid-shift meal break at the slot
         if (first < 0 || si <= first || si >= last || a.pattern[si]) continue
         if (patternMaxBreakHours(a.pattern, SLOTS) !== MEAL_BREAK_HOURS) continue
-        let moved = false
-        for (let j = first + 1; j < last && !moved; j++) {
-          if (!a.pattern[j]) continue
-          if (cov[j] - 1 < required[j]) continue // target at j must hold
+        // Candidate landing slots for the break: never inside a peak
+        // window (MVP rule), and prefer a slot where nobody else is
+        // already on break (stagger) over a shared one.
+        const otherBreakSlots = new Set<number>()
+        for (const other of assignments) {
+          if (other === a) continue
+          const of = firstActiveSlot(other.pattern)
+          const ol = lastActiveSlot(other.pattern)
+          for (let k = of + 1; k < ol; k++) if (!other.pattern[k]) otherBreakSlots.add(k)
+        }
+        const tryMove = (j: number): boolean => {
+          if (!a.pattern[j]) return false
+          if (PEAK_SLOT_SET.has(j)) return false
+          if (cov[j] - 1 < required[j]) return false // target at j must hold
           const trial = [...a.pattern]
           trial[si] = true
           trial[j] = false
-          if (!isValidShiftShape(trial, dayOfWeek)) continue
-          if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) continue
+          if (!isValidShiftShape(trial, dayOfWeek)) return false
+          if (!dropPreservesAnchors(trial, a, a.pattern, assignments, startingPeaksWithAnchor)) return false
           a.pattern = trial
           cov[si]++
           cov[j]--
-          moved = true
-          changed = true
+          return true
         }
-        if (moved) break
+        let moved = false
+        for (let j = first + 1; j < last && !moved; j++) {
+          if (otherBreakSlots.has(j)) continue // pass 1: uncollided only
+          moved = tryMove(j)
+        }
+        for (let j = first + 1; j < last && !moved; j++) {
+          moved = tryMove(j) // pass 2: allow shared slots
+        }
+        if (moved) { changed = true; break }
       }
       if (changed) break
     }
@@ -979,6 +1013,9 @@ export function smoothTransitions(args: {
 
     for (const a of candidates) {
       for (const j of findSurplusSources(a, i)) {
+        // The vacated slot j is where the break lands — never inside
+        // a peak window (MVP rule: breaks only on shoulder slots).
+        if (PEAK_SLOT_SET.has(j)) continue
         const trial = [...a.pattern]
         trial[j] = false; trial[i] = true
         if (!isValidShiftShape(trial, dow)) continue
@@ -1046,6 +1083,9 @@ export function smoothTransitions(args: {
       .sort(byLowestWeeklyHours)
     for (const a of candidates) {
       for (const j of findSurplusSources(a, i)) {
+        // The vacated slot j is where the break lands — never inside
+        // a peak window (MVP rule: breaks only on shoulder slots).
+        if (PEAK_SLOT_SET.has(j)) continue
         const trial = [...a.pattern]
         trial[j] = false; trial[i] = true
         if (!isValidShiftShape(trial, dow)) continue
@@ -1380,7 +1420,12 @@ export function generateSchedule(
     // false slack there. The perk scales with headcount automatically.
     const morningNeed = Math.max(...dayRequired.slice(0, HANDOFF_SLOT))
     const eveningNeed = Math.max(...dayRequired.slice(HANDOFF_SLOT + 1))
-    let bodiesNeeded = morningNeed + eveningNeed
+    // +1 STAGGER BODY: with every break banished from the peaks onto
+    // the shoulder slots, a period that must hold N simultaneous bodies
+    // while each takes a staggered 30-min break needs N+1 people.
+    // Without it the elect pass sheds workers down to the bare
+    // peak-sum and the shoulders (8–9 PM) run structurally short.
+    let bodiesNeeded = morningNeed + eveningNeed + 1
     const splitsAllowed = dow >= 1 && dow <= 3
     if (splitsAllowed) {
       for (let s = 1; s <= 2; s++) {
@@ -1392,7 +1437,7 @@ export function generateSchedule(
         for (let i = HANDOFF_SLOT + 1; i < SLOTS.length; i++) {
           eNeed = Math.max(eNeed, dayRequired[i] - s * (SPLIT_COVERAGE[i] ? 1 : 0))
         }
-        bodiesNeeded = Math.min(bodiesNeeded, s + mNeed + eNeed)
+        bodiesNeeded = Math.min(bodiesNeeded, s + mNeed + eNeed + 1)
       }
     }
     const desiredElectedOff = Math.max(0, availablePool.length - bodiesNeeded)
@@ -1519,7 +1564,14 @@ export function generateSchedule(
       return { p: pp, unique }
     })
     let prioritizedPatterns = sortedPatterns
-    const patternsToDrop = Math.max(0, sortedPatterns.length - sortedWorking.length)
+    // Dropping is DISABLED: with a shape catalog this diverse (long vs
+    // short, breaky vs breakless, staggered break positions), every
+    // static drop heuristic we tried pre-decided the day's composition
+    // worse than the deficit-depth picker does — shortest-first killed
+    // the breakless shapes, breaky-first killed the hour-rich long
+    // shapes. The picker self-limits via over-cap and body count; the
+    // unused patterns just sit in the pool.
+    const patternsToDrop = 0
     if (patternsToDrop > 0) {
       // Greedy drop with coverage-survival check — never drop a pattern
       // if doing so would leave any required slot with zero patterns
@@ -1551,10 +1603,15 @@ export function generateSchedule(
       // returns an arbitrary permutation (observed: D/E dropped, A kept).
       const dinnerBadness = (pp: (typeof sortedPatterns)[number]) =>
         isPeakAnchorPattern(pp.bool, dinnerSlots) ? breakReq(pp) : 0
+      // Break-carrying shapes drop before breakless ones (a breakless
+      // shape can never collapse a slot — the MVP's core property), and
+      // shorter shapes before longer within each class.
+      const hasBreak = (pp: (typeof sortedPatterns)[number]) => (pp.maxBreak > 0 ? 1 : 0)
       const dropSort = [...scoredPatterns].sort(
         (a, b) =>
           a.unique - b.unique ||
           dinnerBadness(b.p) - dinnerBadness(a.p) ||
+          hasBreak(b.p) - hasBreak(a.p) ||
           a.p.hours - b.p.hours,
       )
       const dropped = new Set<typeof sortedPatterns[number]>()
@@ -1728,6 +1785,44 @@ export function generateSchedule(
         }
       }
       if (overShoots) continue
+
+      // ── MVP morning cap — assign only as many people to the OPEN as
+      // the open needs. A shape counts against the cap when it starts
+      // 8–9 AM (before slot 2) and is not a Mon–Wed split (splits serve
+      // both peaks and are budgeted separately). Mid-morning starts
+      // (10 AM) stay uncapped — they hold 2–3 PM after the openers
+      // leave. Everyone past the cap routes to ramp/evening shapes, so
+      // the low-target opening never stacks bodies the evening ramp
+      // will be missing.
+      const isCapMorning =
+        firstActiveSlot(p.bool) < 2 && p.maxBreak < SPLIT_GAP_HOURS
+      if (isCapMorning) {
+        let morningCount = 0
+        for (const a of assignments) {
+          const f = firstActiveSlot(a.pattern)
+          if (f >= 0 && f < 2 && patternMaxBreakHours(a.pattern, SLOTS) < SPLIT_GAP_HOURS) {
+            morningCount++
+          }
+        }
+        if (morningCount >= morningNeed) continue
+      }
+      // Symmetric evening cap: the breakless/short evening shapes need
+      // MORE bodies to tile the same span, and without this cap the
+      // picker pulls a body past the evening's own peak need and
+      // starves the opening (Sat ran 1/2 at 8–9 AM while dinner sat
+      // at 4/4 with five bodies). Rescue/floor passes stay uncapped —
+      // they only fire on genuine deficits.
+      // The +1 funds break staggering: a period that must hold
+      // eveningNeed simultaneous bodies while each takes a 30-min
+      // break needs one extra body so the shoulders don't collapse.
+      const isCapEvening = firstActiveSlot(p.bool) >= HANDOFF_SLOT
+      if (isCapEvening) {
+        let eveningCount = 0
+        for (const a of assignments) {
+          if (firstActiveSlot(a.pattern) >= HANDOFF_SLOT) eveningCount++
+        }
+        if (eveningCount >= eveningNeed + 1) continue
+      }
 
       // Morning patterns exclude dispatchers who worked night yesterday.
       // Also exclude any dispatcher whose blocks overlap this pattern, and
@@ -2039,6 +2134,113 @@ export function generateSchedule(
       patternMeta, sortedWorking, usedIds, usedPatternIdx, assignments,
       runningCov, weekHours, wLabel, timeOff, dateStr, dow,
       workedNightYesterday, capForShift,
+    }
+
+    // ── evening floor — the evening never collapses toward 1 ──────────
+    // MVP guarantee ported against real targets: any evening slot
+    // (4 PM onward) whose target is ≥ 2 must keep at least 2 bodies.
+    // Step 1: pull an off dispatcher back in — elected-off included (a
+    // collapse outranks the 2nd-off perk and the rescue pass's fill≥2
+    // threshold); rest locks and user time-off stay untouchable.
+    // Step 2: deficit-neutral swap — re-shape an assigned dispatcher to
+    // an unused pattern covering the breach when the day's total
+    // deficit doesn't worsen (the swap pass alone requires strict
+    // improvement and lets a collapse stand when fixing it costs an
+    // equal −1 on a deeper-staffed slot).
+    {
+      const cov = new Array(SLOTS.length).fill(0)
+      for (const { pattern } of assignments) {
+        pattern.forEach((on, i) => { if (on) cov[i]++ })
+      }
+      const breachSlots = () => {
+        const out: number[] = []
+        for (let i = 0; i < SLOTS.length; i++) {
+          // Zero-guard on EVERY required slot (a required slot at 0 is
+          // the collapse the MVP never allows), plus the ≥2 evening
+          // floor from 4 PM onward.
+          if (dayRequired[i] >= 1 && cov[i] === 0) out.push(i)
+          else if (i >= 10 && dayRequired[i] >= 2 && cov[i] < 2) out.push(i)
+        }
+        return out
+      }
+      const floorPool = [
+        ...availablePool.filter((d) => electedOffIds.has(d.id) && !restLocks[d.id].has(dateStr)),
+        ...sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr)),
+      ]
+      for (let safety = 0; safety < 10; safety++) {
+        const breaches = breachSlots()
+        if (breaches.length === 0) break
+        // Step 1 — pull: best (dispatcher, pattern) closing the most
+        // breach slots.
+        let pulled = false
+        let best: { d: Dispatcher; pIdx: number; hits: number } | null = null
+        for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
+          const p = patternMeta[pIdx]
+          if (usedPatternIdx.has(pIdx)) continue
+          const hits = breaches.filter((i) => p.bool[i]).length
+          if (hits === 0) continue
+          for (const d of floorPool) {
+            if (usedIds.has(d.id)) continue
+            if (p.isMorning && workedNightYesterday(d.id)) continue
+            const blocks = blockedBitmap(timeOff, d, dateStr, dow)
+            if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
+            if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
+            if (!best || hits > best.hits) best = { d, pIdx, hits }
+          }
+        }
+        if (best) {
+          const p = patternMeta[best.pIdx]
+          assignments.push({ dispatcher: best.d, pattern: p.bool })
+          usedIds.add(best.d.id)
+          usedPatternIdx.add(best.pIdx)
+          p.bool.forEach((on, i) => { if (on) cov[i]++ })
+          pulled = true
+        }
+        if (pulled) continue
+        // Step 2 — deficit-neutral swap onto the first breach slot
+        // (depth-relative units with peak premium, matching
+        // improveCoverageBySwaps).
+        const target = breaches[0]
+        const deficitUnits = (c: number[]) => {
+          let u = 0
+          for (let i = 0; i < dayRequired.length; i++) {
+            if (dayRequired[i] > 0 && c[i] < dayRequired[i]) {
+              const rel = (dayRequired[i] - c[i]) / dayRequired[i]
+              u += rel * (PEAK_SLOT_SET.has(i) ? 3 : 1)
+            }
+          }
+          return u
+        }
+        const base = deficitUnits(cov)
+        const startingPeaks = PEAK_WINDOWS.filter((peak) =>
+          assignments.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)),
+        )
+        let swapped = false
+        for (const a of assignments) {
+          if (swapped) break
+          if (a.pattern[target]) continue
+          for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
+            const newP = patternMeta[pIdx]
+            if (usedPatternIdx.has(pIdx) || !newP.bool[target]) continue
+            if (!isEligibleForPattern(a.dispatcher, newP, {
+              ...enforceCtx,
+              usedIds: new Set([...usedIds].filter((id) => id !== a.dispatcher.id)),
+            })) continue
+            const trialCov = cov.map((c, i) => c - (a.pattern[i] ? 1 : 0) + (newP.bool[i] ? 1 : 0))
+            if (deficitUnits(trialCov) > base) continue
+            if (trialCov.some((c, i) => c > dayRequired[i] + MAX_OVER_COVERAGE + 1)) continue
+            if (!dropPreservesAnchors(newP.bool, a, a.pattern, assignments, startingPeaks)) continue
+            const oldIdx = patternMeta.findIndex((pm) => pm.bool === a.pattern)
+            if (oldIdx >= 0) usedPatternIdx.delete(oldIdx)
+            usedPatternIdx.add(pIdx)
+            a.pattern = newP.bool
+            for (let i = 0; i < cov.length; i++) cov[i] = trialCov[i]
+            swapped = true
+            break
+          }
+        }
+        if (!swapped) break // genuine scarcity — existing warnings cover it
+      }
     }
 
     // ── improveCoverageBySwaps — respect the coverage target ──────────

@@ -92,6 +92,16 @@ export const SLOTS = [
 // then staggers breaks on its own, because the variant that covers the
 // current deficit outscores a duplicate of an already-picked shape.
 //
+// NO BREAK EVER SITS INSIDE A PEAK WINDOW (lunch 11:30–2, dinner 5–8).
+// Every shape either has no break at all (the 5h straight shapes) or
+// breaks on a shoulder slot: 11:00 AM before lunch, 8:00/8:30 PM after
+// dinner. The 5h-max-stretch law pins each start time to specific
+// break positions — a 3 PM starter can only break legally at 8:00 PM,
+// a 4 PM starter at 8:00 or 8:30, a 2 PM starter has NO legal
+// post-peak position (so the ramp shape is a 5h no-break block ending
+// 7 PM). Unavoidable −1s land on shoulder slots (11–11:30 AM,
+// 8–9 PM), never inside a peak, and surface as warnings.
+//
 // LEAN TRANSITION: morning shifts end by 15:00 and evening shifts start
 // 15:00/16:00/17:00 per demand. There is NO scheduled overlap between
 // the teams — the incoming dispatcher arrives ~10 min early (off the
@@ -106,44 +116,78 @@ const WD_MORNING  = [0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // (avoids stacking the low-req opening) and holds 2–3 PM after
 // Morning 9 leaves. Lunch anchor.
 const WD_MORNING_10 = [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-// Ramp (14:00–22:00, meal 6:00–6:30 PM; 4h + 3.5h, 7.5h). Starts on the
-// afternoon ramp: covers the 2–3 PM window (both morning break slots)
-// and the whole dinner peak — the body that "moves" from the overstacked
-// opening to the starved evening. Ends 10 PM (night-rest applies).
-const RAMP_14     = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0]
+// Weekday Morning LONG (9:00–16:00, meal 2:00–2:30 PM; 5h + 1.5h,
+// 6.5h). The body-efficient morning: its break is on the 2 PM shoulder
+// — OUTSIDE the lunch peak — so one long body replaces two short ones
+// without ever thinning the peak. Lunch anchor. ONE copy only: 2 PM is
+// this shape's only legal break position (9 AM + 5h max stretch), so
+// two copies would break simultaneously and zero the 2–2:30 slot.
+const WD_MORNING_L = [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Ramp (14:00–19:00, 5h straight — no break due at exactly 5h). Covers
+// the 2–3 PM window after the mornings leave, the 3–5 PM lull, and the
+// front of the dinner peak. A 2 PM starter has NO legal post-peak break
+// position (14:00 + 5h max stretch = 19:00, before the peak ends), so
+// instead of breaking inside the peak the shape simply ends at 7 PM —
+// the closers own 7 PM onward.
+const RAMP_14     = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
 // Weekend Morning 8a (8:00–14:00, meal 11:00–11:30 AM; 3h + 2.5h, 5.5h).
 // Lunch anchor: break ends before the 11:30 peak start.
 const WE_MORNING  = [1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-// Weekend Morning 8b (8:00–14:00, meal 11:30–12; 3.5h + 2h, 5.5h).
-// Break-stagger twin of 8a — covers 11–11:30 while 8a breaks. Not an
-// anchor (break sits inside the lunch peak window).
-const WE_MORNING_B = [1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// (Weekend Morning 8b — the 11:30–12 break twin — was RETIRED: its
+// break sat inside the lunch peak. A 6h 8 AM shift can only break at
+// 11:00 or 11:30, and only 11:00 is outside the peak.)
+//
+// Weekend Morning 8c (8:00–13:00, 5h straight — no break at all). The
+// second 8 AM body: breakless, so the opening pair never shares a
+// break slot. Ends 1 PM (inside the lunch window, but the anchors —
+// 8a and Morning 10 — carry the peak through 2 PM).
+const WE_MORNING_C = [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+//
 // Weekend Morning 10 (10:00–15:00, 5h straight). Staggered start —
 // keeps the 8 AM opening at its req-2 target instead of stacking four
 // bodies there — and holds 2–3 PM after the 8 AM shifts leave. Anchor.
 const WE_MORNING_10 = [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+// Weekend Morning LONG (8:00–16:00, meal 11:00–11:30 AM; 3h + 4.5h,
+// 7.5h). Body-efficient weekend opener: break before the lunch peak,
+// carries the whole peak plus the 2–4 PM tail. Lunch anchor.
+const WE_MORNING_L = [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // Evening A (15:00–23:30, meal break 8:00–8:30 PM; stretches 5h + 3h, 8h
 // worked). Dinner anchor: continuous through 5–8 PM, starts 3 PM.
 const EVENING_A   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
-// Evening B (15:00–23:30, meal break 6:00–6:30 PM; stretches 3h + 5h, 8h
-// worked). Not an anchor (break inside dinner peak) — covers 8–8:30 PM
-// while Evening A is on its meal break.
-const EVENING_B   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
-// Evening C (15:00–23:30, meal break 6:30–7 PM; stretches 3.5h + 4.5h,
-// 8h). Third evening break position — with A (8 PM), B (6 PM) and C
-// (6:30 PM) no two evening bodies must share a break slot.
-const EVENING_C   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1]
+// (Evening B and C — the 6:00 and 6:30 PM break variants — were
+// RETIRED: both broke inside the dinner peak. A 3 PM starter's only
+// legal outside-peak break is 8:00 PM, so Evening A is the only
+// 15:00 shape; extra evening bodies come from the later starts below,
+// whose breaks land legally after the peak.)
+//
 // Evening D (16:00–23:30, meal break 8:30–9 PM; stretches 4.5h + 2.5h,
 // 7h). LATE start — lets the picker skip the 3–4 PM lull when its
 // target is already met instead of forcing every evening body through
 // it. Dinner anchor (starts 4 PM, continuous through 5–8 PM); breaks
 // at 8:30 so the scarce 8–8:30 PM slot keeps its bodies.
 const EVENING_D   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+// Evening D2 (16:00–23:30, meal break 8:00–8:30 PM; 4h + 3h, 7h).
+// Break-stagger twin of D — same start, the other post-peak break
+// position. Dinner anchor.
+const EVENING_D2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
+// Evening S (17:00–22:00, 5h straight — no break at all). The body
+// that can never collapse a slot: full dinner peak + the 8–10 PM
+// shoulder, then hands the close to the 23:30-enders. Not an anchor
+// (starts exactly at the peak boundary). Weekday-legal (5h primary).
+const EVENING_S   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0]
 // Evening E (17:00–23:30, meal break 8–8:30 PM; stretches 3h + 3h, 6h).
 // WEEKEND-ONLY latest start — its 3h primary stretch is under the 4h
 // weekday minimum. Serves days like Saturday where the override wants
 // 1 body at 3–5 PM but 4 at dinner: the dinner crowd arrives at 5.
 const EVENING_E   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1]
+// Evening E2 (17:00–23:30, meal break 8:30–9 PM; 3.5h + 2.5h, 6h).
+// WEEKEND-ONLY break-stagger twin of E.
+const EVENING_E2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+// Evening L (18:30–23:30, 5h straight — no break). The breakless
+// CLOSER: carries the whole 8 PM–11:30 PM tail so the shoulder slots
+// keep their bodies while the earlier shapes take their post-peak
+// breaks. Weekday-legal (5h primary).
+const EVENING_L   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
 
 // Mon–Wed SPLIT shapes — the one explicit exception to the 30-min paid
 // meal break: one dispatcher covers BOTH peaks with a long unpaid 3h gap
@@ -170,18 +214,19 @@ export const SPLIT_GAP_HOURS = 3
  *  election to simulate how many bodies a split saves on a given day. */
 export const SPLIT_COVERAGE: readonly number[] = SPLIT_B
 
-// Copy counts set the per-shape team capacity. ≤2 copies per break
-// position means no slot ever loses more than 2 bodies to a break, and
-// the pool leans evening-side (4 morning-start vs 10 evening-side) so
-// allocation follows the demand curve (dinner target 4 > lunch 3).
+// Copy counts set the per-shape team capacity. Break positions across
+// the evening pool: A/D2/E at 8:00 PM, D/E2 at 8:30 PM, S/RAMP none —
+// the picker staggers among them, and no position sits inside a peak.
 const WEEKDAY_PATTERNS = [
   WD_MORNING, WD_MORNING,
   WD_MORNING_10, WD_MORNING_10,
+  WD_MORNING_L,
   RAMP_14, RAMP_14,
   EVENING_A, EVENING_A,
-  EVENING_B, EVENING_B,
-  EVENING_C, EVENING_C,
   EVENING_D, EVENING_D,
+  EVENING_D2, EVENING_D2,
+  EVENING_S, EVENING_S,
+  EVENING_L, EVENING_L,
 ]
 // Mon–Wed: same catalog PLUS the split shapes. Thu–Sun get no splits.
 const MON_WED_PATTERNS = [
@@ -191,14 +236,17 @@ const MON_WED_PATTERNS = [
 ]
 const WEEKEND_PATTERNS = [
   WE_MORNING, WE_MORNING,
-  WE_MORNING_B, WE_MORNING_B,
+  WE_MORNING_C, WE_MORNING_C,
+  WE_MORNING_L,
   WE_MORNING_10, WE_MORNING_10,
   RAMP_14, RAMP_14,
   EVENING_A, EVENING_A,
-  EVENING_B, EVENING_B,
-  EVENING_C, EVENING_C,
   EVENING_D, EVENING_D,
+  EVENING_D2, EVENING_D2,
+  EVENING_S, EVENING_S,
   EVENING_E, EVENING_E,
+  EVENING_E2, EVENING_E2,
+  EVENING_L, EVENING_L,
 ]
 
 // Coverage targets are UNCHANGED from the pre-two-team template — where
