@@ -40,6 +40,8 @@ export interface DispatcherSnapshotData {
   timeOff: DispatcherTimeOff
   absenceReasons: Record<string, Record<string, AbsenceReason>>
   weekendRotationOffset?: number
+  /** Persisted rotating 2nd-day-off cursor. Optional for backwards compat. */
+  secondOffRotationOffset?: number
   /** Per day-of-week override of the 19-slot required-coverage array. */
   coverageOverrides?: Record<number, number[]>
   schedule: GeneratedSchedule | null

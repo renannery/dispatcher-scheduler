@@ -23,6 +23,7 @@ export function PeriodPicker() {
     timeOff,
     absenceReasons,
     weekendRotationOffset,
+    secondOffRotationOffset,
     coverageOverrides,
     setDateRange,
     setCoverageOverride,
@@ -33,6 +34,7 @@ export function PeriodPicker() {
     toggleBlockedSlot,
     applyAbsenceRange,
     advanceWeekendRotation,
+    advanceSecondOffRotation,
     importRotationContext,
   } = useSchedulerStore()
 
@@ -71,10 +73,12 @@ export function PeriodPicker() {
 
   const handleGenerate = () => {
     if (!isValid) return
-    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset, coverageOverrides)
+    const schedule = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset, coverageOverrides, secondOffRotationOffset)
     setSchedule(schedule)
     const weeksInSchedule = new Set(schedule.dates.map((d) => d.weekLabel)).size
     advanceWeekendRotation(weeksInSchedule)
+    // 2nd-off cursor moves one step per GRANTED week; skipped turns defer.
+    advanceSecondOffRotation(schedule.secondOffLog?.filter((r) => r.granted).length ?? 0)
     setStep('schedule')
   }
 

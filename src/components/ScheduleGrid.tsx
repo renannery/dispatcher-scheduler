@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
+import { CalendarCheck2, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, ScrollText, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
@@ -141,7 +141,7 @@ function PdfMenu({ dispatchers, loading, onSelect, individualOnly }: PdfMenuProp
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, coverageOverrides, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
     useSchedulerStore()
   const isAdmin = useIsAdmin()
   // Track undo/redo button enabled state. Subscribe via stack lengths so the
@@ -160,6 +160,8 @@ export function ScheduleGrid() {
   const [drillDown, setDrillDown] = useState<null | { wl: string; kind: DrillKind }>(null)
   // Per-dispatcher detail modal — fired from a peak-wk pill click.
   const [dispatcherDetailId, setDispatcherDetailId] = useState<string | null>(null)
+  // "See Rules Applied" modal — static hard rules + per-week 2nd-day-off log.
+  const [rulesOpen, setRulesOpen] = useState(false)
   // Forces a re-render every wall-clock minute so the NowLine slides.
   const [nowTick, setNowTick] = useState(0)
   useEffect(() => {
@@ -227,7 +229,7 @@ export function ScheduleGrid() {
   const regenSeed = useRef(0)
   const handleRegenerate = () => {
     regenSeed.current++
-    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
+    const fresh = generateSchedule(dispatchers, startDate, endDate, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides, secondOffRotationOffset)
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -247,7 +249,7 @@ export function ScheduleGrid() {
   const handleDateRangeChange = (start: string, end: string) => {
     if (start === startDate && end === endDate) return
     setDateRange(start, end)
-    const fresh = generateSchedule(dispatchers, start, end, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides)
+    const fresh = generateSchedule(dispatchers, start, end, timeOff, weekendRotationOffset + regenSeed.current, coverageOverrides, secondOffRotationOffset)
     setSchedule(fresh)
     setExpandedDates(new Set())
   }
@@ -278,7 +280,7 @@ export function ScheduleGrid() {
       version: SCHEMA_VERSION,
       team: 'dispatchers',
       exportedAt: new Date().toISOString(),
-      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, coverageOverrides, schedule },
+      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, schedule },
     })
   }
 
@@ -366,7 +368,7 @@ export function ScheduleGrid() {
               team="dispatchers"
               collectSnapshot={() => ({
                 dispatchers, startDate, endDate, timeOff, absenceReasons,
-                weekendRotationOffset, coverageOverrides, schedule,
+                weekendRotationOffset, secondOffRotationOffset, coverageOverrides, schedule,
               })}
             />
           </div>
@@ -452,6 +454,14 @@ export function ScheduleGrid() {
             Regenerate
           </button>
           <button
+            onClick={() => setRulesOpen(true)}
+            title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
+            className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            <ScrollText className="h-4 w-4" />
+            Rules
+          </button>
+          <button
             onClick={handleExportJson}
             title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
             className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
@@ -476,7 +486,15 @@ export function ScheduleGrid() {
         )}
         {/* Non-admin: still let dispatchers grab their own PDF. */}
         {!isAdmin && (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setRulesOpen(true)}
+              title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
+              className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <ScrollText className="h-4 w-4" />
+              Rules
+            </button>
             <PdfMenu
               dispatchers={dispatchers}
               loading={pdfLoading}
@@ -1052,6 +1070,99 @@ export function ScheduleGrid() {
           </div>
         )
       })()}
+
+      {/* "See Rules Applied" — the standing hard rules the generator runs
+          under, plus this schedule's week-by-week rotating 2nd-day-off
+          decisions (grant / skip-and-defer with the reason). */}
+      {rulesOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+          onClick={() => setRulesOpen(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-3">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 text-base font-semibold text-slate-800">
+                  <ScrollText className="h-4 w-4 text-slate-500" />
+                  Rules applied to this schedule
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {schedule.startDate} → {schedule.endDate}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRulesOpen(false)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Hard rules</h4>
+              <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-4 text-[13px] leading-snug text-slate-600">
+                <li>Everyone gets at least 1 full day off per work week (Thu–Wed) — never more than 6 days worked.</li>
+                <li>Max 5 hours of consecutive work, then a 30-minute break. Breaks never land inside the lunch (12–2 PM) or dinner (5–8 PM) peaks.</li>
+                <li>Coverage targets are hard minimums: no slot is ever left at 0, and any shortfall is at most 1 dispatcher deep, outside the peaks.</li>
+                <li>Weekends run staggered edges: exactly 1 opener at 8 AM, one morning ending 3 PM and one ending 4 PM, both covering the whole lunch peak.</li>
+                <li>Weekend days off rotate fairly — 1 dispatcher off Saturday, 1 off Sunday, never the same person both days.</li>
+                <li>A recurring fully-blocked weekday counts as that dispatcher's weekly rest day.</li>
+                <li>Days-off cap per week: Trainees 1, Regulars and Seniors up to 2.</li>
+              </ul>
+
+              <h4 className="mt-5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                <CalendarCheck2 className="h-3.5 w-3.5" />
+                Rotating 2nd day off — this schedule
+              </h4>
+              <p className="mt-1.5 text-xs leading-snug text-slate-500">
+                Regulars and Seniors take turns (roster order) at a 2nd day off. A turn is granted
+                only when the week can afford it: at most +1 under-target unit, never inside a peak,
+                never creating a 0-coverage slot, shortfall depth ≤ 1. A skipped turn is deferred —
+                the same dispatcher stays first in line.
+              </p>
+              {(schedule.secondOffLog?.length ?? 0) === 0 ? (
+                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  No rotation record on this schedule (generated before this feature, or no full weeks in range).
+                </p>
+              ) : (
+                <ul className="mt-3 flex flex-col divide-y divide-slate-100">
+                  {schedule.secondOffLog!.map((rec) => (
+                    <li key={rec.weekLabel} className="flex items-center justify-between gap-3 py-2 text-[13px]">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-700">{rec.weekLabel}</div>
+                        <div className="mt-0.5 text-xs text-slate-500">
+                          {rec.candidateName}
+                          {rec.granted && rec.date && (
+                            <> — off {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(rec.date + 'T12:00:00').getDay()]} {rec.date.slice(5)}</>
+                          )}
+                          {!rec.granted && <> — {rec.reason}</>}
+                        </div>
+                      </div>
+                      <span
+                        className={clsx(
+                          'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold',
+                          rec.granted
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-amber-200 bg-amber-50 text-amber-700',
+                        )}
+                        title={rec.reason}
+                      >
+                        {rec.granted
+                          ? `granted${typeof rec.unitDelta === 'number' && rec.unitDelta > 0 ? ` (+${rec.unitDelta})` : ''}`
+                          : 'skipped · turn carried'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

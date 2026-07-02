@@ -45,6 +45,10 @@ interface SchedulerStore {
   absenceReasons: AbsenceReasonMap
   /** Persisted weekend-off rotation cursor — see driver store comment. */
   weekendRotationOffset: number
+  /** Persisted rotating 2nd-day-off cursor (Regular/Senior roster order).
+   *  Advances by the number of GRANTED weeks only — a skipped turn keeps
+   *  the same dispatcher first in line for the next period. */
+  secondOffRotationOffset: number
   /**
    * Per day-of-week (0=Sun..6=Sat) override of the 19-slot required-coverage
    * array. Edited from the Period step's coverage grid; absent days fall
@@ -67,6 +71,7 @@ interface SchedulerStore {
   setCoverageOverride: (dayOfWeek: number, slotIndex: number, value: number) => void
   resetCoverageOverrides: () => void
   advanceWeekendRotation: (weeks: number) => void
+  advanceSecondOffRotation: (grants: number) => void
   toggleFullDayOff: (dispatcherId: string, date: string) => void
   toggleBlockedSlot: (dispatcherId: string, date: string, slotIndex: number) => void
   applyAbsenceRange: (
@@ -115,6 +120,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   timeOff: {},
   absenceReasons: {},
   weekendRotationOffset: 0,
+  secondOffRotationOffset: 0,
   coverageOverrides: {},
   schedule: null,
   scheduleUndoStack: [],
@@ -188,6 +194,9 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
 
   advanceWeekendRotation: (weeks) =>
     set((s) => ({ weekendRotationOffset: s.weekendRotationOffset + Math.max(0, Math.floor(weeks)) })),
+
+  advanceSecondOffRotation: (grants) =>
+    set((s) => ({ secondOffRotationOffset: s.secondOffRotationOffset + Math.max(0, Math.floor(grants)) })),
 
   toggleFullDayOff: (dispatcherId, date) =>
     set((s) => {
@@ -344,6 +353,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+      secondOffRotationOffset: data.secondOffRotationOffset ?? s.secondOffRotationOffset,
       // Snapshots exported before the July 2026 target calibration carry
       // the legacy weekend override values — rewrite matching cells.
       coverageOverrides: calibrateLegacyWeekendOverrides(data.coverageOverrides) ?? {},
@@ -359,6 +369,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       return {
         dispatchers: data.dispatchers ?? s.dispatchers,
         weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
+        secondOffRotationOffset: data.secondOffRotationOffset ?? s.secondOffRotationOffset,
         coverageOverrides: data.coverageOverrides ?? s.coverageOverrides,
         startDate: nextStart,
         endDate: nextEnd,
@@ -409,6 +420,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
     timeOff: state.timeOff,
     absenceReasons: state.absenceReasons,
     weekendRotationOffset: state.weekendRotationOffset,
+    secondOffRotationOffset: state.secondOffRotationOffset,
     coverageOverrides: state.coverageOverrides,
     schedule: state.schedule,
   }),

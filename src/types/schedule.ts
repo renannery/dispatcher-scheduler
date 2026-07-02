@@ -93,6 +93,24 @@ export interface GeneratedSchedule {
       slotIndex?: number
     }[]
   >
+  /** Per-week record of the rotating 2nd-day-off perk: who was up in the
+   *  rotation, whether the grant passed the feasibility bar (≤ +1
+   *  under-target unit for the week, never inside a peak, never a
+   *  0-coverage slot, depth ≤ 1), and why a skip happened. A skipped
+   *  turn is DEFERRED — the same dispatcher stays up next week. */
+  secondOffLog?: SecondOffRecord[]
+}
+
+export interface SecondOffRecord {
+  weekLabel: string
+  candidateId: string
+  candidateName: string
+  granted: boolean
+  /** Granted day (yyyy-MM-dd) when granted. */
+  date?: string
+  /** Week under-target units delta vs the no-grant baseline. */
+  unitDelta?: number
+  reason: string
 }
 
 export type Step = 'names' | 'period' | 'schedule'

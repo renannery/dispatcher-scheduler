@@ -28,6 +28,7 @@ import type {
   DispatcherSchedule,
   DispatcherTimeOff,
   GeneratedSchedule,
+  SecondOffRecord,
 } from '@/types/schedule'
 
 // ---------------------------------------------------------------------------
@@ -168,7 +169,17 @@ function assignMandatoryRest(
     // either). Seed rotates the assignment so Regenerate varies who
     // rests when.
     const HOME_REST_DOWS = [1, 1, 1, 2, 3, 4, 5] // Mon,Mon,Mon,Tue,Wed,Thu,Fri
-    const homeDow = HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
+    // A standing full-day RECURRING block (e.g. off every Tuesday for
+    // months) IS this dispatcher's home rest day: a stable weekly
+    // cadence with exactly-7-day gaps by construction, set by the
+    // human as the source of truth. Adopting it means Step 1 consumes
+    // it as the weekly rest every single week, no lock is ever stacked
+    // on top of it, and the vacation cadence-rescue below must NOT
+    // fire for it (the rescue exists for one-off vacations that break
+    // a cadence — a recurring day IS the cadence).
+    const recurringHomeDow = fullDayRecurringDow(d)
+    const homeDow =
+      recurringHomeDow ?? HOME_REST_DOWS[(dispIdx + (seed >>> 0)) % HOME_REST_DOWS.length]
 
     weekOrder.forEach((wLbl) => {
       const weekDates = weekBuckets.get(wLbl)!
@@ -205,6 +216,11 @@ function assignMandatoryRest(
         // the vacation week simply absorbs one extra off day. When the
         // vacation is ON or AFTER the home day, next week is reachable
         // and we skip Step 2 as before.
+        // Recurring-home dispatchers never need the rescue: their
+        // recurring day IS the cadence (same weekday every week, gap
+        // exactly 7) — rescuing would stack a second lock on top of
+        // the standing day, permanently doubling their weekly offs.
+        if (recurringHomeDow !== null) return
         const homeThisWeek = weekDates.find((dt) => dt.getDay() === homeDow)
         const needsAnchor =
           homeThisWeek !== undefined && differenceInDays(homeThisWeek, lastRestDate) >= 1
@@ -1253,6 +1269,20 @@ export function smoothTransitions(args: {
 // Main generator
 // ---------------------------------------------------------------------------
 
+/** First weekday (0–6) the dispatcher has a standing FULL-DAY recurring
+ *  block on, or null. A full-day recurring block is that person's
+ *  guaranteed 1st day off every week — Phase 0 adopts it as their home
+ *  rest day and never stacks a lock on top. */
+function fullDayRecurringDow(dispatcher: Dispatcher): number | null {
+  const rb = dispatcher.recurringBlocks
+  if (!rb) return null
+  for (let dow = 0; dow < 7; dow++) {
+    const bm = rb[dow]
+    if (bm && bm.length > 0 && bm.every(Boolean)) return dow
+  }
+  return null
+}
+
 function blockedBitmap(
   timeOff: DispatcherTimeOff,
   dispatcher: Dispatcher,
@@ -1270,13 +1300,17 @@ function blockedBitmap(
   return out
 }
 
-export function generateSchedule(
+/** One full generation pass. `grantPlan` (weekLabel → {dispId, date})
+ *  injects the rotating 2nd-day-off grants through the elect channel —
+ *  the wrapper below plans, audits and defers them. */
+function generateCore(
   dispatchers: Dispatcher[],
   startDate: string,
   endDate: string,
   timeOff: DispatcherTimeOff,
   seed = 0,
   coverageOverrides: Record<number, number[]> = {},
+  grantPlan?: Map<string, { dispId: string; date: string }>,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const end = parseISO(endDate)
@@ -1598,6 +1632,23 @@ export function generateSchedule(
     const electedOffIds = new Set(
       eligibleForOff.slice(0, desiredElectedOff).map((d) => d.id),
     )
+    // ── Phase 0.5 grant injection — rotating 2nd day off ──────────────
+    // The wrapper plans exactly one grant per week (Regular/Senior
+    // rotation); today being the planned day, elect that dispatcher off
+    // through the normal channel so ALL downstream machinery applies:
+    // off-day accounting below, the 2-day cap, and the rescue /
+    // must-work / 2nd-off-prevention passes that pull an elect back in
+    // when a real gap appears. The wrapper's post-generation audit is
+    // the feasibility bar; this injection is only the mechanism.
+    const grant = grantPlan?.get(wLabel)
+    let grantedTodayId: string | null = null
+    if (grant && grant.date === dateStr && !electedOffIds.has(grant.dispId)) {
+      const gd = availablePool.find((d) => d.id === grant.dispId)
+      if (gd && (weekOffDays[gd.id][wLabel] ?? 0) < maxDaysOffFor(gd.level)) {
+        electedOffIds.add(gd.id)
+        grantedTodayId = gd.id
+      }
+    }
     for (const id of electedOffIds) {
       weekOffDays[id][wLabel] = (weekOffDays[id][wLabel] ?? 0) + 1
       offByDow[id][dow] = (offByDow[id][dow] ?? 0) + 1
@@ -2067,12 +2118,19 @@ export function generateSchedule(
       // Phase 0 lock is inviolable. rescue may still refund an
       // electedOffIds member (existing behavior), but a rest lock is
       // not electable off — it never entered availablePool as elected.
-      const rescuePool = isWeekend
+      // The rotation GRANTEE is exempt from rescue: rescue's fill≥2 test
+      // runs against absolute deficits, and the break-tax baseline
+      // always carries ≥2 units — it would cancel every grant. The
+      // wrapper's audit (delta vs no-grant baseline, bar (b)) is the
+      // grant's feasibility gate; the evening-floor hard pass below
+      // still overrides a grant when a slot would collapse.
+      const rescuePool = (isWeekend
         ? sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr))
         : [
             ...availablePool.filter((d) => electedOffIds.has(d.id) && !restLocks[d.id].has(dateStr)),
             ...sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr)),
           ]
+      ).filter((d) => d.id !== grantedTodayId)
       for (let safety = 0; safety < 50; safety++) {
         // Build the deficit vector: how many MORE bodies each slot needs.
         const deficit = dayRequired.map((req, i) => Math.max(0, req - cov[i]))
@@ -2230,6 +2288,7 @@ export function generateSchedule(
       const candidatePool = availablePool.filter(
         (d) =>
           !usedIds.has(d.id) &&
+          d.id !== grantedTodayId && // rotation grant exempt (see rescue note)
           !restLocks[d.id].has(dateStr) && // defensive: rest lock overrides 2nd-off-prevention
           (weekOffDays[d.id][wLabel] ?? 0) === 1,
       )
@@ -2310,10 +2369,15 @@ export function generateSchedule(
         }
         return out
       }
+      // The rotation grantee is exempt from the floor PULL (like rescue):
+      // floor breaches at this pipeline stage are often transient (the
+      // swap/stretch/repair passes close them), and the wrapper's audit
+      // rejects any grant whose final week carries a zero or deep slot —
+      // real collapses still defeat the grant, by rejection not by pull.
       const floorPool = [
         ...availablePool.filter((d) => electedOffIds.has(d.id) && !restLocks[d.id].has(dateStr)),
         ...sortedWorking.filter((d) => !usedIds.has(d.id) && !restLocks[d.id].has(dateStr)),
-      ]
+      ].filter((d) => d.id !== grantedTodayId)
       for (let safety = 0; safety < 10; safety++) {
         const breaches = breachSlots()
         if (breaches.length === 0) break
@@ -2558,6 +2622,233 @@ export function generateSchedule(
   }))
 
   return { startDate, endDate, seed, dates, dispatcherSchedules, coverageActual, coverageRequired, coverageWarnings }
+}
+
+// ---------------------------------------------------------------------------
+// Rotating 2nd day off — plan → generate → audit → defer wrapper.
+//
+// Exactly one Regular/Senior dispatcher per week is up for a 2nd day off,
+// in fixed roster order, starting from the persisted rotation cursor.
+// A grant must pass FEASIBILITY BAR (b): the week's under-target units
+// rise by at most +1, no 0-coverage slot, no under-slot deeper than 1,
+// and no NEW under-coverage inside a peak window. Weeks that can't
+// afford it are SKIPPED and the turn is DEFERRED — the same dispatcher
+// stays up next week; the pointer advances only on a successful grant.
+//
+// Mechanics: generate a no-grant baseline, plan one grant per full week
+// (lightest feasible day for the candidate), regenerate with the plan
+// injected through the elect channel, audit every granted week against
+// the bar, and replan with failed (week, person, day) combos memoized —
+// first retrying the candidate's next-best day, then deferring. The
+// fixpoint converges because the failure memo only grows; if it hasn't
+// converged within the pass budget the schedule falls back to the
+// no-grant baseline (the perk silently defers rather than ever breaking
+// coverage). Every decision lands in `secondOffLog` for the UI.
+// ---------------------------------------------------------------------------
+
+export function generateSchedule(
+  dispatchers: Dispatcher[],
+  startDate: string,
+  endDate: string,
+  timeOff: DispatcherTimeOff,
+  seed = 0,
+  coverageOverrides: Record<number, number[]> = {},
+  secondOffCursor = 0,
+): GeneratedSchedule {
+  const baseline = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides)
+  const eligible = dispatchers.filter((d) => d.level !== 'Trainee')
+  if (eligible.length === 0 || baseline.dates.length === 0) {
+    return { ...baseline, secondOffLog: [] }
+  }
+
+  // Full weeks only (partial edge weeks never carry a grant).
+  const weekMap = new Map<string, GeneratedSchedule['dates']>()
+  for (const d of baseline.dates) {
+    if (!weekMap.has(d.weekLabel)) weekMap.set(d.weekLabel, [])
+    weekMap.get(d.weekLabel)!.push(d)
+  }
+  const fullWeeks = [...weekMap.entries()].filter(([, ds]) => ds.length === 7)
+  if (fullWeeks.length === 0) return { ...baseline, secondOffLog: [] }
+
+  // Rest locks are deterministic — re-derive them for plan-time
+  // knowledge of each candidate's existing offs.
+  const start = parseISO(startDate)
+  const nDays = differenceInDays(parseISO(endDate), start) + 1
+  const allDates = Array.from({ length: nDays }, (_, i) => addDays(start, i))
+  const { restLocks } = assignMandatoryRest(dispatchers, allDates, timeOff, seed, coverageOverrides)
+
+  const dayUnits = (s: GeneratedSchedule, date: string) => {
+    const req = s.coverageRequired?.[date] ?? []
+    const act = s.coverageActual[date] ?? []
+    return req.reduce((u, r, i) => u + (r > 0 ? Math.max(0, r - (act[i] ?? 0)) : 0), 0)
+  }
+  const weekMetrics = (s: GeneratedSchedule, dates: GeneratedSchedule['dates']) => {
+    let units = 0
+    let zeros = 0
+    let deep = 0
+    let peakUnders = 0
+    for (const { date } of dates) {
+      const req = s.coverageRequired?.[date] ?? []
+      const act = s.coverageActual[date] ?? []
+      req.forEach((r, i) => {
+        const a = act[i] ?? 0
+        if (r > 0 && a < r) {
+          units += r - a
+          if (a === 0) zeros++
+          if (r - a > 1) deep++
+          if (PEAK_SLOT_SET.has(i)) peakUnders++
+        }
+      })
+    }
+    return { units, zeros, deep, peakUnders }
+  }
+  const offsInWeek = (s: GeneratedSchedule, dispId: string, dates: GeneratedSchedule['dates']) => {
+    const ds = s.dispatcherSchedules.find((x) => x.dispatcher.id === dispId)
+    if (!ds) return 0
+    const set = new Set(dates.map((d) => d.date))
+    return ds.days.filter((d) => set.has(d.date) && d.isOff).length
+  }
+  const knownOffDates = (disp: Dispatcher, dates: GeneratedSchedule['dates']) => {
+    const out = new Set<string>()
+    for (const { date, dayOfWeek } of dates) {
+      if (restLocks[disp.id]?.has(date)) out.add(date)
+      const bm = blockedBitmap(timeOff, disp, date, dayOfWeek)
+      if (bm && bm.length > 0 && bm.every(Boolean)) out.add(date)
+    }
+    return out
+  }
+  const demandHours = (dow: number) =>
+    effectiveCoverage(dow, coverageOverrides).reduce((s, r, i) => s + r * SLOTS[i].hours, 0)
+  // Roster-wide known offs per date (rest locks + full-day blocks):
+  // the BEST grant days are the ones with the most bodies available —
+  // rest-thinned weekdays have no slack to absorb a missing body,
+  // while Fri/Sat/Sun (no rest locks) absorb one routinely.
+  const dayOffPressure = new Map<string, number>()
+  for (const dInfo of baseline.dates) {
+    let n = 0
+    for (const disp of dispatchers) {
+      if (restLocks[disp.id]?.has(dInfo.date)) n++
+      else {
+        const bm = blockedBitmap(timeOff, disp, dInfo.date, dInfo.dayOfWeek)
+        if (bm && bm.length > 0 && bm.every(Boolean)) n++
+      }
+    }
+    dayOffPressure.set(dInfo.date, n)
+  }
+
+  const ptr0 = ((secondOffCursor % eligible.length) + eligible.length) % eligible.length
+  // (weekLabel → set of "dispId|date") combos that failed the bar.
+  const failedCombos = new Map<string, Set<string>>()
+  let result: GeneratedSchedule = baseline
+  let finalLog: SecondOffRecord[] = []
+
+  const MAX_PASSES = 12
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    // (Re)plan with everything the failure memo knows.
+    const plan = new Map<string, { dispId: string; date: string }>()
+    const draft: SecondOffRecord[] = []
+    let ptr = ptr0
+    for (const [wl, dates] of fullWeeks) {
+      const cand = eligible[ptr]
+      const rec: SecondOffRecord = {
+        weekLabel: wl,
+        candidateId: cand.id,
+        candidateName: cand.name,
+        granted: false,
+        reason: '',
+      }
+      const known = knownOffDates(cand, dates)
+      if (known.size >= maxDaysOffFor(cand.level)) {
+        rec.reason = `already at ${known.size} days off this week (rest + vacation/recurring) — cap is 2; turn carried`
+        draft.push(rec)
+        continue // defer — pointer stays on this person
+      }
+      const tried = failedCombos.get(wl)
+      const candidateDays = dates
+        .filter((d) => !known.has(d.date) && !tried?.has(cand.id + '|' + d.date))
+        .sort((a, b) => {
+          const pa = dayOffPressure.get(a.date) ?? 0
+          const pb = dayOffPressure.get(b.date) ?? 0
+          if (pa !== pb) return pa - pb // most bodies available first
+          const ua = dayUnits(baseline, a.date)
+          const ub = dayUnits(baseline, b.date)
+          if (ua !== ub) return ua - ub
+          return demandHours(a.dayOfWeek) - demandHours(b.dayOfWeek)
+        })
+      if (candidateDays.length === 0) {
+        rec.reason = tried?.size
+          ? 'no day passes the feasibility bar (≤ +1 unit, no peak/zero, depth ≤ 1); turn carried'
+          : 'no free day available this week; turn carried'
+        draft.push(rec)
+        continue // defer
+      }
+      const day = candidateDays[0]
+      plan.set(wl, { dispId: cand.id, date: day.date })
+      rec.granted = true
+      rec.date = day.date
+      draft.push(rec)
+      ptr = (ptr + 1) % eligible.length // optimistic — verified by audit
+    }
+
+    if (plan.size === 0) {
+      result = baseline
+      finalLog = draft
+      break
+    }
+
+    const attempt = generateCore(dispatchers, startDate, endDate, timeOff, seed, coverageOverrides, plan)
+
+    // Audit every planned grant against feasibility bar (b).
+    let violations = 0
+    for (const rec of draft) {
+      if (!rec.granted || !rec.date) continue
+      const dates = weekMap.get(rec.weekLabel)!
+      const base = weekMetrics(baseline, dates)
+      const now = weekMetrics(attempt, dates)
+      const offs = offsInWeek(attempt, rec.candidateId, dates)
+      const delta = now.units - base.units
+      const ok =
+        offs >= 2 &&
+        delta <= 1 &&
+        now.zeros === 0 &&
+        now.deep === 0 &&
+        now.peakUnders <= base.peakUnders
+      if (typeof process !== 'undefined' && process.env.DEBUG_GRANT) {
+        console.log(
+          `[grant-audit p${pass}] ${rec.weekLabel} ${rec.candidateName}@${rec.date}: offs=${offs} d=${delta} zeros=${now.zeros} deep=${now.deep} peak ${base.peakUnders}->${now.peakUnders} => ${ok ? 'OK' : 'FAIL'}`,
+        )
+      }
+      if (ok) {
+        rec.unitDelta = delta
+        rec.reason =
+          delta <= 0
+            ? 'granted — no coverage cost'
+            : 'granted — +1 shoulder unit (within the accepted envelope)'
+      } else {
+        violations++
+        if (!failedCombos.has(rec.weekLabel)) failedCombos.set(rec.weekLabel, new Set())
+        failedCombos.get(rec.weekLabel)!.add(rec.candidateId + '|' + rec.date)
+      }
+    }
+
+    if (violations === 0) {
+      result = attempt
+      finalLog = draft
+      break
+    }
+    if (pass === MAX_PASSES - 1) {
+      // Pass budget exhausted — fall back to the no-grant baseline: the
+      // perk defers entirely rather than ever shipping a bar violation.
+      result = baseline
+      finalLog = draft.map((r) =>
+        r.granted
+          ? { ...r, granted: false, date: undefined, unitDelta: undefined, reason: 'grant audit did not converge — turn carried' }
+          : r,
+      )
+    }
+  }
+
+  return { ...result, secondOffLog: finalLog }
 }
 
 // ---------------------------------------------------------------------------

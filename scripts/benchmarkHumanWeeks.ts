@@ -80,6 +80,14 @@ const overrides = calibrateLegacyWeekendOverrides({
 const s = generateSchedule(roster, '2026-06-25', '2026-07-08', timeOff, 48, overrides)
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
+// The rotating 2nd-day-off perk (cursor 0) is active in this run — the
+// feasibility bar allows at most +1 under-target unit per GRANTED week,
+// so the B5 non-absence allowance grows by 1 per grant. Bar-(b)
+// violations (0-coverage slot, depth > 1, peak residual) still fail
+// through the unchanged B1/B5 checks.
+const grantedWeeks = (s.secondOffLog ?? []).filter((r) => r.granted).length
+const B5_ALLOWANCE = 8 + grantedWeeks
+
 let zeroFails = 0
 let depthFails = 0
 let peakResidualFails = 0
@@ -158,9 +166,14 @@ console.log(`  B4 avg |gen − human| per slot:     ${avgAbs.toFixed(2)} ${avgAb
 console.log(`  B5 under-target residuals:         ${residuals.join(' · ') || 'none'}`)
 console.log(`     depth > 1:                      ${depthFails === 0 ? '0 ✓' : `${depthFails} ← FAIL`}`)
 console.log(`     inside a peak window:           ${peakResidualFails === 0 ? '0 ✓' : `${peakResidualFails} ← FAIL`}`)
-console.log(`     units on NON-absence days:      ${residualOffDays} ${residualOffDays <= 8 ? '✓ (≤8)' : '← FAIL (>8)'}`)
+console.log(`     units on NON-absence days:      ${residualOffDays} ${residualOffDays <= B5_ALLOWANCE ? `✓ (≤${B5_ALLOWANCE})` : `← FAIL (>${B5_ALLOWANCE})`}`)
+
+console.log('\n 2nd-day-off rotation (cursor 0):')
+for (const r of s.secondOffLog ?? []) {
+  console.log(`   ${r.weekLabel}: ${r.granted ? `GRANT ${r.candidateName} ${r.date} (Δ${r.unitDelta})` : `skip ${r.candidateName} — ${r.reason}`}`)
+}
 
 const pass = zeroFails === 0 && dinnerFails === 0 && edgeFails.length === 0 && avgAbs <= 0.6 &&
-  depthFails === 0 && peakResidualFails === 0 && residualOffDays <= 8
+  depthFails === 0 && peakResidualFails === 0 && residualOffDays <= B5_ALLOWANCE
 console.log(`\n FINAL — ${pass ? 'PASS' : 'FAIL'}`)
 if (!pass) process.exit(1)
