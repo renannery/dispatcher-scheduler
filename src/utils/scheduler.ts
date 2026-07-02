@@ -2566,6 +2566,114 @@ export function generateCore(
       console.info(`[smoothTransitions] ${dateStr} ${SLOTS[i].label}: no eligible neighbor → warning`)
     }
 
+    // ── splits → two continuous shifts (coverage-preserving) ──────────
+    // A split covers BOTH peaks in one body, so the greedy picker favors
+    // it and its complement fragments land as 4h shifts. Wherever the
+    // SAME coverage is achievable with two balanced continuous shifts,
+    // do that instead — splits recede to the exception the human team
+    // actually uses (thin rosters where one body must bridge both
+    // peaks). Runs LAST on FINAL coverage and applies a conversion ONLY
+    // when the replacement pair dominates the (split + partner) pair on
+    // EVERY slot — so no slot drops below its prior coverage, no target
+    // is missed and no zero opens (coverage-target-wins) — and every
+    // peak that had a continuity anchor still has one. Prefers the
+    // shortest partner, so it eats a 4h fragment each time it fires.
+    {
+      const contPatterns = patternMeta.filter((pm) => pm.maxBreak < SPLIT_GAP_MIN_HOURS)
+      const idxOf = (bool: boolean[]) => patternMeta.findIndex((pm) => pm.bool === bool)
+      const isSplit = (bool: boolean[]) => patternMaxBreakHours(bool, SLOTS) >= SPLIT_GAP_MIN_HOURS
+      const peaksAnchored = (asgs: typeof assignments) =>
+        PEAK_WINDOWS.filter((peak) => asgs.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)))
+      for (let guard = 0; guard < 6; guard++) {
+        const anchorsBefore = peaksAnchored(assignments)
+        const dayCov = new Array(SLOTS.length).fill(0)
+        for (const a of assignments) a.pattern.forEach((on, i) => { if (on) dayCov[i]++ })
+        let fired = false
+        for (const S of assignments.filter((a) => isSplit(a.pattern))) {
+          const sIdx = idxOf(S.pattern)
+          if (sIdx < 0) continue
+          // SOLO conversion first: replace the split with ONE continuous
+          // shift when one of its blocks is redundant (the slots it drops
+          // are already covered to target by others). Catches the common
+          // case where a body needn't bridge both peaks — the split's
+          // morning block is superfluous because other shapes hold lunch.
+          {
+            const usedExclS = new Set([...usedIds].filter((id) => id !== S.dispatcher.id))
+            let soloDone = false
+            for (const c1 of contPatterns) {
+              if (usedPatternIdx.has(c1.idx) && c1.idx !== sIdx) continue
+              if (c1.hours > slotHours(S.pattern) + 1.5) continue
+              if (!isEligibleForPattern(S.dispatcher, c1, { ...enforceCtx, usedIds: usedExclS })) continue
+              let safe = true
+              for (let i = 0; i < SLOTS.length; i++) {
+                const delta = (c1.bool[i] ? 1 : 0) - (S.pattern[i] ? 1 : 0)
+                if (dayCov[i] + delta < Math.min(dayCov[i], dayRequired[i])) { safe = false; break }
+              }
+              if (!safe) continue
+              const trial = assignments.map((a) =>
+                a === S ? { dispatcher: S.dispatcher, pattern: c1.bool } : a)
+              if (anchorsBefore.some((pk) => !peaksAnchored(trial).includes(pk))) continue
+              usedPatternIdx.delete(sIdx); usedPatternIdx.add(c1.idx)
+              S.pattern = c1.bool
+              fired = true; soloDone = true
+              break
+            }
+            if (soloDone) break // restart scan
+          }
+          const partners = assignments
+            .filter((P) => P !== S && !isSplit(P.pattern))
+            .sort((a, b) => slotHours(a.pattern) - slotHours(b.pattern)) // shortest (4h) first
+          let done = false
+          for (const P of partners) {
+            if (done) break
+            const pIdx = idxOf(P.pattern)
+            if (pIdx < 0) continue
+            const oldPair = S.pattern.map((v, i) => (v ? 1 : 0) + (P.pattern[i] ? 1 : 0))
+            const oldHours = slotHours(S.pattern) + slotHours(P.pattern)
+            const freeIdx = new Set([sIdx, pIdx])
+            const usedExclS = new Set([...usedIds].filter((id) => id !== S.dispatcher.id))
+            const usedExclP = new Set([...usedIds].filter((id) => id !== P.dispatcher.id))
+            for (const c1 of contPatterns) {
+              if (done) break
+              if (usedPatternIdx.has(c1.idx) && !freeIdx.has(c1.idx)) continue
+              if (!isEligibleForPattern(S.dispatcher, c1, { ...enforceCtx, usedIds: usedExclS })) continue
+              for (const c2 of contPatterns) {
+                if (c1.idx === c2.idx) continue
+                if (usedPatternIdx.has(c2.idx) && !freeIdx.has(c2.idx)) continue
+                if (c1.hours + c2.hours > oldHours + 1.5) continue // stay hours-neutral
+                if (!isEligibleForPattern(P.dispatcher, c2, { ...enforceCtx, usedIds: usedExclP })) continue
+                // Coverage-safe: no slot may drop below its target or
+                // below its prior (already-residual) coverage — the
+                // replacement may shed OVER-coverage the split carried,
+                // but never miss a target or open a zero.
+                let safe = true
+                for (let i = 0; i < SLOTS.length; i++) {
+                  const delta = (c1.bool[i] ? 1 : 0) + (c2.bool[i] ? 1 : 0) - oldPair[i]
+                  if (dayCov[i] + delta < Math.min(dayCov[i], dayRequired[i])) { safe = false; break }
+                }
+                if (!safe) continue
+                // Anchor-preserving: no peak may lose its anchor.
+                const trial = assignments.map((a) =>
+                  a === S ? { dispatcher: S.dispatcher, pattern: c1.bool }
+                  : a === P ? { dispatcher: P.dispatcher, pattern: c2.bool }
+                  : a)
+                if (anchorsBefore.some((pk) => !peaksAnchored(trial).includes(pk))) continue
+                // Commit the conversion.
+                usedPatternIdx.delete(sIdx); usedPatternIdx.delete(pIdx)
+                usedPatternIdx.add(c1.idx); usedPatternIdx.add(c2.idx)
+                S.pattern = c1.bool
+                P.pattern = c2.bool
+                fired = true; done = true
+                break
+              }
+            }
+          }
+          if (done) break // restart the scan with updated assignments
+        }
+        if (!fired) break
+      }
+    }
+
     // Any leftover unassigned working dispatchers ARE off today — count
     // that toward their weekly off-day tally so the next day's
     // eligibleForOff filter sees them at the cap. Without this the cap
