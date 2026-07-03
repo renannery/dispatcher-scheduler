@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, MAX_CONSECUTIVE_HOURS, MEAL_BREAK_HOURS, patternMaxBreakHours, patternTotalBreakHours, patternWorkBlocks, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, MEAL_BREAK_TRIGGER_HOURS, MEAL_BREAK_HOURS, patternMaxBreakHours, patternTotalBreakHours, SLOTS } from '@/data/coverageTemplate'
 import { useIsAdmin } from '@/store/adminStore'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import type { GeneratedSchedule } from '@/types/schedule'
@@ -273,14 +273,12 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                     {!isOff && entry && (() => {
                       const h = entry.totalHours ?? 0
                       const brk = patternMaxBreakHours(entry.slots, SLOTS)
-                      const blocks = patternWorkBlocks(entry.slots, SLOTS)
-                      const maxBlock = blocks.length ? Math.max(...blocks) : 0
                       let problem: string | null = null
-                      // Labor law (Section 23): >5h consecutive needs the 30-min meal break.
-                      if (maxBlock > MAX_CONSECUTIVE_HOURS) {
-                        problem = `${maxBlock}h consecutive work > ${MAX_CONSECUTIVE_HOURS}h legal max — needs the ${MEAL_BREAK_HOURS}h meal break inside that block`
-                      } else if (h > MAX_CONSECUTIVE_HOURS && brk < MEAL_BREAK_HOURS) {
-                        problem = `${h}h shift needs the ${MEAL_BREAK_HOURS}h meal break — has ${brk}h (Section 23)`
+                      // Cayman salaried law: no hard 5h consecutive cap, but a
+                      // shift LONGER than 5h must carry one 30-min paid break
+                      // (placed after the heavy block, in a post-peak trough).
+                      if (h > MEAL_BREAK_TRIGGER_HOURS && brk < MEAL_BREAK_HOURS) {
+                        problem = `${h}h shift (>5h) needs a ${MEAL_BREAK_HOURS}h paid break — has ${brk}h`
                       }
                       if (!problem) return null
                       return (

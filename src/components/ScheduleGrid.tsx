@@ -1106,7 +1106,7 @@ export function ScheduleGrid() {
               <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Hard rules</h4>
               <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-4 text-[13px] leading-snug text-slate-600">
                 <li>Everyone gets at least 1 full day off per work week (Thu–Wed) — never more than 6 days worked.</li>
-                <li>Max 5 hours of consecutive work, then a 30-minute break. Breaks never land inside the lunch (12–2 PM) or dinner (5–8 PM) peaks.</li>
+                <li>Salaried staff have no hard 5-hour work cap — a block may run up to the 9-hour daily max. Any shift over 5 hours still includes one 30-minute paid break, placed after the heavy block in a demand trough (e.g. right after dinner ~8 PM or after lunch ~2 PM), never inside the lunch (11:30–2 PM) or dinner (5–8 PM) peaks, and staggered so the floor never empties.</li>
                 <li>Coverage targets are hard minimums: no slot is ever left at 0, and any shortfall is at most 1 dispatcher deep, outside the peaks.</li>
                 <li>Weekends run staggered edges: exactly 1 opener at 8 AM, one morning ending 3 PM and one ending 4 PM, both covering the whole lunch peak.</li>
                 <li>Weekend days off rotate fairly — 1 dispatcher off Saturday, 1 off Sunday, never the same person both days.</li>

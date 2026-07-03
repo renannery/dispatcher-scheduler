@@ -33,11 +33,13 @@
  * Shape rules (enforced by the build-time assertion below AND at runtime
  * via isValidShiftShape):
  *   ≤ 1 break per day, exactly MEAL_BREAK_HOURS (30 min) when present
- *   No worked stretch over MAX_CONSECUTIVE_HOURS (5 h) — labor law
+ *   NO hard 5h consecutive cap (Cayman salaried law) — a block may run up
+ *     to the 9h daily max; the break, when due, comes AFTER the heavy block
  *   First stretch ≥ MIN_BLOCK_HOURS (3 h); the post-break tail may be
  *     shorter (e.g. weekday Morning's 1.5h tail) because the paid meal
  *     break does not fragment the continuous presence
- *   > 5 h worked → the meal break is mandatory
+ *   > 5 h worked → one 30-min break, placed in a demand trough
+ *     (post-lunch ~14:00 / post-dinner ~20:00), never inside a peak
  *   Mon–Fri: at least one stretch ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5 h)
  *   Max work per day = 9 h
  *
@@ -435,11 +437,21 @@ export const MIN_TAIL_STRETCH_HOURS = 1.5
  *  Enforced in isValidShiftShape via the caller-supplied `dayOfWeek`. */
 export const WEEKDAY_PRIMARY_STRETCH_HOURS = 4
 
-/** Labor-law max consecutive work hours. Any single worked stretch over
- *  this triggers the mandatory 30-min meal break WITHIN the stretch —
- *  i.e. a pattern can't have a stretch above this length, even if its
- *  total work hours are small. */
-export const MAX_CONSECUTIVE_HOURS = 5
+/** Break TRIGGER threshold (Cayman law, salaried/non-hourly): a shift
+ *  longer than this includes one reasonable (30-min) paid break. This is
+ *  NOT a hard cap on consecutive work — a single worked block may exceed
+ *  it, up to the 9h daily cap. The break is placed AFTER the heavy block
+ *  in a demand trough just after a peak (e.g. ~20:00 after dinner or
+ *  ~14:00 after lunch), never inside a peak — not locked at the 5h mark.
+ *  Reference: Resgie's real shift worked 14:30–20:00 (~5.5h) straight,
+ *  then broke at 20:00. Shifts ≤5h need no break. */
+export const MEAL_BREAK_TRIGGER_HOURS = 5
+
+/** Demand-trough slots where a >5h shift's meal break may land: just
+ *  after lunch (2–3 PM) and just after dinner (8–9 PM). A break must sit
+ *  in one of these (or the pre-lunch 11:00 shoulder), never inside a
+ *  peak, and staggered against other breaks. */
+export const BREAK_TROUGH_SLOTS = new Set<number>([3, 7, 8, 15, 16])
 
 /** Slot indices that fall within peak hours — lunch (12–2 PM) and dinner
  *  (5–8 PM). Used by the build-time pattern assertion; the live
@@ -601,14 +613,25 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
       } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
         violations.push(`${day.dayName} #${idx}: tail ${blocks[1]}h < ${MIN_TAIL_STRETCH_HOURS}h`)
       }
-      if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) {
-        violations.push(`${day.dayName} #${idx}: ${Math.max(...blocks)}h stretch > ${MAX_CONSECUTIVE_HOURS}h legal max`)
-      }
+      // No hard 5h consecutive cap (Cayman salaried law): a block may run
+      // up to the 9h daily max. A block > MEAL_BREAK_TRIGGER_HOURS is fine
+      // AS LONG AS the shift carries its meal break (checked below).
       if (blocks[0] < MIN_BLOCK_HOURS) {
         violations.push(`${day.dayName} #${idx}: first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
       }
-      if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) {
-        violations.push(`${day.dayName} #${idx}: ${work}h worked with no meal break`)
+      // >5h worked → one 30-min break required (documentation + rules
+      // modal). When present it must sit in a demand trough (post-lunch /
+      // post-dinner), never inside a peak.
+      if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) {
+        violations.push(`${day.dayName} #${idx}: ${work}h worked (>5h) with no meal break`)
+      }
+      if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length === 2 && brk === MEAL_BREAK_HOURS) {
+        const bslot = midShiftBreakSlots(pat)
+        if (bslot.some((s) => PEAK_SLOT_INDICES.includes(s))) {
+          violations.push(`${day.dayName} #${idx}: meal break inside a peak (slots ${bslot.join(',')})`)
+        } else if (!bslot.every((s) => BREAK_TROUGH_SLOTS.has(s))) {
+          violations.push(`${day.dayName} #${idx}: meal break not in a demand trough (slots ${bslot.join(',')})`)
+        }
       }
       if (work > 9) {
         violations.push(`${day.dayName} #${idx}: ${work}h > 9h daily max`)

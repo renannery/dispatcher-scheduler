@@ -1,10 +1,11 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
+  BREAK_TROUGH_SLOTS,
   DAY_TEMPLATES,
   effectiveCoverage,
   HANDOFF_SLOT,
-  MAX_CONSECUTIVE_HOURS,
+  MEAL_BREAK_TRIGGER_HOURS,
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
@@ -447,12 +448,14 @@ const MAX_OVER_COVERAGE = 1
 /** True when this shift bitmap satisfies every two-team shape rule:
  *  - 1 or 2 worked stretches (i.e. at most one break)
  *  - when a break exists it is EXACTLY the 30-min paid meal break
- *  - no worked stretch over MAX_CONSECUTIVE_HOURS (5h, labor law)
+ *  - NO hard 5h consecutive cap (Cayman salaried law) — a block may run
+ *    up to the 9h daily max
  *  - first stretch ≥ MIN_BLOCK_HOURS (3h) — the meal break comes after
  *    a real stretch; the post-break tail may be short (weekday Morning
  *    runs 5h + 1.5h) because the paid break doesn't fragment the
  *    continuous presence
- *  - > 5h worked → the meal break is mandatory
+ *  - > 5h worked → one 30-min break, placed in a demand trough
+ *    (post-lunch / post-dinner), never inside a peak
  *  - 4h ≤ total work ≤ 9h
  *  - Mon–Fri: at least one stretch ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5h).
  *    Sat (6) / Sun (0) are exempt so the 8 AM opener can split 3h + 4.5h.
@@ -478,13 +481,24 @@ function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
     return false
   }
-  // Labor law: no single worked stretch over 5h.
-  if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) return false
+  // NO hard 5h consecutive cap (Cayman salaried law) — a block may run up
+  // to the 9h daily max.
   const totalWork = blocks.reduce((s, h) => s + h, 0)
   if (totalWork < 4) return false
   if (totalWork > 9) return false
-  // > 5h worked requires a break (meal break or split gap).
-  if (totalWork > MAX_CONSECUTIVE_HOURS && blocks.length < 2) return false
+  // > 5h worked requires a break (meal break or split gap)…
+  if (totalWork > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) return false
+  // …and when it's the meal break, it must sit in a demand trough
+  // (post-lunch / post-dinner), never inside a peak — the break comes
+  // AFTER the heavy block, not locked at the 5h mark.
+  if (
+    totalWork > MEAL_BREAK_TRIGGER_HOURS &&
+    blocks.length === 2 &&
+    maxBreak === MEAL_BREAK_HOURS &&
+    !midShiftBreakSlots(slots).every((s) => BREAK_TROUGH_SLOTS.has(s))
+  ) {
+    return false
+  }
   if (blocks[0] < MIN_BLOCK_HOURS) return false
   // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt.
   const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
@@ -2663,8 +2677,8 @@ export function generateCore(
                 if (usedPatternIdx.has(c2.idx) && !freeIdx.has(c2.idx)) continue
                 if (c1.hours + c2.hours > oldHours + 1.5) continue // stay hours-neutral
                 if (!isEligibleForPattern(P.dispatcher, c2, { ...enforceCtx, usedIds: usedExclP })) continue
-                // Coverage hierarchy: peaks ≥ target, slot 9 escape valve
-                // (≥1), no worsening elsewhere, never a zero. The
+                // Coverage hierarchy: peaks ≥ target, trough valve
+                // {9,10,17,18,19} ≥1, no worsening elsewhere, never a zero. The
                 // replacement may shed OVER-coverage the split carried.
                 let safe = true
                 for (let i = 0; i < SLOTS.length; i++) {

@@ -2,10 +2,12 @@
  * Verify the two-team (Morning/Evening) restructure on the 11-week window
  * with the 7-dispatcher production roster. PASS/FAIL gates:
  *
- *   Gate S — shape: every emitted shift has ≤2 stretches, every stretch
- *            ≤5h, the break (when present) is exactly the 30-min paid
- *            meal break, first stretch ≥3h, work ≤9h, and every Mon–Fri
- *            shift has a ≥5h primary stretch.
+ *   Gate S — shape (Cayman salaried law, no hard 5h cap): every emitted
+ *            shift has ≤2 stretches; a block may exceed 5h up to the 9h
+ *            daily max; a shift >5h carries one 30-min paid break placed
+ *            in a demand trough (post-lunch/post-dinner), never in a peak;
+ *            first stretch ≥3h; work ≤9h; every Mon–Fri shift has a ≥4h
+ *            primary stretch.
  *   Gate H — hours: no dispatcher exceeds the 45h weekly cap; report
  *            evening-shift counts (should be ≤4/week each).
  *   Gate O — handoff: every day that has an evening shift either has a
@@ -20,11 +22,13 @@
 import { generateSchedule } from '@/utils/scheduler'
 import type { Dispatcher } from '@/types/schedule'
 import {
+  BREAK_TROUGH_SLOTS,
   HANDOFF_SLOT,
-  MAX_CONSECUTIVE_HOURS,
+  MEAL_BREAK_TRIGGER_HOURS,
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
+  PEAK_SLOT_INDICES,
   SPLIT_GAP_MIN_HOURS,
   SPLIT_GAP_MAX_HOURS,
   SPLIT_GAP_SLOTS,
@@ -70,9 +74,15 @@ for (const ds of schedule.dispatcherSchedules) {
         blocks[0] >= MIN_BLOCK_HOURS && blocks[1] >= MIN_BLOCK_HOURS
       if (!isSplit) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h and not a legal Mon–Wed split`)
     }
-    if (Math.max(...blocks) > MAX_CONSECUTIVE_HOURS) problems.push(`stretch ${Math.max(...blocks)}h > 5h`)
+    // No hard 5h cap now — a block may run to the 9h daily max.
     if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < 3h`)
-    if (work > MAX_CONSECUTIVE_HOURS && blocks.length < 2) problems.push(`${work}h no meal break`)
+    if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) problems.push(`${work}h (>5h) no meal break`)
+    // >5h meal break must sit in a demand trough, never in a peak.
+    if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length === 2 && brk === MEAL_BREAK_HOURS) {
+      const bslot = midShiftBreakSlots(day.slots)
+      if (bslot.some((s) => PEAK_SLOT_INDICES.includes(s))) problems.push(`break in peak (slots ${bslot.join(',')})`)
+      else if (!bslot.every((s) => BREAK_TROUGH_SLOTS.has(s))) problems.push(`break not in trough (slots ${bslot.join(',')})`)
+    }
     if (work > 9) problems.push(`${work}h > 9h`)
     if (!isWeekendDow(day.dayOfWeek) && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) {
       problems.push(`no 5h primary (weekday)`)
