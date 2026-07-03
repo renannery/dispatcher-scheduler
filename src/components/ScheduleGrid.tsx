@@ -1124,6 +1124,13 @@ export function ScheduleGrid() {
                 never creating a 0-coverage slot, shortfall depth ≤ 1. A skipped turn is deferred —
                 the same dispatcher stays first in line.
               </p>
+              <p className="mt-2 text-xs leading-snug text-slate-500">
+                On top of that, a redundant 4-hour shift is traded for a day off wherever the
+                coverage allows — freeing the body may let the 2–3 PM handoff window run at a single
+                dispatcher (never zero), but the lunch and dinner peaks, the 8–9 PM shoulder, the
+                mornings, the pre-dinner ramp, and the late evening all stay at their floors. Days
+                off spread across the team (capped at 2/week for Regulars &amp; Seniors, 1 for Trainees).
+              </p>
               {(schedule.secondOffLog?.length ?? 0) === 0 ? (
                 <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
                   No rotation record on this schedule (generated before this feature, or no full weeks in range).

@@ -3234,6 +3234,83 @@ export function generateSchedule(
     result = { ...result, coverageWarnings: warnings }
   }
 
+  // ── Trim redundant 4h shifts → day off ────────────────────────────
+  // Governance-flagged relaxation (2–3 PM floor only): the rotating
+  // 2nd-off is saturated (one grant/week), but calm-afternoon slack
+  // remains. Where a 4h shift's coverage sits only in relaxable light
+  // hours, free that dispatcher for a day off instead. Floor for the
+  // removal — the 2–3 PM handoff (slots 7,8) may run at 1 body (NEVER 0)
+  // ONLY to free a day off; the pre-dinner ramp (10) stays ≥2, the
+  // troughs (9,17,18,19) stay ≥1, and the peaks, the 8–9 PM shoulder,
+  // and the mornings stay AT TARGET. Off-cap respected (Regular/Senior 2,
+  // Trainee 1). Candidates are spread across the team (fewest-trimmed
+  // first) so days off don't pile on one dispatcher.
+  {
+    const trimFloor = (i: number, t: number) =>
+      i === 7 || i === 8 || i === 9 || i === 17 || i === 18 || i === 19
+        ? Math.min(1, t)
+        : i === 10
+          ? Math.min(2, t)
+          : t
+    const weekOf = (date: string) => result.dates.find((d) => d.date === date)?.weekLabel ?? ''
+    const offKey = (id: string, wk: string) => id + '|' + wk
+    const offCount = new Map<string, number>()
+    for (const ds of result.dispatcherSchedules)
+      for (const day of ds.days)
+        if (day.isOff) {
+          const k = offKey(ds.dispatcher.id, weekOf(day.date))
+          offCount.set(k, (offCount.get(k) ?? 0) + 1)
+        }
+    const totalOff = new Map<string, number>()
+    const hoursOf = new Map<string, number>()
+    for (const ds of result.dispatcherSchedules) {
+      totalOff.set(ds.dispatcher.id, ds.days.filter((d) => d.isOff).length)
+      hoursOf.set(ds.dispatcher.id, ds.totalHours)
+    }
+    for (let guard = 0; guard < 40; guard++) {
+      const cands: { ds: DispatcherSchedule; day: DispatcherDayEntry; wk: string }[] = []
+      for (const ds of result.dispatcherSchedules) {
+        for (const day of ds.days) {
+          if (day.isOff || Math.abs(day.totalHours - 4) > 0.01) continue
+          const wk = weekOf(day.date)
+          if ((offCount.get(offKey(ds.dispatcher.id, wk)) ?? 0) >= maxDaysOffFor(ds.dispatcher.level)) continue
+          const req = result.coverageRequired?.[day.date] ?? []
+          const act = result.coverageActual[day.date] ?? []
+          let ok = true
+          for (let i = 0; i < day.slots.length; i++) {
+            if (!day.slots[i]) continue
+            const t = req[i] ?? 0
+            if (t <= 0) continue
+            if ((act[i] ?? 0) - 1 < trimFloor(i, t)) { ok = false; break }
+          }
+          if (ok) cands.push({ ds, day, wk })
+        }
+      }
+      if (cands.length === 0) break
+      // Spread fairly AND keep hours balanced: give the freed day off to
+      // the dispatcher with the MOST hours so far (tiebreak: fewest days
+      // off), so the extra rest lands on the most-worked body rather than
+      // piling onto whoever happens to hold the removable shifts.
+      cands.sort((a, b) => {
+        const hd = (hoursOf.get(b.ds.dispatcher.id) ?? 0) - (hoursOf.get(a.ds.dispatcher.id) ?? 0)
+        if (hd !== 0) return hd
+        return (totalOff.get(a.ds.dispatcher.id) ?? 0) - (totalOff.get(b.ds.dispatcher.id) ?? 0)
+      })
+      const { ds, day, wk } = cands[0]
+      const act = result.coverageActual[day.date]
+      day.slots.forEach((on, i) => { if (on && act[i] != null) act[i]-- })
+      const hrs = day.totalHours
+      day.slots = new Array(day.slots.length).fill(false)
+      day.totalHours = 0
+      day.isOff = true
+      ds.weeklyHours[wk] = (ds.weeklyHours[wk] ?? 0) - hrs
+      ds.totalHours -= hrs
+      offCount.set(offKey(ds.dispatcher.id, wk), (offCount.get(offKey(ds.dispatcher.id, wk)) ?? 0) + 1)
+      totalOff.set(ds.dispatcher.id, (totalOff.get(ds.dispatcher.id) ?? 0) + 1)
+      hoursOf.set(ds.dispatcher.id, (hoursOf.get(ds.dispatcher.id) ?? 0) - hrs)
+    }
+  }
+
   return { ...result, secondOffLog: finalLog }
 }
 
