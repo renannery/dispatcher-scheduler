@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { CalendarCheck2, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, ScrollText, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { DAY_TEMPLATES, SLOTS } from '@/data/coverageTemplate'
+import { DAY_TEMPLATES, SLOTS, effectiveCoverage } from '@/data/coverageTemplate'
 import { useSchedulerStore } from '@/store/schedulerStore'
 import { generateSchedule, hoursStatusBg, hoursStatusColor, shuffleDispatcherAssignments } from '@/utils/scheduler'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
@@ -325,17 +325,31 @@ export function ScheduleGrid() {
 
   // Weekend-rotation feasibility: for everyone to cycle through one Fri,
   // one Sat, and one Sun off, you need (N * 3) / weekend-off-slots-per-week
-  // weeks of schedule. With N dispatchers and X patterns needed per weekend
-  // day, off-slots per weekend day = max(0, N - X). Aggregated over 3 days
-  // gives off-slots per week; ideal weeks = ceil(3N / off-slots-per-week).
+  // weeks of schedule. Off-slots on a weekend day = max(0, N − bodies needed
+  // that day). Bodies-needed is the real staffing requirement derived from the
+  // EFFECTIVE per-slot coverage targets (with the user's overrides applied):
+  //   • peak concurrency  — the busiest slot needs that many people at once;
+  //   • workload ÷ capacity — total required person-hours ÷ the 9 h daily max,
+  //     since one dispatcher covers at most 9 h across the day.
+  // NOT `shiftPatterns.length`, which is just the size of the shift-shape menu
+  // the picker chooses from and has nothing to do with headcount (that treated
+  // a 31-shape catalog as "31 bodies needed" — a false roster-too-small alarm).
   const N = dispatchers.length
-  const friPatterns = DAY_TEMPLATES[5]?.shiftPatterns.length ?? 0
-  const satPatterns = DAY_TEMPLATES[6]?.shiftPatterns.length ?? 0
-  const sunPatterns = DAY_TEMPLATES[0]?.shiftPatterns.length ?? 0
+  const MAX_SHIFT_HOURS = 9
+  const bodiesNeeded = (dow: number) => {
+    const req = effectiveCoverage(dow, coverageOverrides)
+    if (req.length === 0) return 0
+    const peak = Math.max(0, ...req)
+    const personHours = req.reduce((sum, r, i) => sum + Math.max(0, r) * (SLOTS[i]?.hours ?? 0), 0)
+    return Math.max(peak, Math.ceil(personHours / MAX_SHIFT_HOURS))
+  }
+  const friBodies = bodiesNeeded(5)
+  const satBodies = bodiesNeeded(6)
+  const sunBodies = bodiesNeeded(0)
   const weekendOffSlotsPerWeek =
-    Math.max(0, N - friPatterns) +
-    Math.max(0, N - satPatterns) +
-    Math.max(0, N - sunPatterns)
+    Math.max(0, N - friBodies) +
+    Math.max(0, N - satBodies) +
+    Math.max(0, N - sunBodies)
   const idealRotationWeeks = weekendOffSlotsPerWeek > 0
     ? Math.ceil((N * 3) / weekendOffSlotsPerWeek)
     : Infinity
@@ -358,7 +372,7 @@ export function ScheduleGrid() {
             {rosterTooSmall ? (
               <>
                 <span className="font-semibold">Roster too small for weekend rotation.</span>{' '}
-                With {N} dispatcher{N === 1 ? '' : 's'} and {Math.max(friPatterns, satPatterns, sunPatterns)} needed on each weekend day, nobody can get a weekend off. Hire more dispatchers (or lower weekend coverage targets) to unlock the rotation.
+                With {N} dispatcher{N === 1 ? '' : 's'} and up to {Math.max(friBodies, satBodies, sunBodies)} needed on the busiest weekend day, nobody can get a weekend off. Hire more dispatchers (or lower weekend coverage targets) to unlock the rotation.
               </>
             ) : (
               <>
