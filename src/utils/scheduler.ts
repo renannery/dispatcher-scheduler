@@ -3311,6 +3311,117 @@ export function generateSchedule(
     }
   }
 
+  // ── Shared operational-week off-cap check — the single source of truth ──
+  // The ≤2 (Regular/Senior) / ≤1 (Trainee) weekly cap is enforced against ONE
+  // running per-week off-count — offsInWeek(...) — that every day-off placer
+  // shares; no mechanism keeps a private view. Phase 0 places ≤1 rest/week and
+  // defers to any existing off; the trim reads this same running count before
+  // freeing a day; the rotating 2nd-off grant places optimistically and is
+  // RECONCILED here — the moment the picker has materialized the week. (A
+  // partial time-off day only reveals whether it collapses to a full off after
+  // the solve, so no earlier gate can see the true count; this pass is where
+  // the shared count becomes authoritative.)
+  //
+  // For any week over cap, draw the accidental / law-forced line — the ≤2 cap
+  // is operational and yields to the legal constraints, but only when they
+  // genuinely force it, and never silently:
+  //   • ACCIDENTAL — the no-grant baseline keeps the dispatcher ≤ cap, so a
+  //     legal arrangement exists and the excess is a coordination artifact (the
+  //     2nd-off grant stacked on a mandatory rest + a day the picker could not
+  //     fill). Withdraw the grant by restoring the pre-grant shift — but ONLY
+  //     if it stays legal (adds a body, so never a zero; and must not create a
+  //     7th consecutive workday). If the only repair would break ≤6, it is:
+  //   • LAW-FORCED — mandatory rest + the ≤6-consecutive rule leave no legal
+  //     ≤-cap arrangement. The extra off is legally required; do NOT break it.
+  //     FLAG it (a schedule warning + a forcedThirdOff secondOffLog record) and
+  //     let it stand — a surfaced, expected event, not a silent cap break.
+  {
+    const streakOK = (ds: DispatcherSchedule) => {
+      const days = [...ds.days].sort((a, b) => a.date.localeCompare(b.date))
+      let run = 0
+      for (const dy of days) {
+        if (dy.isOff) run = 0
+        else if (++run > MAX_CONSECUTIVE_WORK_DAYS) return false
+      }
+      return true
+    }
+    const warnings = { ...(result.coverageWarnings ?? {}) }
+    let surfaced = false
+
+    for (const [wl, wkDates] of fullWeeks) {
+      for (const disp of dispatchers) {
+        const cap = maxDaysOffFor(disp.level)
+        if (offsInWeek(result, disp.id, wkDates) <= cap) continue
+        const ds = result.dispatcherSchedules.find((x) => x.dispatcher.id === disp.id)!
+        const baselineForced = offsInWeek(baseline, disp.id, wkDates) > cap
+
+        // Accidental repair: withdraw the discretionary grant by restoring the
+        // grantee's pre-grant (baseline) shift on the granted day — only when a
+        // legal ≤-cap arrangement exists (baseline ≤ cap) and the restore keeps
+        // the ≤6-consecutive rule.
+        let repaired = false
+        if (!baselineForced) {
+          const rec = finalLog.find((r) => r.granted && r.candidateId === disp.id && r.weekLabel === wl && r.date)
+          const day = rec?.date ? ds.days.find((d) => d.date === rec.date) : undefined
+          const baseDay = rec?.date
+            ? baseline.dispatcherSchedules.find((x) => x.dispatcher.id === disp.id)?.days.find((d) => d.date === rec.date)
+            : undefined
+          if (rec?.date && day && baseDay && !baseDay.isOff) {
+            const act = result.coverageActual[rec.date]
+            const prevSlots = day.slots
+            const prevHours = day.totalHours
+            baseDay.slots.forEach((on, i) => { if (on && act?.[i] != null) act[i]++ })
+            day.slots = [...baseDay.slots]
+            day.totalHours = baseDay.totalHours
+            day.isOff = false
+            if (streakOK(ds)) {
+              ds.weeklyHours[wl] = (ds.weeklyHours[wl] ?? 0) + baseDay.totalHours
+              ds.totalHours += baseDay.totalHours
+              rec.granted = false
+              rec.date = undefined
+              rec.unitDelta = undefined
+              rec.reason =
+                'off-cap: accidental 3rd day off — the rotating 2nd-off grant stacked on a mandatory rest + a partial-time-off day; grant withdrawn, dispatcher restored to work (coverage preserved, ≤6-consecutive intact).'
+              repaired = true
+            } else {
+              // Restoring would force a 7th consecutive workday — genuinely
+              // law-forced after all. Revert the trial restore and fall to flag.
+              day.slots = prevSlots
+              day.totalHours = prevHours
+              day.isOff = true
+              baseDay.slots.forEach((on, i) => { if (on && act?.[i] != null) act[i]-- })
+            }
+          }
+        }
+        if (repaired) continue
+
+        // LAW-FORCED (or an accidental excess whose only repair would break the
+        // ≤6-consecutive rule): flag it, do not break it.
+        const n = offsInWeek(result, disp.id, wkDates)
+        const offDate = wkDates.find((x) => ds.days.find((d) => d.date === x.date)?.isOff)?.date ?? wkDates[0].date
+        ;(warnings[offDate] ??= []).push({
+          peak: 'mandatory-rest' as const,
+          reason: `${disp.name}: ${n} days off in ${wl} (cap ${cap}) — an extra day off forced by inviolable constraints (mandatory rest, user time-off, and the ≤6-consecutive-workday rule). Flagged, not a silent cap break.`,
+          slotIndex: 0,
+        })
+        finalLog = [
+          ...finalLog,
+          {
+            weekLabel: wl,
+            candidateId: disp.id,
+            candidateName: disp.name,
+            granted: false,
+            date: offDate,
+            forcedThirdOff: true,
+            reason: `Law-forced day off — no legal ≤${cap}-off arrangement this week; the operational cap yields to mandatory rest, user time-off, and the ≤6-consecutive-workday rule. Surfaced as a flagged event, not a silent break.`,
+          },
+        ]
+        surfaced = true
+      }
+    }
+    if (surfaced) result = { ...result, coverageWarnings: warnings }
+  }
+
   return { ...result, secondOffLog: finalLog }
 }
 

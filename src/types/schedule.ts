@@ -110,6 +110,14 @@ export interface SecondOffRecord {
   date?: string
   /** Week under-target units delta vs the no-grant baseline. */
   unitDelta?: number
+  /**
+   * Set when this record flags a LAW-FORCED extra day off (a 3rd for
+   * Regular/Senior, a 2nd for Trainee) that the operational ≤-cap had to yield
+   * to because mandatory rest + the ≤6-consecutive-workday rule leave no legal
+   * lower-off arrangement that week. Not a grant — a surfaced, expected cap
+   * exception, never a silent break.
+   */
+  forcedThirdOff?: boolean
   reason: string
 }
 

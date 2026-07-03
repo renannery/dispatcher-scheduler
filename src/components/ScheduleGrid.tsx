@@ -1111,7 +1111,14 @@ export function ScheduleGrid() {
                 <li>Weekends run staggered edges: exactly 1 opener at 8 AM, one morning ending 3 PM and one ending 4 PM, both covering the whole lunch peak.</li>
                 <li>Weekend days off rotate fairly — 1 dispatcher off Saturday, 1 off Sunday, never the same person both days.</li>
                 <li>A recurring fully-blocked weekday counts as that dispatcher's weekly rest day.</li>
-                <li>Days-off cap per week: Trainees 1, Regulars and Seniors up to 2.</li>
+                <li>
+                  Days-off cap per week: Trainees 1, Regulars and Seniors up to 2. A single shared
+                  check enforces this across every day-off mechanism (mandatory rest, the rotating
+                  2nd off, and the 4-hour-shift trim) — none may push a week past the cap. The only
+                  exception: when mandatory rest, user time-off, or the ≤6-consecutive-workday rule
+                  leave no legal arrangement, the extra day off is allowed but always flagged, never
+                  silent.
+                </li>
               </ul>
 
               <h4 className="mt-5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">
@@ -1131,6 +1138,14 @@ export function ScheduleGrid() {
                 mornings, the pre-dinner ramp, and the late evening all stay at their floors. Days
                 off spread across the team (capped at 2/week for Regulars &amp; Seniors, 1 for Trainees).
               </p>
+              <p className="mt-2 text-xs leading-snug text-slate-500">
+                After the week is built, one shared cap check reconciles the running per-week off
+                count. If a grant stacked a 3rd day off on top of a mandatory rest and a
+                time-off-constrained day, the grant is withdrawn and the dispatcher restored to
+                work (coverage preserved, ≤6-consecutive intact). If instead no legal ≤-cap
+                arrangement exists — mandatory rest + user time-off + the ≤6-consecutive rule
+                genuinely force the extra off — it is kept and flagged below, never dropped silently.
+              </p>
               {(schedule.secondOffLog?.length ?? 0) === 0 ? (
                 <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
                   No rotation record on this schedule (generated before this feature, or no full weeks in range).
@@ -1138,7 +1153,7 @@ export function ScheduleGrid() {
               ) : (
                 <ul className="mt-3 flex flex-col divide-y divide-slate-100">
                   {schedule.secondOffLog!.map((rec) => (
-                    <li key={rec.weekLabel} className="flex items-center justify-between gap-3 py-2 text-[13px]">
+                    <li key={rec.weekLabel + '|' + rec.candidateId + (rec.forcedThirdOff ? '|F' : '')} className="flex items-center justify-between gap-3 py-2 text-[13px]">
                       <div className="min-w-0">
                         <div className="font-semibold text-slate-700">{rec.weekLabel}</div>
                         <div className="mt-0.5 text-xs text-slate-500">
@@ -1152,15 +1167,19 @@ export function ScheduleGrid() {
                       <span
                         className={clsx(
                           'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold',
-                          rec.granted
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                            : 'border-amber-200 bg-amber-50 text-amber-700',
+                          rec.forcedThirdOff
+                            ? 'border-rose-200 bg-rose-50 text-rose-700'
+                            : rec.granted
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'border-amber-200 bg-amber-50 text-amber-700',
                         )}
                         title={rec.reason}
                       >
-                        {rec.granted
-                          ? `granted${typeof rec.unitDelta === 'number' && rec.unitDelta > 0 ? ` (+${rec.unitDelta})` : ''}`
-                          : 'skipped · turn carried'}
+                        {rec.forcedThirdOff
+                          ? 'forced extra off · flagged'
+                          : rec.granted
+                            ? `granted${typeof rec.unitDelta === 'number' && rec.unitDelta > 0 ? ` (+${rec.unitDelta})` : ''}`
+                            : 'skipped · turn carried'}
                       </span>
                     </li>
                   ))}
