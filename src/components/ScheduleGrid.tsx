@@ -151,6 +151,10 @@ export function ScheduleGrid() {
   const canUndo = undoCount > 0
   const canRedo = redoCount > 0
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set())
+  // Per-week accordion — each week block collapses/expands independently and
+  // remembers its own state. A week label in this set is COLLAPSED (its day
+  // rows hidden); everything defaults to expanded.
+  const [collapsedWeeks, setCollapsedWeeks] = useState<Set<string>>(new Set())
   const [pdfLoading, setPdfLoading] = useState(false)
   const [showAllPills, setShowAllPills] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
@@ -221,8 +225,18 @@ export function ScheduleGrid() {
     })
   }
 
-  const expandAll  = () => setExpandedDates(new Set(schedule.dates.map((d) => d.date)))
-  const collapseAll = () => setExpandedDates(new Set())
+  // Per-week accordion controls. toggleWeek flips a single week; the two
+  // globals fold/unfold every week at once (kept as an optional convenience).
+  const toggleWeek = (wl: string) => {
+    setCollapsedWeeks((prev) => {
+      const next = new Set(prev)
+      if (next.has(wl)) next.delete(wl)
+      else next.add(wl)
+      return next
+    })
+  }
+  const collapseAllWeeks = () => setCollapsedWeeks(new Set(weekLabels))
+  const expandAllWeeks = () => setCollapsedWeeks(new Set())
 
   // Local bump for variety on each Regenerate click. Added on top of the
   // persisted rotation cursor; doesn't advance the persisted cursor itself.
@@ -416,92 +430,7 @@ export function ScheduleGrid() {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          {/* Undo / Redo — only enabled when there's something on the stack.
-              Keyboard shortcuts: Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z (or Y). */}
-          <button
-            onClick={undoScheduleEdit}
-            disabled={!canUndo}
-            title={canUndo ? `Undo last edit (${undoCount} in history) — Cmd/Ctrl+Z` : 'Nothing to undo'}
-            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Undo2 className="h-4 w-4" />
-            <span className="hidden sm:inline">Undo</span>
-          </button>
-          <button
-            onClick={redoScheduleEdit}
-            disabled={!canRedo}
-            title={canRedo ? `Redo (${redoCount} available) — Cmd/Ctrl+Shift+Z` : 'Nothing to redo'}
-            className="flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Redo2 className="h-4 w-4" />
-            <span className="hidden sm:inline">Redo</span>
-          </button>
-          <button
-            onClick={handleShuffle}
-            title="Re-roll the schedule with a new rotation seed — same dispatchers, different pairings. Cmd+Z to undo."
-            className="flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-100"
-          >
-            <Shuffle className="h-4 w-4" />
-            Shuffle
-          </button>
-          <button
-            onClick={handleRegenerate}
-            title="Regenerate from scratch — clears undo history"
-            className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Regenerate
-          </button>
-          <button
-            onClick={() => setRulesOpen(true)}
-            title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
-            className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <ScrollText className="h-4 w-4" />
-            Rules
-          </button>
-          <button
-            onClick={handleExportJson}
-            title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
-            className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <FileJson className="h-4 w-4" />
-            Snapshot
-          </button>
-          <PdfMenu
-            dispatchers={dispatchers}
-            loading={pdfLoading}
-            onSelect={handlePdfSelect}
-          />
-          <button
-            onClick={() => exportScheduleToXLS(schedule)}
-            className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
-          >
-            <Download className="h-4 w-4" />
-            XLS
-          </button>
         </div>
-        </div>
-        )}
-        {/* Non-admin: still let dispatchers grab their own PDF. */}
-        {!isAdmin && (
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setRulesOpen(true)}
-              title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
-              className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <ScrollText className="h-4 w-4" />
-              Rules
-            </button>
-            <PdfMenu
-              dispatchers={dispatchers}
-              loading={pdfLoading}
-              onSelect={handlePdfSelect}
-              individualOnly
-            />
-          </div>
         )}
       </div>
 
@@ -527,10 +456,18 @@ export function ScheduleGrid() {
         )}
       </div>
 
+      {/* Global per-week fold control — each week header also toggles on its own. */}
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span className="mr-auto">{weekLabels.length} week{weekLabels.length === 1 ? '' : 's'}</span>
+        <button type="button" onClick={expandAllWeeks} className="rounded-md px-2 py-1 font-medium transition hover:bg-slate-100 hover:text-blue-600">Expand all</button>
+        <button type="button" onClick={collapseAllWeeks} className="rounded-md px-2 py-1 font-medium transition hover:bg-slate-100 hover:text-blue-600">Collapse all</button>
+      </div>
+
       {/* Per-week sections */}
       {weekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
         const weekDateSet = new Set(weekDates.map((d) => d.date))
+        const isWeekCollapsed = collapsedWeeks.has(wl)
 
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
           const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
@@ -579,7 +516,18 @@ export function ScheduleGrid() {
             <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
-                  <h3 className="font-semibold text-slate-800">{wl}</h3>
+                  <button
+                    type="button"
+                    onClick={() => toggleWeek(wl)}
+                    title={isWeekCollapsed ? 'Expand this week' : 'Collapse this week'}
+                    aria-expanded={!isWeekCollapsed}
+                    className="flex items-center gap-1.5 rounded-md -ml-1 px-1 py-0.5 font-semibold text-slate-800 transition hover:bg-slate-100"
+                  >
+                    <span className="text-slate-400">
+                      {isWeekCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    </span>
+                    <h3>{wl}</h3>
+                  </button>
                   {isAdmin && (
                   <div className="text-xs text-slate-500">
                     <button
@@ -693,12 +641,8 @@ export function ScheduleGrid() {
                       >
                         {pillsExpanded ? 'hide hours' : 'show hours'}
                       </button>
-                      <span>·</span>
                     </>
                   )}
-                  <button onClick={expandAll}  className="hover:text-blue-600">expand all</button>
-                  <span>·</span>
-                  <button onClick={collapseAll} className="hover:text-blue-600">collapse</button>
                 </div>
               </div>
               {isAdmin && pillsExpanded && (
@@ -721,8 +665,8 @@ export function ScheduleGrid() {
               )}
             </div>
 
-            {/* Per-day rows */}
-            {weekDates.map((dateInfo) => {
+            {/* Per-day rows — hidden when this week is collapsed. */}
+            {!isWeekCollapsed && weekDates.map((dateInfo) => {
               const isExpanded = expandedDates.has(dateInfo.date)
               const working = schedule.dispatcherSchedules.filter(
                 (ds) => !ds.days.find((d) => d.date === dateInfo.date)?.isOff,
@@ -787,42 +731,107 @@ export function ScheduleGrid() {
         )
       })}
 
-      {/* Bottom actions */}
-      {/* Bottom nav: Back + duplicate export buttons — admin-only. Back
-          goes to the (admin-only) Period step and the exports leak hours,
-          so the whole row hides for non-admin viewers. */}
-      {isAdmin && (
-        <div className="flex items-center justify-between pt-2">
-          <button
-            onClick={() => setStep('period')}
-            className="rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
-          >
-            ← Back
-          </button>
-          <div className="flex gap-2">
+      {/* Sticky action bar — every schedule action, always in reach while
+          scrolling. Consolidates the old top toolbar and the old bottom row
+          into ONE bar (nothing is left at the page bottom). It sits in-flow as
+          the last child, so it pins to the viewport bottom while the schedule
+          scrolls and settles neatly at the end; the `gap-6` above it keeps the
+          last week card clear. Single non-wrapping row (scrolls sideways on
+          narrow screens) so its height stays fixed. */}
+      <div className="sticky bottom-0 z-30 rounded-t-2xl border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-4px_12px_rgba(15,23,42,0.06)] backdrop-blur">
+        {isAdmin ? (
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto">
             <button
-              onClick={handleExportJson}
-              title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
-              className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              onClick={() => setStep('period')}
+              className="flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
             >
-              <FileJson className="h-4 w-4" />
-              Snapshot
+              ← Back
+            </button>
+            <div className="mx-1 h-6 w-px shrink-0 bg-slate-200" />
+            <button
+              onClick={undoScheduleEdit}
+              disabled={!canUndo}
+              title={canUndo ? `Undo last edit (${undoCount} in history) — Cmd/Ctrl+Z` : 'Nothing to undo'}
+              className="flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Undo2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Undo</span>
+            </button>
+            <button
+              onClick={redoScheduleEdit}
+              disabled={!canRedo}
+              title={canRedo ? `Redo (${redoCount} available) — Cmd/Ctrl+Shift+Z` : 'Nothing to redo'}
+              className="flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Redo2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Redo</span>
+            </button>
+            <button
+              onClick={handleShuffle}
+              title="Re-roll the schedule with a new rotation seed — same dispatchers, different pairings. Cmd+Z to undo."
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-100"
+            >
+              <Shuffle className="h-4 w-4" />
+              Shuffle
+            </button>
+            <button
+              onClick={handleRegenerate}
+              title="Regenerate from scratch — clears undo history"
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Regenerate
+            </button>
+            <button
+              onClick={() => setRulesOpen(true)}
+              title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <ScrollText className="h-4 w-4" />
+              Rules
+            </button>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <button
+                onClick={handleExportJson}
+                title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
+                className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                <FileJson className="h-4 w-4" />
+                Snapshot
+              </button>
+              <PdfMenu
+                dispatchers={dispatchers}
+                loading={pdfLoading}
+                onSelect={handlePdfSelect}
+              />
+              <button
+                onClick={() => exportScheduleToXLS(schedule)}
+                className="flex shrink-0 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
+              >
+                <Download className="h-4 w-4" />
+                XLS
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-nowrap items-center justify-end gap-2 overflow-x-auto">
+            <button
+              onClick={() => setRulesOpen(true)}
+              title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <ScrollText className="h-4 w-4" />
+              Rules
             </button>
             <PdfMenu
               dispatchers={dispatchers}
               loading={pdfLoading}
               onSelect={handlePdfSelect}
+              individualOnly
             />
-            <button
-              onClick={() => exportScheduleToXLS(schedule)}
-              className="flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
-            >
-              <Download className="h-4 w-4" />
-              Download XLS
-            </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Drill-down modal — opens when a week's stat or days-off pill is
           clicked. Computes filtered rows from `drillDown.kind` against the
