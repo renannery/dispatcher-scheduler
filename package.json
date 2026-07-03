@@ -8,7 +8,7 @@
     "build": "npm run gates && tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "gates": "npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/benchmarkHumanWeeks.ts && npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/demoTwoTeams.ts && npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/demoMandatoryRest.ts"
+    "gates": "npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/benchmarkHumanWeeks.ts && npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/demoTwoTeams.ts && npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/demoMandatoryRest.ts && npx -y tsx@4.22.4 --tsconfig tsconfig.app.json scripts/demoOffCap.ts"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",
