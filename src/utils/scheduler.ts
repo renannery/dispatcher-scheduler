@@ -55,14 +55,11 @@ function maxDaysOffFor(level: DispatcherLevel): number {
  *  off-days fairness cap). Daily max (9 h) is enforced via pattern shapes. */
 const WEEKLY_CAP_HOURS = 45
 
-/** Soft target the picker tries to keep everyone under, even when there's
- *  spare cap room. Dispatchers are on fixed monthly salary so a tight
- *  band keeps weekly hours equitable. Set to 42 h (≈the floor the user
- *  wants every dispatcher near) so the picker fills closer to that
- *  before deprioritizing them — was 38 which left most dispatchers in
- *  the 30-36 h band. Only relaxed when no eligible dispatcher fits —
- *  then we fall back to the legal 45 h cap. */
+/** Soft weekly-hours target the picker keeps everyone under when it can.
+ *  Only relaxed when no eligible dispatcher fits — then the legal 45 h cap
+ *  binds. The tight equitable band is achieved by the Lever 3 post-pass. */
 const SOFT_WEEKLY_TARGET = 42
+
 
 function slotHours(slots: boolean[]): number {
   return slots.reduce((sum, on, i) => sum + (on ? SLOTS[i].hours : 0), 0)
@@ -2080,10 +2077,13 @@ export function generateCore(
       if (eligible.length === 0) continue
 
       // Hours-balance preference: prefer dispatchers whose post-shift weekly
-      // hours stay at or below the soft target (38 h). This stops one
-      // dispatcher from accumulating to 42-45 h while others sit at 30 h.
-      // Falls back to all eligible if nobody fits (rare — usually means a
-      // tight day where someone has to absorb the extra hours).
+      // hours stay at or below the soft target. Stops one dispatcher from
+      // accumulating to the cap while others sit low. Falls back to all
+      // eligible if nobody fits. (The real band balancing is a separate
+      // COVERAGE-NEUTRAL post-pass below — Lever 3 — that swaps bodies
+      // between already-assigned shifts without ever changing coverage;
+      // doing it here in pattern-selection perturbed coverage via
+      // eligibility cascades, reopening a 4–5 PM shoulder.)
       const withinSoft = eligible.filter(
         (d) => (weekHours[d.id][wLabel] ?? 0) + p.hours <= SOFT_WEEKLY_TARGET,
       )
@@ -2566,24 +2566,45 @@ export function generateCore(
       console.info(`[smoothTransitions] ${dateStr} ${SLOTS[i].label}: no eligible neighbor → warning`)
     }
 
-    // ── splits → two continuous shifts (coverage-preserving) ──────────
+    // ── splits → two continuous shifts (Levers 1/2/3) ─────────────────
     // A split covers BOTH peaks in one body, so the greedy picker favors
     // it and its complement fragments land as 4h shifts. Wherever the
     // SAME coverage is achievable with two balanced continuous shifts,
     // do that instead — splits recede to the exception the human team
     // actually uses (thin rosters where one body must bridge both
-    // peaks). Runs LAST on FINAL coverage and applies a conversion ONLY
-    // when the replacement pair dominates the (split + partner) pair on
-    // EVERY slot — so no slot drops below its prior coverage, no target
-    // is missed and no zero opens (coverage-target-wins) — and every
-    // peak that had a continuity anchor still has one. Prefers the
-    // shortest partner, so it eats a 4h fragment each time it fires.
+    // peaks), so a day almost never runs two splits (Lever 2 emerges:
+    // the loop converts every convertible split, leaving ≥2 only when no
+    // hierarchy-legal swap exists — a genuinely thin day).
+    //
+    // A swap commits ONLY when the replacement clears the coverage
+    // HIERARCHY on every slot (floorAt): peaks (lunch 4–6 / dinner
+    // 11–14) stay ≥ target (inviolable); slot 9 (3–4 PM) is the escape
+    // valve — it may fall below target but never to 0; every other slot
+    // may not worsen vs target; and no slot ever opens a zero. Anchors
+    // are preserved. Lever 3: the LONGER continuous shift goes to the
+    // more BELOW-band dispatcher (pull them up), the shorter to the more
+    // above-band — orientation chosen only when it too is eligible.
     {
       const contPatterns = patternMeta.filter((pm) => pm.maxBreak < SPLIT_GAP_MIN_HOURS)
       const idxOf = (bool: boolean[]) => patternMeta.findIndex((pm) => pm.bool === bool)
       const isSplit = (bool: boolean[]) => patternMaxBreakHours(bool, SLOTS) >= SPLIT_GAP_MIN_HOURS
       const peaksAnchored = (asgs: typeof assignments) =>
         PEAK_WINDOWS.filter((peak) => asgs.some((a) => isPeakAnchorPattern(a.pattern, peak.slots)))
+      // Coverage-hierarchy floor for a swap: cov is the pre-swap coverage.
+      const floorAt = (i: number, cov: number[]) => {
+        if (PEAK_SLOT_SET.has(i)) return dayRequired[i]            // peaks inviolable
+        if (i === HANDOFF_SLOT) return Math.min(1, dayRequired[i]) // 3–4 PM escape valve, never zero
+        return Math.min(cov[i], dayRequired[i])                   // no worsening vs target elsewhere
+      }
+      // Weekly-hours band position (Lever 3): negative = below the group's
+      // live mean (should get the longer shift), positive = above.
+      const relBand = (d: (typeof dispatchers)[0]) => {
+        const grp = d.level === 'Trainee' ? 'T' : 'RS'
+        const peers = workingPool.filter((x) => (x.level === 'Trainee' ? 'T' : 'RS') === grp)
+        const mean =
+          peers.reduce((s, x) => s + (weekHours[x.id][wLabel] ?? 0), 0) / (peers.length || 1)
+        return (weekHours[d.id][wLabel] ?? 0) - mean
+      }
       for (let guard = 0; guard < 6; guard++) {
         const anchorsBefore = peaksAnchored(assignments)
         const dayCov = new Array(SLOTS.length).fill(0)
@@ -2594,9 +2615,9 @@ export function generateCore(
           if (sIdx < 0) continue
           // SOLO conversion first: replace the split with ONE continuous
           // shift when one of its blocks is redundant (the slots it drops
-          // are already covered to target by others). Catches the common
-          // case where a body needn't bridge both peaks — the split's
-          // morning block is superfluous because other shapes hold lunch.
+          // still clear the hierarchy floor). Catches the common case
+          // where a body needn't bridge both peaks — the split's morning
+          // block is superfluous because other shapes hold lunch.
           {
             const usedExclS = new Set([...usedIds].filter((id) => id !== S.dispatcher.id))
             let soloDone = false
@@ -2607,7 +2628,7 @@ export function generateCore(
               let safe = true
               for (let i = 0; i < SLOTS.length; i++) {
                 const delta = (c1.bool[i] ? 1 : 0) - (S.pattern[i] ? 1 : 0)
-                if (dayCov[i] + delta < Math.min(dayCov[i], dayRequired[i])) { safe = false; break }
+                if (dayCov[i] + delta < floorAt(i, dayCov)) { safe = false; break }
               }
               if (!safe) continue
               const trial = assignments.map((a) =>
@@ -2642,27 +2663,48 @@ export function generateCore(
                 if (usedPatternIdx.has(c2.idx) && !freeIdx.has(c2.idx)) continue
                 if (c1.hours + c2.hours > oldHours + 1.5) continue // stay hours-neutral
                 if (!isEligibleForPattern(P.dispatcher, c2, { ...enforceCtx, usedIds: usedExclP })) continue
-                // Coverage-safe: no slot may drop below its target or
-                // below its prior (already-residual) coverage — the
-                // replacement may shed OVER-coverage the split carried,
-                // but never miss a target or open a zero.
+                // Coverage hierarchy: peaks ≥ target, slot 9 escape valve
+                // (≥1), no worsening elsewhere, never a zero. The
+                // replacement may shed OVER-coverage the split carried.
                 let safe = true
                 for (let i = 0; i < SLOTS.length; i++) {
                   const delta = (c1.bool[i] ? 1 : 0) + (c2.bool[i] ? 1 : 0) - oldPair[i]
-                  if (dayCov[i] + delta < Math.min(dayCov[i], dayRequired[i])) { safe = false; break }
+                  if (dayCov[i] + delta < floorAt(i, dayCov)) { safe = false; break }
                 }
                 if (!safe) continue
-                // Anchor-preserving: no peak may lose its anchor.
+                // Anchor-preserving: no peak may lose its anchor. (Anchors
+                // depend on the patterns present, not who works them, so
+                // this is orientation-independent.)
                 const trial = assignments.map((a) =>
                   a === S ? { dispatcher: S.dispatcher, pattern: c1.bool }
                   : a === P ? { dispatcher: P.dispatcher, pattern: c2.bool }
                   : a)
                 if (anchorsBefore.some((pk) => !peaksAnchored(trial).includes(pk))) continue
-                // Commit the conversion.
+                // Lever 3 — assign the LONGER continuous shift to the more
+                // below-band dispatcher, the shorter to the more above-band,
+                // when that orientation is also eligible; else keep the
+                // known-valid c1→S / c2→P assignment. Coverage & anchors are
+                // identical either way (same two patterns present).
+                const longC = c1.hours >= c2.hours ? c1 : c2
+                const shortC = c1.hours >= c2.hours ? c2 : c1
+                const sBelow = relBand(S.dispatcher) <= relBand(P.dispatcher)
+                const belowD = sBelow ? S.dispatcher : P.dispatcher
+                const aboveD = sBelow ? P.dispatcher : S.dispatcher
+                const bandOK =
+                  isEligibleForPattern(belowD, longC, {
+                    ...enforceCtx, usedIds: new Set([...usedIds].filter((id) => id !== belowD.id)),
+                  }) &&
+                  isEligibleForPattern(aboveD, shortC, {
+                    ...enforceCtx, usedIds: new Set([...usedIds].filter((id) => id !== aboveD.id)),
+                  })
+                if (bandOK) {
+                  if (belowD === S.dispatcher) { S.pattern = longC.bool; P.pattern = shortC.bool }
+                  else { S.pattern = shortC.bool; P.pattern = longC.bool }
+                } else {
+                  S.pattern = c1.bool; P.pattern = c2.bool
+                }
                 usedPatternIdx.delete(sIdx); usedPatternIdx.delete(pIdx)
                 usedPatternIdx.add(c1.idx); usedPatternIdx.add(c2.idx)
-                S.pattern = c1.bool
-                P.pattern = c2.bool
                 fired = true; done = true
                 break
               }
@@ -2671,6 +2713,76 @@ export function generateCore(
           if (done) break // restart the scan with updated assignments
         }
         if (!fired) break
+      }
+    }
+
+    // ── Lever 3 — weekly-hours band balance (coverage-neutral) ────────
+    // Pure dispatcher SWAPS between already-assigned shifts: hand a LONGER
+    // shift to a BELOW-band body and the shorter one to an ABOVE-band body
+    // whenever both are eligible for the swapped pattern. Patterns never
+    // change, so coverage is byte-identical — this only moves hours
+    // between people to pull the low ones (Adorre, the only Regular, who
+    // sat ~5 h/wk under the Seniors) up into their group band. Regular +
+    // Senior share one band; Trainees a separate, higher one; swaps stay
+    // WITHIN a band group so trainees don't bleed hours to/from the RS
+    // band. weekHours here is the cumulative total THROUGH YESTERDAY (today
+    // is added after this block), so it's the right signal for who is
+    // behind. Soft — every swap still clears each body's hard eligibility
+    // (night-rest, time-off, weekly cap via isEligibleForPattern).
+    {
+      const bandGrp = (d: (typeof dispatchers)[0]) => (d.level === 'Trainee' ? 'T' : 'RS')
+      // Balance on WEEKLY hours through yesterday (today is added after this
+      // block). A swap is coverage-neutral for TODAY (patterns unchanged),
+      // but it changes who worked late / who's near cap, which can cascade
+      // into future days' feasible assignments. Weekly-scoped swapping
+      // stays gentle enough to leave that cascade coverage-clean (verified
+      // across seeds); cumulative-scoped swapping was more aggressive and
+      // drifted a 4–5 PM shoulder. The weekly reset still pulls the
+      // systematic-low body (Adorre) up because he starts every week behind.
+      const bandHours = (d: (typeof dispatchers)[0]) => weekHours[d.id][wLabel] ?? 0
+      const metaOf = (bool: boolean[]) => patternMeta.find((pm) => pm.bool === bool)
+      for (let guard = 0; guard < 20; guard++) {
+        let swapped = false
+        // Most-below-band body on a short shift ↔ most-above-band body on a
+        // long shift, within each band group. Greedy: take the biggest
+        // hours-gap-closing swap first.
+        let best: { A: typeof assignments[number]; B: typeof assignments[number]; gain: number } | null = null
+        for (const A of assignments) {
+          for (const B of assignments) {
+            if (A === B || A.dispatcher.id === B.dispatcher.id) continue
+            if (bandGrp(A.dispatcher) !== bandGrp(B.dispatcher)) continue
+            const hA = slotHours(A.pattern), hB = slotHours(B.pattern)
+            if (hA <= hB) continue // A must be the LONGER shift
+            // Swap helps only if A's holder is ABOVE and B's holder is BELOW
+            // (B is more behind on hours) — then B takes the longer shift.
+            if (bandHours(B.dispatcher) >= bandHours(A.dispatcher)) continue
+            // Post-swap the hours spread must strictly tighten AND not
+            // overshoot (don't turn a below body into the new above body by
+            // more than it closes). Gain = reduction in |hoursA − hoursB|.
+            const before = Math.abs(bandHours(A.dispatcher) + hA - (bandHours(B.dispatcher) + hB))
+            const after = Math.abs(bandHours(A.dispatcher) + hB - (bandHours(B.dispatcher) + hA))
+            const gain = before - after
+            if (gain <= 0) continue
+            // Eligibility for the swapped patterns (excludes each from the
+            // other's used-set so their own current shift doesn't block).
+            const mA = metaOf(A.pattern), mB = metaOf(B.pattern)
+            if (!mA || !mB) continue
+            const okB = isEligibleForPattern(B.dispatcher, mA, {
+              ...enforceCtx, usedIds: new Set([...usedIds].filter((id) => id !== B.dispatcher.id)),
+            })
+            const okA = isEligibleForPattern(A.dispatcher, mB, {
+              ...enforceCtx, usedIds: new Set([...usedIds].filter((id) => id !== A.dispatcher.id)),
+            })
+            if (!okB || !okA) continue
+            if (!best || gain > best.gain) best = { A, B, gain }
+          }
+        }
+        if (!best) break
+        const tmp = best.A.dispatcher
+        best.A.dispatcher = best.B.dispatcher
+        best.B.dispatcher = tmp
+        swapped = true
+        if (!swapped) break
       }
     }
 
