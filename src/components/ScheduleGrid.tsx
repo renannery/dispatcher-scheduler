@@ -482,6 +482,9 @@ export function ScheduleGrid() {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
         const weekDateSet = new Set(weekDates.map((d) => d.date))
         const isWeekCollapsed = collapsedWeeks.has(wl)
+        // Whether every day-grid in this (expanded) week is already open — drives
+        // the per-week "expand days / collapse days" toggle in the header.
+        const allDaysShown = !isWeekCollapsed && weekDates.length > 0 && weekDates.every((d) => expandedDates.has(d.date))
 
         const weekHoursSummary = schedule.dispatcherSchedules.map((ds) => {
           const off = ds.days.filter((d) => weekDateSet.has(d.date) && d.isOff).length
@@ -655,8 +658,37 @@ export function ScheduleGrid() {
                       >
                         {pillsExpanded ? 'hide hours' : 'show hours'}
                       </button>
+                      <span>·</span>
                     </>
                   )}
+                  {/* Per-week: open/close every day's slot-grid in THIS week
+                      (opening also un-collapses the week if it was folded). */}
+                  <button
+                    onClick={() => {
+                      if (allDaysShown) {
+                        setExpandedDates((prev) => {
+                          const next = new Set(prev)
+                          weekDates.forEach((d) => next.delete(d.date))
+                          return next
+                        })
+                      } else {
+                        setCollapsedWeeks((prev) => {
+                          if (!prev.has(wl)) return prev
+                          const next = new Set(prev)
+                          next.delete(wl)
+                          return next
+                        })
+                        setExpandedDates((prev) => {
+                          const next = new Set(prev)
+                          weekDates.forEach((d) => next.add(d.date))
+                          return next
+                        })
+                      }
+                    }}
+                    className="hover:text-blue-600"
+                  >
+                    {allDaysShown ? 'collapse days' : 'expand days'}
+                  </button>
                 </div>
               </div>
               {isAdmin && pillsExpanded && (
