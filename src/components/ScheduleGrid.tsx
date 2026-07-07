@@ -74,7 +74,7 @@ function PdfMenu({ dispatchers, loading, onSelect, individualOnly }: PdfMenuProp
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[80vh] w-60 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+        <div className="absolute bottom-full right-0 z-40 mb-1.5 max-h-[70vh] w-60 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
           {/* Admin + Team — admin-only */}
           {!individualOnly && (
             <>
@@ -786,7 +786,7 @@ export function ScheduleGrid() {
           narrow screens) so its height stays fixed. */}
       <div className="sticky bottom-0 z-30 rounded-t-2xl border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-4px_12px_rgba(15,23,42,0.06)] backdrop-blur">
         {isAdmin ? (
-          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setStep('period')}
               className="flex shrink-0 items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
@@ -860,7 +860,7 @@ export function ScheduleGrid() {
             </div>
           </div>
         ) : (
-          <div className="flex flex-nowrap items-center justify-end gap-2 overflow-x-auto">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               onClick={() => setRulesOpen(true)}
               title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
