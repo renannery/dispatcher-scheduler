@@ -95,8 +95,10 @@ const T = {
   slate50:  '#f8fafc',
   slate100: '#f1f5f9',
   slate200: '#e2e8f0',
+  slate300: '#cbd5e1',  // darker grid borders (was slate200/slate50)
   slate400: '#94a3b8',
   slate500: '#64748b',
+  slate600: '#475569',  // darker secondary text (shift-time labels)
   slate700: '#334155',
   slate800: '#1e293b',
 }
@@ -125,19 +127,19 @@ const SA = StyleSheet.create({
   // Body
   body:      { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 30 },
   wCard:     { backgroundColor: T.white, borderRadius: 6, borderWidth: 1,
-                borderColor: T.slate200, marginBottom: 10 },
+                borderColor: T.slate300, marginBottom: 10 },
   wHead:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                 backgroundColor: T.slate100, paddingHorizontal: 12, paddingVertical: 9,
-                borderBottomWidth: 1, borderBottomColor: T.slate200 },
+                borderBottomWidth: 1, borderBottomColor: T.slate300 },
   wLbl:      { fontSize: 10, fontFamily: 'Helvetica-Bold', color: T.slate800 },
   wBadges:   { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   badge:     { paddingHorizontal: 7, paddingVertical: 2.5, borderRadius: 9, borderWidth: 1 },
   badgeTxt:  { fontSize: 7.5, fontFamily: 'Helvetica-Bold' },
 
   // Day group
-  dayGroup:  { borderBottomWidth: 1, borderBottomColor: T.slate200 },
+  dayGroup:  { borderBottomWidth: 1, borderBottomColor: T.slate300 },
   dayLblRow: { backgroundColor: T.slate50, paddingHorizontal: 12, paddingVertical: 5,
-                borderBottomWidth: 1, borderBottomColor: T.slate100 },
+                borderBottomWidth: 1, borderBottomColor: T.slate200 },
   dayLblTxt: { fontSize: 8.5, fontFamily: 'Helvetica-Bold', color: T.slate500 },
 
   // Hour-label header row — sits above the per-dispatcher bars so you
@@ -146,7 +148,7 @@ const SA = StyleSheet.create({
   // widths in dRow so the cell strip aligns with the bar above.
   hourRow:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
                 paddingVertical: 3, backgroundColor: T.slate50,
-                borderBottomWidth: 0.5, borderBottomColor: T.slate200 },
+                borderBottomWidth: 1, borderBottomColor: T.slate300 },
   hourLeft:  { width: 7 + 5 + 44 + 21 },  // dDot + name + level pill
   hourStrip: { flex: 1, flexDirection: 'row', marginHorizontal: 7 },
   hourCell:  { flex: 1, alignItems: 'center' },
@@ -156,7 +158,7 @@ const SA = StyleSheet.create({
   // Coverage row — actual / required at the bottom of each day
   covRow:    { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
                 paddingVertical: 3, backgroundColor: T.slate100,
-                borderTopWidth: 0.5, borderTopColor: T.slate200 },
+                borderTopWidth: 1, borderTopColor: T.slate300 },
   covLeft:   { width: 7 + 5 + 44 + 21, fontSize: 6.5, color: T.slate500, fontFamily: 'Helvetica-Bold' },
   covStrip:  { flex: 1, flexDirection: 'row', marginHorizontal: 7 },
   covCell:   { flex: 1, alignItems: 'center', justifyContent: 'center', height: 11 },
@@ -165,7 +167,7 @@ const SA = StyleSheet.create({
 
   // Dispatcher row
   dRow:      { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
-                paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: T.slate50 },
+                paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: T.slate200 },
   dDot:      { width: 7, height: 7, borderRadius: 3.5, marginRight: 5 },
   dName:     { width: 44, fontSize: 8, fontFamily: 'Helvetica-Bold', color: T.slate700 },
   dLvl:      { fontSize: 6.5, paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3,
@@ -173,7 +175,7 @@ const SA = StyleSheet.create({
   barWrap:   { flex: 1, marginHorizontal: 7 },
   bar:       { flexDirection: 'row', height: 12 },
   cell:      { flex: 1, height: 12 },
-  shiftTxt:  { fontSize: 6.5, color: T.slate400, marginTop: 2 },
+  shiftTxt:  { fontSize: 6.5, color: T.slate600, marginTop: 2 },
   dRight:    { width: 44, alignItems: 'flex-end' },
   dHours:    { fontSize: 8, fontFamily: 'Helvetica-Bold' },
   dOff:      { fontSize: 8, color: T.slate400 },
@@ -221,6 +223,11 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n = SLOTS.length
   const pageHeight = estimateAdminHeight(schedule)
+  // Team PDF hides the level pill (RG/SR/TR) and the per-day hours; the left
+  // spacer that keeps the hour-label / coverage strips aligned with the bars
+  // must shrink by the pill's width when it's gone. 7 dot + 5 gap + 44 name
+  // (+ 21 pill in admin mode).
+  const leftW = showHours ? 7 + 5 + 44 + 21 : 7 + 5 + 44
 
   return (
     <Document>
@@ -248,9 +255,11 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                 <View key={ds.dispatcher.id} style={SA.hdrDisp}>
                   <View style={[SA.hdrDot, { backgroundColor: ds.dispatcher.color }]} />
                   <Text style={SA.hdrName}>{ds.dispatcher.name}</Text>
-                  <View style={[SA.hdrLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
-                    <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
-                  </View>
+                  {showHours && (
+                    <View style={[SA.hdrLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
+                      <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
+                    </View>
+                  )}
                   {showHours && (
                     <Text style={SA.hdrPeak}>peak {peak.toFixed(1)}h</Text>
                   )}
@@ -298,7 +307,7 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                       </View>
                       {/* Hour-label header */}
                       <View style={SA.hourRow}>
-                        <View style={SA.hourLeft} />
+                        <View style={[SA.hourLeft, { width: leftW }]} />
                         <View style={SA.hourStrip}>
                           {SLOTS.map((s, i) => (
                             <View key={i} style={SA.hourCell}>
@@ -316,9 +325,11 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                           <View key={ds.dispatcher.id} style={SA.dRow}>
                             <View style={[SA.dDot, { backgroundColor: ds.dispatcher.color }]} />
                             <Text style={SA.dName}>{ds.dispatcher.name.split(' ')[0]}</Text>
-                            <View style={[SA.dLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
-                              <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
-                            </View>
+                            {showHours && (
+                              <View style={[SA.dLvl, { backgroundColor: lc.bg, borderColor: lc.bdr }]}>
+                                <Text style={{ color: lc.fg }}>{levelShort(ds.dispatcher.level)}</Text>
+                              </View>
+                            )}
                             <View style={SA.barWrap}>
                               <View style={SA.bar}>
                                 {entry.slots.map((on, i) => (
@@ -338,9 +349,11 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                             <View style={SA.dRight}>
                               {entry.isOff
                                 ? <Text style={SA.dOff}>OFF</Text>
-                                : <Text style={[SA.dHours, { color: ds.dispatcher.color }]}>
-                                    {entry.totalHours.toFixed(1)}h
-                                  </Text>
+                                : showHours
+                                  ? <Text style={[SA.dHours, { color: ds.dispatcher.color }]}>
+                                      {entry.totalHours.toFixed(1)}h
+                                    </Text>
+                                  : null
                               }
                             </View>
                           </View>
@@ -349,7 +362,7 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
                       {/* Coverage row — actual / required per slot */}
                       {required.length > 0 && (
                         <View style={SA.covRow}>
-                          <Text style={SA.covLeft}>Coverage</Text>
+                          <Text style={[SA.covLeft, { width: leftW }]}>Coverage</Text>
                           <View style={SA.covStrip}>
                             {SLOTS.map((_, i) => {
                               const a = actual[i] ?? 0
@@ -427,7 +440,7 @@ const SI = StyleSheet.create({
   barWrap:   { flex: 1, marginHorizontal: 8 },
   bar:       { flexDirection: 'row', height: 14 },
   cell:      { flex: 1, height: 14 },
-  shiftTxt:  { fontSize: 7, color: T.slate400, marginTop: 2.5 },
+  shiftTxt:  { fontSize: 7, color: T.slate600, marginTop: 2.5 },
   dRight:    { width: 48, alignItems: 'flex-end' },
   dHours:    { fontSize: 9, fontFamily: 'Helvetica-Bold' },
   dOff:      { fontSize: 9, color: T.slate400 },
