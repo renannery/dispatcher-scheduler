@@ -108,7 +108,9 @@ const T = {
 // ---------------------------------------------------------------------------
 
 const SA = StyleSheet.create({
-  page:      { backgroundColor: T.slate50 },
+  // paddingBottom reserves room on EVERY page so flowing content never runs
+  // under the fixed footer once the report paginates across LETTER pages.
+  page:      { backgroundColor: T.slate50, paddingBottom: 24 },
 
   // Header
   hdr:       { backgroundColor: T.blue700, paddingHorizontal: 26, paddingTop: 18, paddingBottom: 18 },
@@ -192,37 +194,12 @@ interface AllDispatchersDocProps {
   showHours: boolean
 }
 
-/** Estimate the total rendered height for the admin/team PDF so the
- *  Page can be sized to fit content instead of paginating. Numbers
- *  match the style block above (paddingVertical × 2 + content). Adds
- *  ~40pt of slack at the bottom for the footer + safety margin. */
-function estimateAdminHeight(schedule: GeneratedSchedule): number {
-  const dispCount = schedule.dispatcherSchedules.length
-  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
-  const dayCount  = schedule.dates.length
-  // Header: 36pt padding + 18pt title + 10pt period + 8pt meta + dispatcher
-  // chip rows (chips wrap ~5 per row at A4 width).
-  const dispChipRows = Math.max(1, Math.ceil(dispCount / 5))
-  const headerH = 36 + 22 + 14 + 12 + 10 + dispChipRows * 20
-  // Per-day inside a week card: dayLblRow (10) + hourRow (13) + covRow (17)
-  // + N dispatcher rows (22 each). Dispatcher rows show only working bodies
-  // (off rows hidden), but worst-case all dispatchers visible.
-  const perDayH = 10 + 13 + 17 + dispCount * 22
-  // Per-week card: wHead (28) + (days in week) * perDayH + 10 margin.
-  const daysPerWeek = Math.ceil(dayCount / weekCount)
-  const perWeekH = 28 + daysPerWeek * perDayH + 10
-  const bodyPad  = 14 + 30
-  const footerH  = 30
-  return Math.ceil(headerH + bodyPad + weekCount * perWeekH + footerH)
-}
-
 function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
   const period = `${format(parseISO(schedule.startDate), 'MMM d, yyyy')} – ${format(
     parseISO(schedule.endDate), 'MMM d, yyyy',
   )}`
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n = SLOTS.length
-  const pageHeight = estimateAdminHeight(schedule)
   // Team PDF hides the level pill (RG/SR/TR) and the per-day hours; the left
   // spacer that keeps the hour-label / coverage strips aligned with the bars
   // must shrink by the pill's width when it's gone. 7 dot + 5 gap + 44 name
@@ -235,7 +212,7 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
           at A4 (595pt) so column proportions and font sizes are
           unchanged; height is computed from the day/week/dispatcher
           counts so we don't truncate or leave huge empty space. */}
-      <Page size={[595, pageHeight]} style={SA.page}>
+      <Page size="LETTER" style={SA.page}>
         {/* ── Header ── */}
         <View style={SA.hdr}>
           <View style={SA.hdrTop}>
@@ -275,8 +252,9 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
             const days = schedule.dates.filter((d) => d.weekLabel === wl)
             return (
               <View key={wl} style={SA.wCard}>
-                {/* Week header */}
-                <View style={SA.wHead}>
+                {/* Week header — minPresenceAhead keeps it from being orphaned
+                    at the page bottom when a card's day groups flow over. */}
+                <View style={SA.wHead} minPresenceAhead={60}>
                   <Text style={SA.wLbl}>{wl}</Text>
                   {showHours && (
                     <View style={SA.wBadges}>
@@ -392,9 +370,10 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
           })}
         </View>
 
-        {/* ── Footer ── (single-page now; no page numbers) */}
-        <View style={SA.foot}>
+        {/* ── Footer ── fixed on every LETTER page, with page numbers ── */}
+        <View style={SA.foot} fixed>
           <Text style={SA.footTxt}>Dispatcher Scheduler · {period}</Text>
+          <Text style={SA.footTxt} render={({ pageNumber, totalPages }) => `Page ${pageNumber} / ${totalPages}`} />
         </View>
       </Page>
     </Document>
@@ -406,7 +385,8 @@ function AllDispatchersDoc({ schedule, showHours }: AllDispatchersDocProps) {
 // ---------------------------------------------------------------------------
 
 const SI = StyleSheet.create({
-  page:      { backgroundColor: T.slate50 },
+  // paddingBottom reserves room for the fixed footer on every LETTER page.
+  page:      { backgroundColor: T.slate50, paddingBottom: 34 },
 
   // Header — uses dispatcher's own color as accent
   hdr:       { backgroundColor: T.blue700, paddingHorizontal: 28, paddingVertical: 22,
@@ -458,20 +438,6 @@ interface IndividualDocProps {
   hideHours?: boolean
 }
 
-/** Height estimator for the individual PDF — one bar row per day. */
-function estimateIndividualHeight(schedule: GeneratedSchedule): number {
-  const weekCount = new Set(schedule.dates.map((d) => d.weekLabel)).size
-  const dayCount  = schedule.dates.length
-  const daysPerWeek = Math.ceil(dayCount / weekCount)
-  // Header: 44pt padding + ~50pt content (avatar block)
-  const headerH = 92
-  // Per-week: wHead (28) + days × dRow (30) + 10 margin
-  const perWeekH = 28 + daysPerWeek * 30 + 10
-  const bodyPad  = 14 + 30
-  const footerH  = 30
-  return Math.ceil(headerH + bodyPad + weekCount * perWeekH + footerH)
-}
-
 function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
   const { dispatcher } = ds
   const peakH  = Math.max(0, ...Object.values(ds.weeklyHours))
@@ -481,11 +447,10 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
   const n  = SLOTS.length
   const lc = levelColors(dispatcher.level)
-  const pageHeight = estimateIndividualHeight(schedule)
 
   return (
     <Document>
-      <Page size={[595, pageHeight]} style={SI.page}>
+      <Page size="LETTER" style={SI.page}>
         {/* ── Header ── */}
         <View style={SI.hdr}>
           <View style={SI.hdrL}>
@@ -516,8 +481,9 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
             const wc   = weekColors(wh)
             return (
               <View key={wl} style={SI.wCard}>
-                {/* Week header */}
-                <View style={SI.wHead}>
+                {/* Week header — minPresenceAhead keeps it from being orphaned
+                    just above the fixed footer when a card splits pages. */}
+                <View style={SI.wHead} minPresenceAhead={48}>
                   <Text style={SI.wLbl}>{wl}</Text>
                   {!hideHours && (
                     <View style={[SI.badge, { backgroundColor: wc.bg, borderColor: wc.bdr }]}>
@@ -531,7 +497,7 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
                   const entry = ds.days.find((d) => d.date === di.date)
                   if (!entry) return null
                   return (
-                    <View key={di.date} style={SI.dRow}>
+                    <View key={di.date} style={SI.dRow} wrap={false}>
                       <Text style={SI.dLbl}>{di.dayLabel}</Text>
                       <View style={SI.barWrap}>
                         <View style={SI.bar}>
@@ -567,9 +533,10 @@ function IndividualDoc({ ds, schedule, hideHours }: IndividualDocProps) {
           })}
         </View>
 
-        {/* ── Footer ── (single-page now; no page numbers) */}
-        <View style={SI.foot}>
+        {/* ── Footer ── fixed on every LETTER page, with page numbers ── */}
+        <View style={SI.foot} fixed>
           <Text style={SI.footTxt}>Dispatcher Scheduler · {dispatcher.name}</Text>
+          <Text style={SI.footTxt} render={({ pageNumber, totalPages }) => `Page ${pageNumber} / ${totalPages}`} />
         </View>
       </Page>
     </Document>
