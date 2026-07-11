@@ -209,6 +209,71 @@ console.log(
 )
 if (lfFlag) console.log(`         └─ surfaced as: "${lfFlag.reason}"`)
 
+// Gate E — recurring-block partial-collapse (the Adorre class). The team now
+// actively uses recurringBlocks: every dispatcher has ~2 full-day recurring
+// days off (their fixed personal days), and Adorre ALSO has a partial block on
+// a 3rd day (Saturday evenings blocked, morning-available). Her 2 full-day
+// blocks already consume the ≤2 cap, so every Saturday she is morning-only —
+// and if the picker covers Saturday without her, the day collapses into an
+// over-cap 3rd off (a block request misread as a day-off request). The fix:
+// when full-day blocks already meet the cap, a partially-available day is
+// must-work-if-legal. Assert (a) no week exceeds the cap unflagged, and (b)
+// those partial days receive shifts (Adorre works her Saturdays) rather than
+// silently collapsing. This is the recurring-block gate case skipped when the
+// Kimberly leak was fixed — it is exactly the path that leaked next.
+{
+  const fullDay = () => new Array(20).fill(true)
+  const openDay = () => new Array(20).fill(false)
+  const eveBlock = () => Array.from({ length: 20 }, (_, i) => i >= 10) // evenings blocked, 8 AM–4 PM open
+  // recurringBlocks indexed by day-of-week (0=Sun … 6=Sat), mirroring the snapshot.
+  const withRB = (d: Dispatcher, rb: boolean[][]): Dispatcher => ({ ...d, recurringBlocks: rb })
+  const rosterRB: Dispatcher[] = [
+    withRB(roster[0], [openDay(), openDay(), openDay(), fullDay(), fullDay(), openDay(), eveBlock()]), // adorre: Wed+Thu full, Sat partial
+    withRB(roster[1], [fullDay(), openDay(), fullDay(), openDay(), openDay(), openDay(), openDay()]), // ayrton: Sun+Tue
+    withRB(roster[2], [openDay(), fullDay(), openDay(), openDay(), openDay(), fullDay(), openDay()]), // kimberly: Mon+Fri
+    withRB(roster[3], [openDay(), openDay(), openDay(), fullDay(), openDay(), openDay(), fullDay()]), // michelle: Wed+Sat
+    withRB(roster[4], [openDay(), fullDay(), openDay(), openDay(), openDay(), openDay(), fullDay()]), // paula: Mon+Sat
+    withRB(roster[5], [openDay(), openDay(), fullDay(), openDay(), fullDay(), openDay(), openDay()]), // resgie: Tue+Thu
+    withRB(roster[6], [openDay(), fullDay(), openDay(), openDay(), openDay(), openDay(), eveBlock()]), // shamika: Mon full, Sat partial
+  ]
+  // Snapshot's own (calm) coverage overrides — the leak reproduces under these.
+  const snapOverrides: Record<number, number[]> = {
+    0: [1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 3, 3, 3, 3, 2, 1, 2, 1, 1],
+    1: [0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+    2: [0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+    3: [0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+    4: [0, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+    5: [0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 3, 3, 3, 3, 3, 1, 2, 1, 1],
+    6: [1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 3, 3, 3, 3, 2, 1, 2, 1, 1],
+  }
+  let eViol = 0, eZero = 0, eRuns = 0, adWorkedSat = 0, adTotalSat = 0
+  for (const seed of Array.from({ length: 41 }, (_, i) => 90 + i)) {
+    for (const cursor of [112, 0, 89]) {
+      const sch = generateSchedule(rosterRB, startDate, endDate, {}, seed, snapOverrides, cursor)
+      const a = auditRun(sch, seed, cursor)
+      eViol += a.viols.length; eZero += a.zeros; eRuns++
+      allViols.push(...a.viols); totalZeros += a.zeros
+      const ad = sch.dispatcherSchedules.find((x) => x.dispatcher.name === 'adorre')!
+      for (const day of ad.days) {
+        if (day.dayOfWeek !== 6) continue
+        // full-horizon-week Saturdays only (edge partial weeks don't carry the class)
+        const wl = sch.dates.find((x) => x.date === day.date)!.weekLabel
+        if (sch.dates.filter((x) => x.weekLabel === wl).length !== 7) continue
+        adTotalSat++
+        if (!day.isOff) adWorkedSat++
+      }
+    }
+  }
+  // (a) no unflagged over-cap week + no zeros; (b) the partial Saturdays are
+  // worked, not collapsed (the fix actively fires).
+  const eOk = eViol === 0 && eZero === 0 && adWorkedSat === adTotalSat && adTotalSat > 0
+  if (!eOk) failed = true
+  console.log(
+    `${eOk ? '✅ PASS' : '❌ FAIL'}  Gate E · recurring-block partial-collapse: ${eRuns} runs — ` +
+      `${eViol} cap violation(s), ${eZero} zero-slot(s); Adorre worked ${adWorkedSat}/${adTotalSat} partial Saturdays (must be all)`,
+  )
+}
+
 console.log(`\nTotal runs: ${runs + 1} · cap violations: ${allViols.length} · zero-slots: ${totalZeros}`)
 if (allViols.length) {
   console.log('\nCap violations:')
