@@ -434,13 +434,18 @@ export const MEAL_BREAK_HOURS = 0.5
  *  tail may be shorter still (MIN_TAIL_STRETCH_HOURS = 1.5h). */
 export const MIN_BLOCK_HOURS = 2
 
-/** Minimum TOTAL worked hours in a shift — nobody comes in for less than
- *  half a day. Before the block minimum dropped to 2h the 3h block rule
- *  did double duty as a de-facto shift floor; now that a block can be 2h,
- *  this makes the shift floor explicit at the current de-facto shortest
- *  shift (4h). Enforced in isValidShiftShape, the build-time catalog
- *  assertion, and the demoTwoTeams gate. */
-export const MIN_TOTAL_SHIFT_HOURS = 4
+/** Minimum TOTAL worked hours in a shift. Governance change (shift floor
+ *  4h → 5h): the team is salaried, so an extra hour of presence is free and
+ *  buys coverage — a 4h day under-uses someone already paid and already
+ *  commuted in. This makes the seam-pad mandatory: the structural 4h plugs
+ *  (5h catalog shapes that trimToExactCoverage shaved down to hit exact
+ *  coverage) now stop trimming at 5h, keeping ~+1 slot of daytime-local
+ *  over-coverage. EXCEPTION: on a partially-blocked day whose available
+ *  window can't fit a legal 5h shift, a 4h shift stays legal (better than an
+ *  extra day off — the Adorre collapse) — the must-work pass falls back to it
+ *  and flags it. Enforced in isValidShiftShape, the build-time catalog
+ *  assertion, and the demoTwoTeams gate. Block minimum (2h) is unchanged. */
+export const MIN_TOTAL_SHIFT_HOURS = 5
 
 /** Minimum length of the post-break tail. Matches the weekday Morning's
  *  1.5h tail (14:30–16:00) — the shortest legal tail in the catalog.
