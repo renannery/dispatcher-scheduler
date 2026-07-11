@@ -434,6 +434,16 @@ export const MEAL_BREAK_HOURS = 0.5
  *  tail may be shorter still (MIN_TAIL_STRETCH_HOURS = 1.5h). */
 export const MIN_BLOCK_HOURS = 2
 
+/** Block minimum QUALIFIED by what the block sits beside. The bare 2h
+ *  MIN_BLOCK_HOURS is for a block adjacent to the 30-min MEAL break (it's a
+ *  continuous presence with a paid pause — the BRIDGE shape's 9–11 AM block
+ *  before an 11 AM meal break). A block adjacent to a SPLIT gap (the unpaid
+ *  2–3h lull gap) is a genuinely separate stretch and must be a real ≥3h
+ *  block on BOTH sides — the humans never run a sub-3h split leg. The 2h
+ *  governance change (for the meal-break bridge) inadvertently loosened split
+ *  legs to 2h; this restores them to 3h without touching the bridge. */
+export const MIN_SPLIT_BLOCK_HOURS = 3
+
 /** Minimum TOTAL worked hours in a shift. Governance change (shift floor
  *  4h → 5h): the team is salaried, so an extra hour of presence is free and
  *  buys coverage — a 4h day under-uses someone already paid and already
@@ -632,8 +642,8 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
           brk >= SPLIT_GAP_MIN_HOURS &&
           brk <= SPLIT_GAP_MAX_HOURS &&
           gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
-          blocks[0] >= MIN_BLOCK_HOURS &&
-          blocks[1] >= MIN_BLOCK_HOURS
+          blocks[0] >= MIN_SPLIT_BLOCK_HOURS &&
+          blocks[1] >= MIN_SPLIT_BLOCK_HOURS
         if (!isSplit) {
           violations.push(`${day.dayName} #${idx}: break ${brk}h is neither the ${MEAL_BREAK_HOURS}h meal break nor a legal split gap`)
         }

@@ -28,6 +28,7 @@ import {
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
+  MIN_SPLIT_BLOCK_HOURS,
   MIN_TOTAL_SHIFT_HOURS,
   PEAK_SLOT_INDICES,
   SPLIT_GAP_MIN_HOURS,
@@ -72,7 +73,7 @@ for (const ds of schedule.dispatcherSchedules) {
       const isSplit =
         brk >= SPLIT_GAP_MIN_HOURS && brk <= SPLIT_GAP_MAX_HOURS &&
         gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s)) &&
-        blocks[0] >= MIN_BLOCK_HOURS && blocks[1] >= MIN_BLOCK_HOURS
+        blocks[0] >= MIN_SPLIT_BLOCK_HOURS && blocks[1] >= MIN_SPLIT_BLOCK_HOURS
       if (!isSplit) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h and not a legal Mon–Wed split`)
     }
     // No hard 5h cap now — a block may run to the 9h daily max.
