@@ -132,6 +132,16 @@ const WD_MORNING_L = [0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 // instead of breaking inside the peak the shape simply ends at 7 PM —
 // the closers own 7 PM onward.
 const RAMP_14     = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+// Weekday Bridge (9:00–11:00 + meal 11:00–11:30 AM + 11:30–16:00; 2h +
+// 4.5h, 6.5h). The seam-bridge shape: unlike Morning-LONG (break at
+// 2:00–2:30 PM, leaving that slot open) this body takes its break at
+// 11:00 AM so it covers 2:00–2:30 PM CONTINUOUSLY — the transition slot
+// no other legal shape can double-cover. That closes the 2–2:30 dip and
+// lets one long body span the lunch→afternoon handoff instead of the
+// picker spawning a separate 4h plug. Its 2h first block is legal only
+// under the block minimum of 2h (MIN_BLOCK_HOURS). Break sits at 11:00
+// (a trough, before the lunch peak); primary stretch 4.5h ≥ weekday 4h.
+const BRIDGE_M    = [0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 // (Weekend Morning 8a (8:00–14:00) was RETIRED — strictly dominated by
 // the 8:00–15:00 edge shape below, and picking it produced a 14:00
 // morning end instead of the human 15:00 edge.)
@@ -264,6 +274,7 @@ const WEEKDAY_PATTERNS = [
   EVENING_S, EVENING_S,
   EVENING_L, EVENING_L,
   EVENING_L2, EVENING_L2,
+  BRIDGE_M, BRIDGE_M, BRIDGE_M, // seam-bridge (2h-block rule) — covers 2–2:30 PM continuously
   ...SPLIT_PATTERNS,
 ]
 // Mon–Wed shares the weekday catalog (splits are no longer day-gated).
@@ -412,13 +423,24 @@ export function effectiveCoverage(
  *  the day exceeds 5h of work. Exactly one slot on the grid. */
 export const MEAL_BREAK_HOURS = 0.5
 
-/** Minimum length of the FIRST worked stretch — the meal break comes
- *  after a real stretch of work, never after a token hour. The
- *  post-break tail may be shorter (weekday Morning runs 5h + 1.5h)
- *  because the paid meal break doesn't fragment the continuous
- *  presence; the shift is one 9-to-4 block with a lunch pause, not a
- *  split shift. */
-export const MIN_BLOCK_HOURS = 3
+/** Minimum length of ANY worked block within a shift — a block minimum,
+ *  NOT a shift minimum (that's MIN_TOTAL_SHIFT_HOURS). Governance change
+ *  (block minimum 3h → 2h): a 2h first block before the 11:00 meal break
+ *  is now legal, which is what makes the seam-BRIDGE shape (9–11 +
+ *  11:30–16:00) legal — one body bridges the lunch→afternoon handoff and
+ *  covers 2:00–2:30 PM continuously instead of the scheduler spawning a
+ *  separate 4h plug. Measured payoff: ~40% fewer 4h seam-plugs across the
+ *  36-week set, zeros unchanged/lower, R/S band ≤ ~1h. The post-break
+ *  tail may be shorter still (MIN_TAIL_STRETCH_HOURS = 1.5h). */
+export const MIN_BLOCK_HOURS = 2
+
+/** Minimum TOTAL worked hours in a shift — nobody comes in for less than
+ *  half a day. Before the block minimum dropped to 2h the 3h block rule
+ *  did double duty as a de-facto shift floor; now that a block can be 2h,
+ *  this makes the shift floor explicit at the current de-facto shortest
+ *  shift (4h). Enforced in isValidShiftShape, the build-time catalog
+ *  assertion, and the demoTwoTeams gate. */
+export const MIN_TOTAL_SHIFT_HOURS = 4
 
 /** Minimum length of the post-break tail. Matches the weekday Morning's
  *  1.5h tail (14:30–16:00) — the shortest legal tail in the catalog.
@@ -618,6 +640,11 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
       // AS LONG AS the shift carries its meal break (checked below).
       if (blocks[0] < MIN_BLOCK_HOURS) {
         violations.push(`${day.dayName} #${idx}: first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
+      }
+      // A 2h block minimum must NOT admit sub-half-day shifts — the shift
+      // floor is explicit (was implied by the old 3h block rule).
+      if (work < MIN_TOTAL_SHIFT_HOURS) {
+        violations.push(`${day.dayName} #${idx}: ${work}h total < ${MIN_TOTAL_SHIFT_HOURS}h min shift`)
       }
       // >5h worked → one 30-min break required (documentation + rules
       // modal). When present it must sit in a demand trough (post-lunch /
