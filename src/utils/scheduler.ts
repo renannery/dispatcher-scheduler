@@ -3312,6 +3312,75 @@ export function generateSchedule(
     }
   }
 
+  // ── Block-cap must-work (post-solve) — a block request is NOT a day-off
+  // request ──────────────────────────────────────────────────────────────
+  // Runs LAST — after every coverage/balancing/trim pass — so it adds ONLY
+  // the one missing body and never perturbs another dispatcher's week. Scope
+  // is exactly the Adorre class: a dispatcher whose FULL-DAY blocks (recurring
+  // / full-day time-off) already consume their off-cap, yet ended up over the
+  // cap because a REMAINING available day collapsed to a full off. A partial
+  // block ("I can't work these hours") is not a day-off request, so on that
+  // day the dispatcher is must-work-if-legal: assign the best legal shift
+  // inside the available window (least new over-coverage; more hours on ties),
+  // accepting mild local over-coverage as the cost of honoring BOTH the cap
+  // and the personal block. Un-off just enough days to reach the cap. If no
+  // legal shape fits (block window / 45h / ≤6-consecutive) the day stays off
+  // and the off-cap guard below flags it — never silent. Grant-driven
+  // over-caps (full blocks < cap) are left untouched for that guard.
+  {
+    const streakOKIfWorked = (ds: DispatcherSchedule, workDate: string): boolean => {
+      const days = [...ds.days].sort((a, b) => a.date.localeCompare(b.date))
+      let run = 0
+      for (const dy of days) {
+        const off = dy.date === workDate ? false : dy.isOff
+        if (off) run = 0
+        else if (++run > MAX_CONSECUTIVE_WORK_DAYS) return false
+      }
+      return true
+    }
+    for (const [wl, wkDates] of fullWeeks) {
+      for (const disp of dispatchers) {
+        const cap = maxDaysOffFor(disp.level)
+        if (offsInWeek(result, disp.id, wkDates) <= cap) continue
+        const fullBlockCount = wkDates.reduce((n, d) => {
+          const b = blockedBitmap(timeOff, disp, d.date, d.dayOfWeek)
+          return n + (b !== null && b.length > 0 && b.every(Boolean) ? 1 : 0)
+        }, 0)
+        if (fullBlockCount < cap) continue // not the block-cap class — leave to the off-cap guard
+        const ds = result.dispatcherSchedules.find((x) => x.dispatcher.id === disp.id)!
+        const inWeek = new Set(wkDates.map((d) => d.date))
+        for (const day of ds.days) {
+          if (!inWeek.has(day.date) || !day.isOff) continue
+          if (offsInWeek(result, disp.id, wkDates) <= cap) break // reached the cap
+          const blk = blockedBitmap(timeOff, disp, day.date, day.dayOfWeek)
+          if (blk !== null && blk.length > 0 && blk.every(Boolean)) continue // genuine full-day block
+          if (!streakOKIfWorked(ds, day.date)) continue
+          const req = result.coverageRequired?.[day.date] ?? []
+          const act = result.coverageActual[day.date] ?? []
+          let pick: { bool: boolean[]; over: number; hours: number } | null = null
+          for (const raw of DAY_TEMPLATES[day.dayOfWeek].shiftPatterns) {
+            const bool = raw.map((v) => v === 1)
+            if (blk && bool.some((on, i) => on && blk[i])) continue
+            const hours = slotHours(bool)
+            if ((ds.weeklyHours[wl] ?? 0) + hours > WEEKLY_CAP_HOURS) continue
+            let over = 0
+            for (let i = 0; i < bool.length; i++) if (bool[i] && (act[i] ?? 0) + 1 > (req[i] ?? 0)) over++
+            if (pick === null || over < pick.over || (over === pick.over && hours > pick.hours)) {
+              pick = { bool, over, hours }
+            }
+          }
+          if (!pick) continue
+          day.slots = [...pick.bool]
+          day.totalHours = pick.hours
+          day.isOff = false
+          ds.weeklyHours[wl] = (ds.weeklyHours[wl] ?? 0) + pick.hours
+          ds.totalHours += pick.hours
+          pick.bool.forEach((on, i) => { if (on && act[i] != null) act[i]++ })
+        }
+      }
+    }
+  }
+
   // ── Shared operational-week off-cap check — the single source of truth ──
   // The ≤2 (Regular/Senior) / ≤1 (Trainee) weekly cap is enforced against ONE
   // running per-week off-count — offsInWeek(...) — that every day-off placer
