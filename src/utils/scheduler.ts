@@ -9,6 +9,7 @@ import {
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
+  MIN_SPLIT_BLOCK_HOURS,
   MIN_TAIL_STRETCH_HOURS,
   MIN_TOTAL_SHIFT_HOURS,
   PEAK_WINDOWS,
@@ -486,7 +487,9 @@ function isValidShiftShape(
     if (maxBreak < SPLIT_GAP_MIN_HOURS || maxBreak > SPLIT_GAP_MAX_HOURS) return false
     const gap = midShiftBreakSlots(slots)
     if (!gap.every((s) => (SPLIT_GAP_SLOTS as readonly number[]).includes(s))) return false
-    if (blocks[1] < MIN_BLOCK_HOURS) return false
+    // Qualified block minimum: a leg beside a SPLIT gap must be a real ≥3h
+    // stretch on BOTH sides (unlike the 2h block allowed beside a meal break).
+    if (blocks[0] < MIN_SPLIT_BLOCK_HOURS || blocks[1] < MIN_SPLIT_BLOCK_HOURS) return false
   } else if (blocks.length === 2 && blocks[1] < MIN_TAIL_STRETCH_HOURS) {
     return false
   }
