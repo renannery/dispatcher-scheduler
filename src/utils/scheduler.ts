@@ -10,6 +10,7 @@ import {
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
   MIN_TAIL_STRETCH_HOURS,
+  MIN_TOTAL_SHIFT_HOURS,
   PEAK_WINDOWS,
   patternMaxBreakHours,
   patternWorkBlocks,
@@ -450,13 +451,13 @@ const MAX_OVER_COVERAGE = 1
  *  - when a break exists it is EXACTLY the 30-min paid meal break
  *  - NO hard 5h consecutive cap (Cayman salaried law) — a block may run
  *    up to the 9h daily max
- *  - first stretch ≥ MIN_BLOCK_HOURS (3h) — the meal break comes after
- *    a real stretch; the post-break tail may be short (weekday Morning
- *    runs 5h + 1.5h) because the paid break doesn't fragment the
- *    continuous presence
+ *  - every block ≥ MIN_BLOCK_HOURS (2h — governance change from 3h; a 2h
+ *    first block before the 11:00 meal break legalizes the seam-BRIDGE
+ *    shape). The post-break tail may be shorter still (weekday Morning
+ *    runs 5h + 1.5h) because the paid break doesn't fragment presence
  *  - > 5h worked → one 30-min break, placed in a demand trough
  *    (post-lunch / post-dinner), never inside a peak
- *  - 4h ≤ total work ≤ 9h
+ *  - total work ≥ MIN_TOTAL_SHIFT_HOURS (4h) and ≤ 9h
  *  - Mon–Fri: at least one stretch ≥ WEEKDAY_PRIMARY_STRETCH_HOURS (5h).
  *    Sat (6) / Sun (0) are exempt so the 8 AM opener can split 3h + 4.5h.
  *    A missing `dayOfWeek` defaults to the strict weekday rule so an
@@ -484,7 +485,7 @@ function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   // NO hard 5h consecutive cap (Cayman salaried law) — a block may run up
   // to the 9h daily max.
   const totalWork = blocks.reduce((s, h) => s + h, 0)
-  if (totalWork < 4) return false
+  if (totalWork < MIN_TOTAL_SHIFT_HOURS) return false
   if (totalWork > 9) return false
   // > 5h worked requires a break (meal break or split gap)…
   if (totalWork > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) return false

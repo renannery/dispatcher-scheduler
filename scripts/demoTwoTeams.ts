@@ -28,6 +28,7 @@ import {
   MEAL_BREAK_HOURS,
   midShiftBreakSlots,
   MIN_BLOCK_HOURS,
+  MIN_TOTAL_SHIFT_HOURS,
   PEAK_SLOT_INDICES,
   SPLIT_GAP_MIN_HOURS,
   SPLIT_GAP_MAX_HOURS,
@@ -75,7 +76,8 @@ for (const ds of schedule.dispatcherSchedules) {
       if (!isSplit) problems.push(`break ${brk}h ≠ ${MEAL_BREAK_HOURS}h and not a legal Mon–Wed split`)
     }
     // No hard 5h cap now — a block may run to the 9h daily max.
-    if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < 3h`)
+    if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
+    if (work < MIN_TOTAL_SHIFT_HOURS) problems.push(`${work}h total < ${MIN_TOTAL_SHIFT_HOURS}h min shift`)
     if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) problems.push(`${work}h (>5h) no meal break`)
     // >5h meal break must sit in a demand trough, never in a peak.
     if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length === 2 && brk === MEAL_BREAK_HOURS) {
