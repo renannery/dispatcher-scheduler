@@ -77,7 +77,13 @@ for (const ds of schedule.dispatcherSchedules) {
     }
     // No hard 5h cap now — a block may run to the 9h daily max.
     if (blocks[0] < MIN_BLOCK_HOURS) problems.push(`first stretch ${blocks[0]}h < ${MIN_BLOCK_HOURS}h`)
-    if (work < MIN_TOTAL_SHIFT_HOURS) problems.push(`${work}h total < ${MIN_TOTAL_SHIFT_HOURS}h min shift`)
+    // A sub-5h shift is only legal as the flagged constrained-window
+    // exception (a partial-block day whose window can't fit a 5h shift).
+    const constrainedExempt = (schedule.coverageWarnings?.[day.date] ?? []).some(
+      (w) => w.peak === 'constrained-shift',
+    )
+    if (work < MIN_TOTAL_SHIFT_HOURS && !constrainedExempt)
+      problems.push(`${work}h total < ${MIN_TOTAL_SHIFT_HOURS}h min shift`)
     if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) problems.push(`${work}h (>5h) no meal break`)
     // >5h meal break must sit in a demand trough, never in a peak.
     if (work > MEAL_BREAK_TRIGGER_HOURS && blocks.length === 2 && brk === MEAL_BREAK_HOURS) {

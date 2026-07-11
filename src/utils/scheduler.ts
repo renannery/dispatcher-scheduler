@@ -463,7 +463,15 @@ const MAX_OVER_COVERAGE = 1
  *    A missing `dayOfWeek` defaults to the strict weekday rule so an
  *    omitted arg cannot accidentally admit a weekend-shaped shift into
  *    a weekday context. */
-function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
+function isValidShiftShape(
+  slots: boolean[],
+  dayOfWeek?: number,
+  // Shift floor override. Defaults to the 5h governance floor; the block-cap
+  // must-work pass lowers it to 4h for its constrained-window exception (a
+  // partial day whose window can't fit a legal 5h shift — a 4h shift there
+  // beats forcing an over-cap extra day off).
+  minTotal: number = MIN_TOTAL_SHIFT_HOURS,
+): boolean {
   const blocks = patternWorkBlocks(slots, SLOTS)
   if (blocks.length === 0) return false
   if (blocks.length > 2) return false
@@ -485,7 +493,7 @@ function isValidShiftShape(slots: boolean[], dayOfWeek?: number): boolean {
   // NO hard 5h consecutive cap (Cayman salaried law) — a block may run up
   // to the 9h daily max.
   const totalWork = blocks.reduce((s, h) => s + h, 0)
-  if (totalWork < MIN_TOTAL_SHIFT_HOURS) return false
+  if (totalWork < minTotal) return false
   if (totalWork > 9) return false
   // > 5h worked requires a break (meal break or split gap)…
   if (totalWork > MEAL_BREAK_TRIGGER_HOURS && blocks.length < 2) return false
@@ -3369,7 +3377,37 @@ export function generateSchedule(
               pick = { bool, over, hours }
             }
           }
+          // Tier 2 — constrained-window exception. No full-length (≥5h) legal
+          // shift fits the available window. A 4h shift beats forcing an
+          // over-cap extra day off (the Adorre collapse), so relax to the 4h
+          // floor: trim a catalog shape down to the window and take the best
+          // legal ≥4h result. Flagged below so any use is visible in output.
+          let viaException = false
+          if (pick === null) {
+            for (const raw of DAY_TEMPLATES[day.dayOfWeek].shiftPatterns) {
+              const masked = raw.map((v, i) => v === 1 && !(blk?.[i] ?? false))
+              const hours = slotHours(masked)
+              if (hours < 4 || !isValidShiftShape(masked, day.dayOfWeek, 4)) continue
+              if ((ds.weeklyHours[wl] ?? 0) + hours > WEEKLY_CAP_HOURS) continue
+              let over = 0
+              for (let i = 0; i < masked.length; i++) if (masked[i] && (act[i] ?? 0) + 1 > (req[i] ?? 0)) over++
+              if (pick === null || over < pick.over || (over === pick.over && hours > pick.hours)) {
+                pick = { bool: masked, over, hours }
+                viaException = true
+              }
+            }
+          }
           if (!pick) continue
+          if (viaException) {
+            const warns = (result.coverageWarnings ??= {})
+            warns[day.date] = [
+              ...(warns[day.date] ?? []),
+              {
+                peak: 'constrained-shift',
+                reason: `${disp.name}: available window too tight for a 5h shift — a ${pick.hours}h shift was assigned to honor the ≤${cap}-off cap without forcing a 3rd day off (shift floor is 5h; constrained-window exception).`,
+              },
+            ]
+          }
           day.slots = [...pick.bool]
           day.totalHours = pick.hours
           day.isOff = false
