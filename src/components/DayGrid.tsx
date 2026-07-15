@@ -104,10 +104,22 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                   // into a single chip with an aggregate count — keeps the header
                   // scannable when several slots are short on a rest day.
                   const restCount = warnings.filter((w) => w.peak === 'mandatory-rest').length
-                  const nonRest = warnings.filter((w) => w.peak !== 'mandatory-rest')
+                  const envelopes = warnings.filter((w) => w.peak === 'envelope')
+                  const nonRest = warnings.filter((w) => w.peak !== 'mandatory-rest' && w.peak !== 'envelope')
                   return (
                     <>
                       {nonRest.map((w, idx) => {
+                        if (w.peak === 'constrained-shift') {
+                          return (
+                            <span
+                              key={`c-${idx}`}
+                              className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-violet-300 ring-1 ring-violet-400/50"
+                              title={w.reason}
+                            >
+                              ⧗ short shift
+                            </span>
+                          )
+                        }
                         if (w.peak === 'transition') {
                           const label = w.slotIndex !== undefined ? shortHour(SLOTS[w.slotIndex].label) : 'dip'
                           return (
@@ -148,6 +160,15 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                           title={warnings.filter((w) => w.peak === 'mandatory-rest').map((w) => w.reason).join(' · ')}
                         >
                           🛌 rest → short {restCount}
+                        </span>
+                      )}
+                      {envelopes.length > 0 && (
+                        <span
+                          key="env-chip"
+                          className="rounded bg-teal-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-teal-300 ring-1 ring-teal-400/50"
+                          title={envelopes.map((w) => w.reason).join(' · ')}
+                        >
+                          🪜 evening {envelopes.length}
                         </span>
                       )}
                     </>

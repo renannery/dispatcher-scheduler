@@ -23,6 +23,8 @@ import { generateSchedule } from '@/utils/scheduler'
 import type { Dispatcher } from '@/types/schedule'
 import {
   BREAK_TROUGH_SLOTS,
+  CLOSER_END_SLOT,
+  CLOSER_PRIMARY_STRETCH_HOURS,
   HANDOFF_SLOT,
   MEAL_BREAK_TRIGGER_HOURS,
   MEAL_BREAK_HOURS,
@@ -84,6 +86,9 @@ const prodOverrides: Record<number, number[]> = {
   6: [1, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 1, 2, 1, 1],
 }
 const prodSchedule = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, 86, prodOverrides, 101)
+// No-staircase baselines (applyStaircase = false) for the FIFO gate diff.
+const scheduleBase = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, false)
+const prodBase = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, 86, prodOverrides, 101, false)
 
 // ── Gate S: emitted shift shapes (asserted on BOTH schedules) ───────────
 function collectShapeViolations(sch: typeof schedule): string[] {
@@ -119,7 +124,12 @@ function collectShapeViolations(sch: typeof schedule): string[] {
         else if (!bslot.every((s) => BREAK_TROUGH_SLOTS.has(s))) problems.push(`break not in trough (slots ${bslot.join(',')})`)
       }
       if (work > 9) problems.push(`${work}h > 9h`)
-      if (!isWeekendDow(day.dayOfWeek) && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) problems.push(`no ${WEEKDAY_PRIMARY_STRETCH_HOURS}h primary (weekday)`)
+      // Closers (last worked slot ends ≥ 10 PM) carry the reduced 3h primary
+      // floor — the FIFO/staircase exemption that lets the LATEST arrival
+      // legally close; every other weekday shift keeps the 4h primary.
+      const lastOn = day.slots.reduce((acc, on, i) => (on ? i : acc), -1)
+      const primaryFloor = lastOn >= CLOSER_END_SLOT ? CLOSER_PRIMARY_STRETCH_HOURS : WEEKDAY_PRIMARY_STRETCH_HOURS
+      if (!isWeekendDow(day.dayOfWeek) && Math.max(...blocks) < primaryFloor) problems.push(`no ${primaryFloor}h primary (weekday${lastOn >= CLOSER_END_SLOT ? ' closer' : ''})`)
       if (problems.length > 0) out.push(`${ds.dispatcher.name} ${day.date}: ${problems.join('; ')} (blocks=[${blocks.join(',')}])`)
     }
   }
@@ -234,6 +244,74 @@ console.log(' Warning counts across 11-week horizon')
 console.log('══════════════════════════════════════════════════════════════════════')
 for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`)
 
-const allPass = gateSFail === 0 && gateHFail === 0 && gateOFail === 0
-console.log(`\n FINAL — Gate S: ${gateSFail === 0 ? 'PASS' : 'FAIL'}   Gate H: ${gateHFail === 0 ? 'PASS' : 'FAIL'}   Gate O: ${gateOFail === 0 ? 'PASS' : 'FAIL'}`)
+// ── Gate T — FIFO / staircase (the latest evening arrival closes) ───────
+// Asserted on BOTH the synthetic roster and the prod-config fixture, each
+// diffed against its own no-staircase baseline:
+//   • closing-band envelope inversions strictly DROP vs baseline, and every
+//     one that remains carries an `envelope` flag (0 silent) — the fatigue
+//     shape is fixed or surfaced, never hidden;
+//   • the pass worsens NO slot vs baseline except the 8–9 PM shoulder
+//     (slots 15/16), which may fall by at most 1 (never below target−1),
+//     and every such dip is flagged — the bounded, flagged −1 the governance
+//     change permits solely to dissolve an envelope.
+const STAIRCASE_SHOULDER = new Set([15, 16])
+function presencesT(slots: boolean[]): Array<{ start: number; end: number }> {
+  const runs: Array<[number, number]> = []
+  for (let i = 0; i < slots.length;) {
+    if (!slots[i]) { i++; continue }
+    let j = i; while (j + 1 < slots.length && slots[j + 1]) j++
+    runs.push([i, j]); i = j + 1
+  }
+  if (!runs.length) return []
+  const merged: Array<[number, number]> = [runs[0]]
+  for (let k = 1; k < runs.length; k++) {
+    const p = merged[merged.length - 1]
+    let g = 0; for (let s = p[1] + 1; s <= runs[k][0] - 1; s++) g += SLOTS[s].hours
+    if (g < SPLIT_GAP_MIN_HOURS) merged[merged.length - 1] = [p[0], runs[k][1]]
+    else merged.push(runs[k])
+  }
+  return merged.map(([a, b]) => ({ start: a, end: b }))
+}
+function closingBandT(sch: typeof schedule, date: string): number {
+  const ps: Array<{ start: number; end: number }> = []
+  for (const ds of sch.dispatcherSchedules) {
+    const day = ds.days.find((d) => d.date === date)
+    if (day && !day.isOff) ps.push(...presencesT(day.slots))
+  }
+  let n = 0
+  for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
+    let e = ps[i], l = ps[j]
+    if (l.start < e.start) { e = ps[j]; l = ps[i] } else if (ps[i].start === ps[j].start) continue
+    if (e.end > l.end && e.end >= 16) n++ // enveloper ends ≥ 9 PM
+  }
+  return n
+}
+function gateT(name: string, withS: typeof schedule, base: typeof schedule): boolean {
+  let totWith = 0, totBase = 0, silent = 0, deep = 0, worsened = 0
+  for (const dInfo of withS.dates) {
+    const date = dInfo.date
+    const cW = closingBandT(withS, date), cB = closingBandT(base, date)
+    totWith += cW; totBase += cB
+    if (cW > 0 && !(withS.coverageWarnings?.[date] ?? []).some((w) => w.peak === 'envelope')) silent++
+    const req = withS.coverageRequired?.[date] ?? []
+    const a = withS.coverageActual[date] ?? [], b = base.coverageActual[date] ?? []
+    for (let s = 0; s < 20; s++) {
+      if (STAIRCASE_SHOULDER.has(s)) {
+        if ((a[s] ?? 0) < (req[s] ?? 0) - 1) deep++              // never below target−1
+        if ((a[s] ?? 0) < (b[s] ?? 0) - 1) worsened++           // never more than −1 vs baseline
+      } else if ((a[s] ?? 0) < (b[s] ?? 0)) worsened++          // non-shoulder never worsens
+    }
+  }
+  const pass = silent === 0 && deep === 0 && worsened === 0 && totWith < totBase
+  console.log(`  ${name.padEnd(16)} closing-band ${totBase}→${totWith} · silent ${silent} · shoulder<t−1 ${deep} · worsened-vs-baseline ${worsened} ${pass ? '✓' : '← FAIL'}`)
+  return pass
+}
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Gate T — FIFO/staircase: closing-band ↓ (0 silent) · only 8–9 PM shoulder −1, flagged')
+console.log('══════════════════════════════════════════════════════════════════════')
+const gateTPass = gateT('synthetic', schedule, scheduleBase) && gateT('prod-config', prodSchedule, prodBase)
+const gateTFail = gateTPass ? 0 : 1
+
+const allPass = gateSFail === 0 && gateHFail === 0 && gateOFail === 0 && gateTFail === 0
+console.log(`\n FINAL — Gate S: ${gateSFail === 0 ? 'PASS' : 'FAIL'}   Gate H: ${gateHFail === 0 ? 'PASS' : 'FAIL'}   Gate O: ${gateOFail === 0 ? 'PASS' : 'FAIL'}   Gate T: ${gateTFail === 0 ? 'PASS' : 'FAIL'}`)
 if (!allPass) process.exit(1)

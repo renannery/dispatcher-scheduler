@@ -2,6 +2,8 @@ import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 import {
   BREAK_TROUGH_SLOTS,
+  CLOSER_END_SLOT,
+  CLOSER_PRIMARY_STRETCH_HOURS,
   DAY_TEMPLATES,
   effectiveCoverage,
   HANDOFF_SLOT,
@@ -512,9 +514,15 @@ function isValidShiftShape(
     return false
   }
   if (blocks[0] < MIN_BLOCK_HOURS) return false
-  // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt.
+  // Weekday primary-stretch rule — Sat (6) and Sun (0) are exempt. Closers
+  // (last worked slot ends ≥ 10 PM) carry the reduced 3h primary floor: a
+  // late arrival that closes can only break at 8–9 PM (the sole evening
+  // trough), leaving a 3h primary — the 4h rule would forbid it, forcing the
+  // closer to be an early arrival (the fatigue "envelope"). See CLOSER_*.
   const isWeekendDay = dayOfWeek === 0 || dayOfWeek === 6
-  if (!isWeekendDay && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) return false
+  const isCloser = lastActiveSlot(slots) >= CLOSER_END_SLOT
+  const primaryFloor = isCloser ? CLOSER_PRIMARY_STRETCH_HOURS : WEEKDAY_PRIMARY_STRETCH_HOURS
+  if (!isWeekendDay && Math.max(...blocks) < primaryFloor) return false
   return true
 }
 
@@ -2911,6 +2919,256 @@ export function generateCore(
 }
 
 // ---------------------------------------------------------------------------
+// FIFO / staircase enforcement — the LATEST evening arrival closes.
+//
+// Governance rule (fatigue): comparing contiguous evening presences, whoever
+// arrives earliest must leave earliest; the latest arrival closes. An
+// "envelope inversion" is an earlier arrival that ends LATER than a later
+// arrival AND runs to the close (ends ≥ 9 PM) — the worst fatigue shape
+// (there since mid-afternoon AND closing while later arrivals leave early).
+//
+// The re-cut is coverage-neutral at the worked-span level: per-slot coverage =
+// (#starts ≤ t) − (#ends < t), which depends only on the MULTISET of starts
+// and ends, not their pairing — so re-pairing the evening cohort's ends FIFO
+// (earliest start ↔ earliest end) removes all strict nesting while leaving
+// every worked slot's coverage identical. The only perturbation is the meal
+// break: a late arrival that now closes crosses 5h and needs a 30-min break at
+// 8–9 PM (the sole evening trough), which can shave that shoulder. Every
+// reshape is therefore COVERAGE-GUARDED — committed only if no slot drops
+// below min(target, prior) — and validated with isValidShiftShape (closers
+// carry the 3h-primary exemption), personal blocks, and night→morning rest.
+// Closing-band inversions that no coverage-preserving staircase can remove are
+// FLAGGED with their reason (personal block, night-rest, thin roster / anchor
+// coupling, or the 8–9 PM shoulder cost) — never silent. Only closers are
+// touched; morning/daytime envelopes are out of scope (not fatigue).
+const STAIRCASE_CLOSE_ENDSLOT = 16 // enveloper ends ≥ 9 PM (fatigue closer)
+const STAIRCASE_EVE_END_MIN = 14   // cohort presence ends ≥ 8 PM
+const STAIRCASE_EVE_START_MIN = 6  // …and starts ≥ 1 PM (afternoon taper)
+const STAIRCASE_SHOULDER = new Set([15, 16]) // 8–9 PM — the sole evening trough
+
+/** Contiguous presences of a day bitmap: meal breaks (<2h gap) span a single
+ *  presence; split gaps (≥2h) separate legs. */
+function dayPresences(slots: boolean[]): Array<{ start: number; end: number; legs: number }> {
+  const runs: Array<[number, number]> = []
+  for (let i = 0; i < slots.length;) {
+    if (!slots[i]) { i++; continue }
+    let j = i
+    while (j + 1 < slots.length && slots[j + 1]) j++
+    runs.push([i, j]); i = j + 1
+  }
+  if (runs.length === 0) return []
+  const merged: Array<[number, number]> = [runs[0]]
+  for (let k = 1; k < runs.length; k++) {
+    const prev = merged[merged.length - 1]
+    let gapH = 0
+    for (let s = prev[1] + 1; s <= runs[k][0] - 1; s++) gapH += SLOTS[s].hours
+    if (gapH < SPLIT_GAP_MIN_HOURS) merged[merged.length - 1] = [prev[0], runs[k][1]]
+    else merged.push(runs[k])
+  }
+  return merged.map(([a, b]) => ({ start: a, end: b, legs: merged.length }))
+}
+
+/** Strict closing-band envelope inversions among a presence set: an earlier
+ *  start that ends later (envelopes) AND itself runs to the close (≥ 9 PM).
+ *  Split legs enter by their own leg-start. Ties in start are never faults. */
+function closingBandInversions(ps: Array<{ start: number; end: number }>): number {
+  let n = 0
+  for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
+    let e = ps[i], l = ps[j]
+    if (l.start < e.start) { e = ps[j]; l = ps[i] }
+    else if (ps[i].start === ps[j].start) continue
+    if (e.end > l.end && e.end >= STAIRCASE_CLOSE_ENDSLOT) n++
+  }
+  return n
+}
+
+function enforceStaircase(
+  result: GeneratedSchedule,
+  timeOff: DispatcherTimeOff,
+): void {
+  const warnings = (result.coverageWarnings ??= {})
+  for (const dInfo of result.dates) {
+    const dateStr = dInfo.date, dow = dInfo.dayOfWeek, wl = dInfo.weekLabel
+    const req = result.coverageRequired?.[dateStr] ?? []
+    const cov = result.coverageActual[dateStr] ?? []
+    const covBefore = [...cov] // pre-staircase coverage, to isolate dips WE cause
+
+    type Work = { ds: DispatcherSchedule; day: DispatcherDayEntry }
+    const working: Work[] = []
+    for (const ds of result.dispatcherSchedules) {
+      const day = ds.days.find((d) => d.date === dateStr)
+      if (day && !day.isOff) working.push({ ds, day })
+    }
+    const flatPresences = () => working.flatMap((w) => dayPresences(w.day.slots))
+    const beforeClosing = closingBandInversions(flatPresences())
+    if (beforeClosing === 0) continue
+
+    // Reshapeable = single-presence evening bodies (afternoon start, evening
+    // end). Splits/mornings are fixed obstacles.
+    type R = { w: Work; start: number; end: number; oldSlots: boolean[]; blocked: boolean[] | null }
+    const reshapeable: R[] = []
+    for (const w of working) {
+      const ps = dayPresences(w.day.slots)
+      if (ps.length === 1 && ps[0].start >= STAIRCASE_EVE_START_MIN && ps[0].end >= STAIRCASE_EVE_END_MIN) {
+        reshapeable.push({
+          w, start: ps[0].start, end: ps[0].end, oldSlots: [...w.day.slots],
+          blocked: blockedBitmap(timeOff, w.ds.dispatcher, dateStr, dow),
+        })
+      }
+    }
+    if (reshapeable.length < 2) {
+      warnings[dateStr] = [...(warnings[dateStr] ?? []), {
+        peak: 'envelope' as const,
+        reason: `Evening FIFO not achievable — thin evening roster (only ${reshapeable.length} reshapeable body); the close-anchored envelope is structurally forced.`,
+      }]
+      continue
+    }
+
+    // Obstacle presences (mornings, splits, ramps) — fixed; the reshapeable
+    // evening bodies re-pair around them.
+    const reshapeSet = new Set(reshapeable.map((r) => r.w))
+    const obstaclePres = working.filter((w) => !reshapeSet.has(w)).flatMap((w) => dayPresences(w.day.slots))
+    // Coverage guard floor. Every slot must stay ≥ min(target, prior). The
+    // 8–9 PM shoulder (slots 15/16) is the ONE exception: a closer's meal
+    // break — the sole legal evening break position — may drop it to target−1
+    // (never below 1, never below a pre-existing deficit), and ONLY on a
+    // commit that strictly dissolves a closing-band envelope (checked in the
+    // search). Governance: relaxes "8–9 PM shoulder strictly at target" to
+    // "≥ target−1 at 8–9 PM, only to kill an envelope, always flagged" — the
+    // same bounded, flagged −1 cost class as the rotating 2nd-off's bar (b).
+    const guardMin = (i: number) => STAIRCASE_SHOULDER.has(i)
+      ? Math.max(1, Math.min(cov[i] ?? 0, (req[i] ?? 0) - 1))
+      : Math.min(req[i] ?? 0, cov[i] ?? 0)
+    const pinned = new Set<number>()
+    const reasons = new Map<number, string>()
+    let commit: Map<number, boolean[]> | null = null
+
+    for (let pass = 0; pass <= reshapeable.length; pass++) {
+      const free = reshapeable.map((_, i) => i).filter((i) => !pinned.has(i))
+      if (free.length < 1) break
+      const allEnds = reshapeable.map((r) => r.end)
+      const freeEnds = [...allEnds]
+      for (const i of pinned) freeEnds.splice(freeEnds.indexOf(reshapeable[i].end), 1)
+      freeEnds.sort((a, b) => a - b)
+      const freeByStart = [...free].sort((a, b) =>
+        reshapeable[a].start - reshapeable[b].start || reshapeable[a].end - reshapeable[b].end)
+      const newEnd = new Map<number, number>()
+      for (const i of pinned) newEnd.set(i, reshapeable[i].end)
+      freeByStart.forEach((i, k) => newEnd.set(i, freeEnds[k]))
+
+      // Build valid candidate bitmaps (break variants) for every member.
+      const candidates = new Map<number, boolean[][]>()
+      let pinThis = -1, pinWhy = ''
+      for (let i = 0; i < reshapeable.length; i++) {
+        const r = reshapeable[i]
+        const ne = newEnd.get(i)!
+        const base = new Array(SLOTS.length).fill(false)
+        for (let s = r.start; s <= ne; s++) base[s] = true
+        if (r.blocked && base.some((on, s) => on && r.blocked![s])) {
+          if (!pinned.has(i)) { pinThis = i; pinWhy = 'personal block window' }
+          candidates.set(i, []); continue
+        }
+        if (ne >= NIGHT_SLOT_THRESHOLD) {
+          const di = result.dates.findIndex((d) => d.date === dateStr)
+          const nextDate = di + 1 < result.dates.length ? result.dates[di + 1].date : null
+          const nDay = nextDate ? r.w.ds.days.find((d) => d.date === nextDate) : null
+          if (nDay && !nDay.isOff) {
+            const f = nDay.slots.findIndex(Boolean)
+            if (f >= 0 && f <= MORNING_SLOT_THRESHOLD) {
+              if (!pinned.has(i)) { pinThis = i; pinWhy = 'night→morning rest' }
+              candidates.set(i, []); continue
+            }
+          }
+        }
+        const spanH = slotHours(base)
+        const weekAfter = (r.w.ds.weeklyHours[wl] ?? 0) - r.w.day.totalHours
+        const opts: boolean[][] = []
+        const pushIfOK = (b: boolean[]) => {
+          if (weekAfter + slotHours(b) > WEEKLY_CAP_HOURS) return
+          if (isValidShiftShape(b, dow)) opts.push(b)
+        }
+        if (spanH <= MEAL_BREAK_TRIGGER_HOURS) pushIfOK(base)
+        else for (const t of BREAK_TROUGH_SLOTS) {
+          if (t > r.start && t < ne) { const trial = [...base]; trial[t] = false; pushIfOK(trial) }
+        }
+        if (opts.length === 0 && !pinned.has(i)) {
+          pinThis = i; pinWhy = weekAfter + spanH > WEEKLY_CAP_HOURS ? '45h weekly cap' : 'no legal closing shape'
+        }
+        candidates.set(i, opts)
+      }
+      if (pinThis >= 0) { pinned.add(pinThis); reasons.set(pinThis, pinWhy); continue }
+
+      // Pick one candidate per member so the coverage guard holds everywhere
+      // AND the reshape strictly reduces closing-band envelopes (so the
+      // shoulder −1 is only ever spent to dissolve an envelope, never gratis).
+      const chosen: (boolean[] | null)[] = reshapeable.map(() => null)
+      const search = (mi: number): boolean => {
+        if (mi === reshapeable.length) {
+          const trial = [...cov]
+          for (let i = 0; i < reshapeable.length; i++) {
+            reshapeable[i].oldSlots.forEach((on, s) => { if (on) trial[s]-- })
+            chosen[i]!.forEach((on, s) => { if (on) trial[s]++ })
+          }
+          for (let s = 0; s < trial.length; s++) if (trial[s] < guardMin(s)) return false
+          const after = closingBandInversions([
+            ...obstaclePres,
+            ...reshapeable.flatMap((_, i) => dayPresences(chosen[i]!)),
+          ])
+          return after < beforeClosing
+        }
+        for (const c of candidates.get(mi)!) { chosen[mi] = c; if (search(mi + 1)) return true }
+        chosen[mi] = null
+        return false
+      }
+      if (search(0)) { commit = new Map(reshapeable.map((_, i) => [i, chosen[i]!])); break }
+      // No guard-safe, envelope-dissolving combination: pin the latest-ending
+      // free body (whose new closer break costs the most) and retry.
+      const worst = freeByStart.length ? freeByStart[freeByStart.length - 1] : -1
+      if (worst < 0) break
+      pinned.add(worst); reasons.set(worst, 'no coverage-preserving staircase (fixed obstacle / anchor coupling)')
+    }
+
+    if (commit) {
+      commit.forEach((slots, i) => {
+        const r = reshapeable[i]
+        r.w.day.slots.forEach((on, s) => { if (on && cov[s] != null) cov[s]-- })
+        slots.forEach((on, s) => { if (on && cov[s] != null) cov[s]++ })
+        const oldH = r.w.day.totalHours
+        const newH = slotHours(slots)
+        r.w.day.slots = slots
+        r.w.day.totalHours = newH
+        r.w.ds.weeklyHours[wl] = (r.w.ds.weeklyHours[wl] ?? 0) + (newH - oldH)
+        r.w.ds.totalHours += newH - oldH
+      })
+      // Flag every 8–9 PM shoulder the staircase itself dropped below target
+      // (cov fell vs pre-staircase) — never silent. Pre-existing shortfalls
+      // (unchanged by this pass) are the scheduler's normal tight-roster
+      // signal, surfaced elsewhere; we only own the dips WE cause.
+      for (const s of STAIRCASE_SHOULDER) {
+        if ((req[s] ?? 0) > 0 && (cov[s] ?? 0) < (req[s] ?? 0) && (cov[s] ?? 0) < covBefore[s]) {
+          warnings[dateStr] = [...(warnings[dateStr] ?? []), {
+            peak: 'envelope' as const,
+            slotIndex: s,
+            reason: `${SLOTS[s].label} held at ${cov[s]} (target ${req[s]}) — the closer's meal break, spent to place the latest arrival as closer (FIFO/staircase). Bounded −1, never below the peak/1-floor, only to dissolve an envelope.`,
+          }]
+        }
+      }
+    }
+
+    const residual = closingBandInversions(flatPresences())
+    if (residual > 0) {
+      const why = reasons.size
+        ? [...new Set(reasons.values())].join('; ')
+        : 'no coverage-preserving staircase (thin evening roster / anchor coupling / fixed split leg)'
+      warnings[dateStr] = [...(warnings[dateStr] ?? []), {
+        peak: 'envelope' as const,
+        reason: `Evening FIFO leaves ${residual} closing-band envelope(s) — ${why}.`,
+      }]
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rotating 2nd day off — plan → generate → audit → defer wrapper.
 //
 // Exactly one Regular/Senior dispatcher per week is up for a 2nd day off,
@@ -2940,6 +3198,10 @@ export function generateSchedule(
   seed = 0,
   coverageOverrides: Record<number, number[]> = {},
   secondOffCursor = 0,
+  // FIFO/staircase pass toggle — default on. The gate flips it off to
+  // measure the no-staircase baseline and prove the pass worsens nothing
+  // except the flagged, bounded 8–9 PM shoulder −1.
+  applyStaircase = true,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const nDays = differenceInDays(parseISO(endDate), start) + 1
@@ -3532,6 +3794,12 @@ export function generateSchedule(
     }
     if (surfaced) result = { ...result, coverageWarnings: warnings }
   }
+
+  // ── FIFO / staircase — the latest evening arrival closes ────────────────
+  // Runs LAST: reshapes only evening closers (coverage-guarded, hours-neutral
+  // at the worked-span level), leaving every other body untouched. Flags any
+  // closing-band envelope it can't remove with its structural reason.
+  if (applyStaircase) enforceStaircase(result, timeOff)
 
   return { ...result, secondOffLog: finalLog }
 }
