@@ -3169,6 +3169,104 @@ function enforceStaircase(
 }
 
 // ---------------------------------------------------------------------------
+// Fairness rotation over IRREDUCIBLE envelopes.
+//
+// Where no legal staircase exists (the residuals enforceStaircase flags), the
+// close-anchored "envelope" shift — early arrival AND closing, the fatigue
+// burden — must stand. This pass rotates WHO carries it so the same dispatcher
+// isn't repeatedly stuck: it's a pure SHAPE SWAP between the current carrier and
+// an eligible evening peer, so coverage, the closing-band count, and every gate
+// invariant are byte-identical — only the assignment changes. The carrier for
+// each occurrence is the eligible dispatcher who has borne the FEWEST so far
+// (seeded tiebreak, deterministic), so the burden spreads evenly across the
+// horizon. Swaps respect availability (personal blocks), night→morning rest on
+// BOTH sides, and the 45h weekly cap.
+function rotateEnvelopeBurden(
+  result: GeneratedSchedule,
+  timeOff: DispatcherTimeOff,
+  seed: number,
+): void {
+  const ds = result.dispatcherSchedules
+  const n = ds.length
+  if (n < 2) return
+  const carried = new Map<string, number>(ds.map((d) => [d.dispatcher.id, 0]))
+  const seededRank = (idx: number) => ((idx + seed) % n + n) % n
+
+  const shiftEnds = (slots: boolean[]) => { for (let s = slots.length - 1; s >= 0; s--) if (slots[s]) return s; return -1 }
+  const canWork = (dsIdx: number, bitmap: boolean[], dateIdx: number): boolean => {
+    const D = ds[dsIdx]
+    const dInfo = result.dates[dateIdx]
+    const blocked = blockedBitmap(timeOff, D.dispatcher, dInfo.date, dInfo.dayOfWeek)
+    if (blocked && bitmap.some((on, s) => on && blocked[s])) return false
+    const end = shiftEnds(bitmap)
+    if (end >= NIGHT_SLOT_THRESHOLD && dateIdx + 1 < result.dates.length) {
+      const nDay = D.days.find((x) => x.date === result.dates[dateIdx + 1].date)
+      if (nDay && !nDay.isOff) { const f = nDay.slots.findIndex(Boolean); if (f >= 0 && f <= MORNING_SLOT_THRESHOLD) return false }
+    }
+    const start = bitmap.findIndex(Boolean)
+    if (start >= 0 && start <= MORNING_SLOT_THRESHOLD && dateIdx - 1 >= 0) {
+      const pDay = D.days.find((x) => x.date === result.dates[dateIdx - 1].date)
+      if (pDay && !pDay.isOff && shiftEnds(pDay.slots) >= NIGHT_SLOT_THRESHOLD) return false
+    }
+    return true
+  }
+
+  result.dates.forEach((dInfo, dateIdx) => {
+    const dateStr = dInfo.date, wl = dInfo.weekLabel
+    // All presences with owner, to find the carrier and the eligible peers.
+    const owned: Array<{ dsIdx: number; start: number; end: number }> = []
+    ds.forEach((d, dsIdx) => {
+      const day = d.days.find((x) => x.date === dateStr)
+      if (day && !day.isOff) for (const p of dayPresences(day.slots)) owned.push({ dsIdx, start: p.start, end: p.end })
+    })
+    // Carrier = the enveloper that runs to the close (ends ≥ 9 PM) and envelopes
+    // a later, earlier-ending presence; pick the earliest arrival (worst burden).
+    let carrier: { dsIdx: number; start: number; end: number } | null = null
+    for (const a of owned) {
+      if (a.end < STAIRCASE_CLOSE_ENDSLOT) continue
+      if (!owned.some((b) => b !== a && a.start < b.start && a.end > b.end)) continue
+      if (!carrier || a.start < carrier.start || (a.start === carrier.start && a.end > carrier.end)) carrier = a
+    }
+    if (!carrier) return
+    const Xidx = carrier.dsIdx
+    const Xslots = ds[Xidx].days.find((x) => x.date === dateStr)!.slots
+    const Xh = slotHours(Xslots)
+
+    // Eligible carriers: evening workers (their own shift ends ≥ 8 PM) for whom
+    // the two-way swap with X is feasible. X is always eligible (no-op).
+    let best = Xidx
+    let bestKey: [number, number] = [carried.get(ds[Xidx].dispatcher.id)!, seededRank(Xidx)]
+    for (let Yidx = 0; Yidx < n; Yidx++) {
+      if (Yidx === Xidx) continue
+      const Yday = ds[Yidx].days.find((x) => x.date === dateStr)
+      if (!Yday || Yday.isOff) continue
+      if (shiftEnds(Yday.slots) < STAIRCASE_EVE_END_MIN) continue // evening peers only
+      const Yslots = Yday.slots, Yh = slotHours(Yslots)
+      if (!canWork(Yidx, Xslots, dateIdx) || !canWork(Xidx, Yslots, dateIdx)) continue
+      const xWeek = (ds[Xidx].weeklyHours[wl] ?? 0) - Xh + Yh
+      const yWeek = (ds[Yidx].weeklyHours[wl] ?? 0) - Yh + Xh
+      if (xWeek > WEEKLY_CAP_HOURS || yWeek > WEEKLY_CAP_HOURS) continue
+      const key: [number, number] = [carried.get(ds[Yidx].dispatcher.id)!, seededRank(Yidx)]
+      if (key[0] < bestKey[0] || (key[0] === bestKey[0] && key[1] < bestKey[1])) { best = Yidx; bestKey = key }
+    }
+
+    if (best !== Xidx) {
+      const Xday = ds[Xidx].days.find((x) => x.date === dateStr)!
+      const Yday = ds[best].days.find((x) => x.date === dateStr)!
+      const xSlots = Xday.slots, ySlots = Yday.slots
+      const xh = slotHours(xSlots), yh = slotHours(ySlots)
+      Xday.slots = ySlots; Xday.totalHours = yh
+      Yday.slots = xSlots; Yday.totalHours = xh
+      ds[Xidx].weeklyHours[wl] = (ds[Xidx].weeklyHours[wl] ?? 0) - xh + yh
+      ds[best].weeklyHours[wl] = (ds[best].weeklyHours[wl] ?? 0) - yh + xh
+      ds[Xidx].totalHours += yh - xh
+      ds[best].totalHours += xh - yh
+    }
+    carried.set(ds[best].dispatcher.id, (carried.get(ds[best].dispatcher.id) ?? 0) + 1)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Rotating 2nd day off — plan → generate → audit → defer wrapper.
 //
 // Exactly one Regular/Senior dispatcher per week is up for a 2nd day off,
@@ -3202,6 +3300,9 @@ export function generateSchedule(
   // measure the no-staircase baseline and prove the pass worsens nothing
   // except the flagged, bounded 8–9 PM shoulder −1.
   applyStaircase = true,
+  // Fairness rotation over irreducible envelopes — default on. Off measures
+  // the pre-rotation carrier distribution (coverage-identical either way).
+  rotateEnvelopes = true,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const nDays = differenceInDays(parseISO(endDate), start) + 1
@@ -3799,7 +3900,12 @@ export function generateSchedule(
   // Runs LAST: reshapes only evening closers (coverage-guarded, hours-neutral
   // at the worked-span level), leaving every other body untouched. Flags any
   // closing-band envelope it can't remove with its structural reason.
-  if (applyStaircase) enforceStaircase(result, timeOff)
+  if (applyStaircase) {
+    enforceStaircase(result, timeOff)
+    // Spread the fatigue of the envelopes no staircase can dissolve (a pure,
+    // coverage-identical shape swap between the carrier and an eligible peer).
+    if (rotateEnvelopes) rotateEnvelopeBurden(result, timeOff, seed)
+  }
 
   return { ...result, secondOffLog: finalLog }
 }
