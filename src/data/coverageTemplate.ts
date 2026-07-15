@@ -191,12 +191,15 @@ const EVENING_D2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1]
 // (starts exactly at the peak boundary). Weekday-legal (5h primary).
 const EVENING_S   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0]
 // Evening E (17:00–23:30, meal break 8–8:30 PM; stretches 3h + 3h, 6h).
-// WEEKEND-ONLY latest start — its 3h primary stretch is under the 4h
-// weekday minimum. Serves days like Saturday where the override wants
-// 1 body at 3–5 PM but 4 at dinner: the dinner crowd arrives at 5.
+// The 5 PM CLOSER — the latest-starting body that runs to close. Its 3h
+// primary is under the 4h weekday minimum but IS the closer's 3h floor
+// (CLOSER_PRIMARY_STRETCH_HOURS): a 5 PM arrival can only break at 8–9 PM,
+// leaving a 3h primary. Now weekday-legal so the LATEST arrival closes
+// (FIFO/staircase) instead of an early arrival being forced to (the
+// envelope). On weekends the 4h rule never applied anyway.
 const EVENING_E   = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1]
 // Evening E2 (17:00–23:30, meal break 8:30–9 PM; 3.5h + 2.5h, 6h).
-// WEEKEND-ONLY break-stagger twin of E.
+// Break-stagger twin of E — the other 5 PM closer break position.
 const EVENING_E2  = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]
 // Evening L (18:30–23:30, 5h straight — no break). The breakless
 // CLOSER: carries the whole 8 PM–11:30 PM tail so the shoulder slots
@@ -272,6 +275,8 @@ const WEEKDAY_PATTERNS = [
   EVENING_D, EVENING_D,
   EVENING_D2, EVENING_D2,
   EVENING_S, EVENING_S,
+  EVENING_E, EVENING_E,   // 5 PM closers — weekday-legal under the closer 3h-primary exemption (FIFO/staircase)
+  EVENING_E2, EVENING_E2,
   EVENING_L, EVENING_L,
   EVENING_L2, EVENING_L2,
   BRIDGE_M, BRIDGE_M, BRIDGE_M, // seam-bridge (2h-block rule) — covers 2–2:30 PM continuously
@@ -473,6 +478,23 @@ export const MIN_TAIL_STRETCH_HOURS = 1.5
  *  8 AM opener can split 3h + 4.5h around a late-morning break.
  *  Enforced in isValidShiftShape via the caller-supplied `dayOfWeek`. */
 export const WEEKDAY_PRIMARY_STRETCH_HOURS = 4
+
+/** Closer exemption from the weekday primary-stretch rule (FIFO/staircase
+ *  governance change). A shift whose last worked slot ends at 10 PM or later
+ *  (last active slot ≥ CLOSER_END_SLOT) is a "closer". The only evening
+ *  demand-trough is 8–9 PM (dinner 5–8 PM is all peak, no legal break), so a
+ *  late arrival that closes runs 6–6.5h and can only place its meal break at
+ *  8–8:30 / 8:30–9 PM — leaving a 3h (not 4h) primary before it. The full 4h
+ *  rule therefore FORBIDS any closer starting at 5–6 PM, structurally forcing
+ *  the closer to be an EARLY arrival (the "envelope": there since mid-afternoon
+ *  AND closing — the worst fatigue arrangement). Closers instead carry a 3h
+ *  primary floor so the LATEST arrival can legally close, decoupling the
+ *  dinner anchor (early arrival) from the closer. Scoped strictly to closers —
+ *  every non-closer weekday shift keeps the 4h primary, and the qualified
+ *  block minimums (2h beside a meal break, 3h beside a split gap) are
+ *  unchanged, so no short-leg regression. */
+export const CLOSER_PRIMARY_STRETCH_HOURS = 3
+export const CLOSER_END_SLOT = 17
 
 /** Break TRIGGER threshold (Cayman law, salaried/non-hourly): a shift
  *  longer than this includes one reasonable (30-min) paid break. This is
@@ -678,8 +700,13 @@ export function midShiftBreakSlots(pattern: number[] | boolean[]): number[] {
       if (work > 9) {
         violations.push(`${day.dayName} #${idx}: ${work}h > 9h daily max`)
       }
-      if (!isWeekend && Math.max(...blocks) < WEEKDAY_PRIMARY_STRETCH_HOURS) {
-        violations.push(`${day.dayName} #${idx}: no ${WEEKDAY_PRIMARY_STRETCH_HOURS}h primary stretch (weekday)`)
+      // Closers (last worked slot ends ≥ 10 PM) carry the 3h primary floor;
+      // every other weekday shift keeps the 4h primary.
+      let lastOn = -1
+      for (let i = pat.length - 1; i >= 0; i--) { if (pat[i]) { lastOn = i; break } }
+      const primaryFloor = lastOn >= CLOSER_END_SLOT ? CLOSER_PRIMARY_STRETCH_HOURS : WEEKDAY_PRIMARY_STRETCH_HOURS
+      if (!isWeekend && Math.max(...blocks) < primaryFloor) {
+        violations.push(`${day.dayName} #${idx}: no ${primaryFloor}h primary stretch (weekday${lastOn >= CLOSER_END_SLOT ? ' closer' : ''})`)
       }
     })
   }
