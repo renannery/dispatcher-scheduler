@@ -86,6 +86,11 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 // violations (0-coverage slot, depth > 1, peak residual) still fail
 // through the unchanged B1/B5 checks.
 const grantedWeeks = (s.secondOffLog ?? []).filter((r) => r.granted).length
+// Measured AFTER the full no-trainee-split ladder (repair → peak backfill →
+// flagged retained split) was complete: the fully-enforced rule costs ZERO
+// extra units here. The backfill's over-coverage replaces what the split was
+// providing, so it nets out — the naive mid-build readings of 11/12 were
+// artifacts of an incomplete ladder. No slack is banked; the base is unchanged.
 const B5_ALLOWANCE = 8 + grantedWeeks
 
 let zeroFails = 0

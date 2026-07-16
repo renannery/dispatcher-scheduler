@@ -103,6 +103,15 @@ function collectShapeViolations(sch: typeof schedule): string[] {
       const brk = patternMaxBreakHours(day.slots, SLOTS)
       const work = blocks.reduce((s, h) => s + h, 0)
       const problems: string[] = []
+      // Trainees never work split shifts. The ONLY legal exception is a split
+      // RETAINED because it was the only way to hold a peak at target — and it
+      // must carry the `trainee-split` flag (the operational rule yielding to
+      // the inviolable peak tier, surfaced never silent). An unflagged trainee
+      // split is a hard FAIL, whatever path produced it.
+      if (ds.dispatcher.level === 'Trainee' && blocks.length === 2 && brk >= SPLIT_GAP_MIN_HOURS) {
+        const retained = (sch.coverageWarnings?.[day.date] ?? []).some((w) => w.peak === 'trainee-split')
+        if (!retained) problems.push(`Trainee split (gap ${brk}h), UNFLAGGED — Trainees work continuous shifts only`)
+      }
       if (blocks.length > 2) problems.push(`${blocks.length} stretches`)
       if (blocks.length === 2 && brk !== MEAL_BREAK_HOURS) {
         // Split exception: a 2–3h lull gap; both legs ≥ MIN_SPLIT_BLOCK_HOURS
