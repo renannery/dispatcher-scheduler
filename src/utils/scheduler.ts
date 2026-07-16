@@ -3068,7 +3068,15 @@ function enforceStaircase(
           if (!pinned.has(i)) { pinThis = i; pinWhy = 'personal block window' }
           candidates.set(i, []); continue
         }
-        if (ne >= NIGHT_SLOT_THRESHOLD) {
+        // Night→morning rest: reject a reshape that NEWLY makes a non-night
+        // shift close at night (end ≥ NIGHT) before a next-day morning. A body
+        // whose ORIGINAL shift already closes at night (r.end ≥ NIGHT) is a
+        // pre-existing situation the base scheduler produced — keeping her (or
+        // re-pairing her end, still at night) introduces nothing, so we must
+        // not veto her out of the cohort, which would silently forfeit a legal
+        // dissolving staircase (observed: Wed with a Trainee already closing
+        // 11 PM before a 9 AM open).
+        if (ne >= NIGHT_SLOT_THRESHOLD && r.end < NIGHT_SLOT_THRESHOLD) {
           const di = result.dates.findIndex((d) => d.date === dateStr)
           const nextDate = di + 1 < result.dates.length ? result.dates[di + 1].date : null
           const nDay = nextDate ? r.w.ds.days.find((d) => d.date === nextDate) : null
