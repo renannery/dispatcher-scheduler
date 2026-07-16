@@ -474,11 +474,17 @@ function isValidShiftShape(
   // partial day whose window can't fit a legal 5h shift — a 4h shift there
   // beats forcing an over-cap extra day off).
   minTotal: number = MIN_TOTAL_SHIFT_HOURS,
+  // Level, when supplied. Trainees never work split shifts (a ≥2h unpaid gap):
+  // a Trainee must be continuously supervised, and a split's long midday gap
+  // leaves the two legs to be covered separately, doubling the supervision
+  // burden. Continuous shifts (with the normal meal break) only.
+  level?: DispatcherLevel,
 ): boolean {
   const blocks = patternWorkBlocks(slots, SLOTS)
   if (blocks.length === 0) return false
   if (blocks.length > 2) return false
   const maxBreak = patternMaxBreakHours(slots, SLOTS)
+  if (level === 'Trainee' && blocks.length === 2 && maxBreak >= SPLIT_GAP_MIN_HOURS) return false
   if (blocks.length === 2 && maxBreak !== MEAL_BREAK_HOURS) {
     // Split exception (ANY day — the human team uses splits whenever
     // covering both peaks with one dispatcher helps the targets): a
@@ -549,6 +555,8 @@ function isEligibleForPattern(
 ): boolean {
   if (ctx.usedIds.has(d.id)) return false
   if (p.isMorning && ctx.workedNightYesterday(d.id)) return false
+  // Trainees never work split shifts (hard per-level shape rule).
+  if (d.level === 'Trainee' && patternMaxBreakHours(p.bool, SLOTS) >= SPLIT_GAP_MIN_HOURS) return false
   const blocks = blockedBitmap(ctx.timeOff, d, ctx.dateStr, ctx.dow)
   if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
   if ((ctx.weekHours[d.id][ctx.wLabel] ?? 0) + p.hours > ctx.capForShift(d.id, lastActiveSlot(p.bool))) return false
@@ -2099,6 +2107,8 @@ export function generateCore(
       const eligible = sortedWorking.filter((d) => {
         if (usedIds.has(d.id)) return false
         if (p.isMorning && workedNightYesterday(d.id)) return false
+        // Trainees never work split shifts (hard per-level shape rule).
+        if (d.level === 'Trainee' && p.maxBreak >= SPLIT_GAP_MIN_HOURS) return false
         const blocks = blockedBitmap(timeOff, d, dateStr, dow)
         if (blocks && p.bool.some((on, i) => on && blocks[i])) return false
         if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) return false
@@ -2244,6 +2254,8 @@ export function generateCore(
             // units unchanged). Unassigned-working dispatchers rescue
             // freely — no perk at stake.
             if (electedOffIds.has(d.id) && fill < 2) continue
+            // Trainees never work split shifts (hard per-level shape rule).
+            if (d.level === 'Trainee' && p.maxBreak >= SPLIT_GAP_MIN_HOURS) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
             if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
             if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
@@ -2309,6 +2321,8 @@ export function generateCore(
         for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
           const p = patternMeta[pIdx]
           if (p.isMorning && workedNightYesterday(d.id)) continue
+          // Trainees never work split shifts (hard per-level shape rule).
+          if (d.level === 'Trainee' && p.maxBreak >= SPLIT_GAP_MIN_HOURS) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
           if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
@@ -2375,6 +2389,8 @@ export function generateCore(
         for (let pIdx = 0; pIdx < patternMeta.length; pIdx++) {
           const p = patternMeta[pIdx]
           if (p.isMorning && workedNightYesterday(d.id)) continue
+          // Trainees never work split shifts (hard per-level shape rule).
+          if (d.level === 'Trainee' && p.maxBreak >= SPLIT_GAP_MIN_HOURS) continue
           const blocks = blockedBitmap(timeOff, d, dateStr, dow)
           if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
           if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
@@ -2467,6 +2483,8 @@ export function generateCore(
           for (const d of floorPool) {
             if (usedIds.has(d.id)) continue
             if (p.isMorning && workedNightYesterday(d.id)) continue
+            // Trainees never work split shifts (hard per-level shape rule).
+            if (d.level === 'Trainee' && p.maxBreak >= SPLIT_GAP_MIN_HOURS) continue
             const blocks = blockedBitmap(timeOff, d, dateStr, dow)
             if (blocks && p.bool.some((on, j) => on && blocks[j])) continue
             if ((weekHours[d.id][wLabel] ?? 0) + p.hours > capForShift(d.id, lastActiveSlot(p.bool))) continue
@@ -3206,6 +3224,8 @@ function rotateEnvelopeBurden(
     const dInfo = result.dates[dateIdx]
     const blocked = blockedBitmap(timeOff, D.dispatcher, dInfo.date, dInfo.dayOfWeek)
     if (blocked && bitmap.some((on, s) => on && blocked[s])) return false
+    // Level-aware: never swap a Trainee into a peer's split shift.
+    if (!isValidShiftShape(bitmap, dInfo.dayOfWeek, MIN_TOTAL_SHIFT_HOURS, D.dispatcher.level)) return false
     const end = shiftEnds(bitmap)
     if (end >= NIGHT_SLOT_THRESHOLD && dateIdx + 1 < result.dates.length) {
       const nDay = D.days.find((x) => x.date === result.dates[dateIdx + 1].date)
@@ -3272,6 +3292,125 @@ function rotateEnvelopeBurden(
     }
     carried.set(ds[best].dispatcher.id, (carried.get(ds[best].dispatcher.id) ?? 0) + 1)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Trainee split repair — AUTHORITATIVE enforcement of "Trainees never work
+// split shifts".
+//
+// Per-site guards on every assignment path do not scale (this rule found SIX
+// paths that could hand a Trainee a split: the picker, coverage-rescue, the
+// floor pool, both trainee 6th-day must-work passes, and the envelope-carrier
+// swap). So, like the zero-coverage guard and the shared off-cap check, the
+// LAW is enforced once at the end, where no path can bypass it: if a Trainee
+// still holds a split, repair it to a legal continuous shape. The per-site
+// guards remain as belt-and-suspenders (they keep the picker from *choosing*
+// splits, which produces better schedules than repairing after the fact), but
+// THIS pass is what makes the rule true. Gate S asserts the result, whatever
+// path tried.
+//
+// Repair is coverage-safe: it adopts the continuous shape that minimises new
+// under-target units and NEVER opens a zero. Runs last, after the staircase and
+// the envelope-carrier rotation (which can itself swap a Trainee into a
+// Regular's split).
+function repairTraineeSplits(
+  result: GeneratedSchedule,
+  timeOff: DispatcherTimeOff,
+): void {
+  for (const ds of result.dispatcherSchedules) {
+    if (ds.dispatcher.level !== 'Trainee') continue
+    for (const dInfo of result.dates) {
+      const day = ds.days.find((d) => d.date === dInfo.date)
+      if (!day || day.isOff) continue
+      // A split = 2 worked blocks separated by a ≥2h gap.
+      const blocks = patternWorkBlocks(day.slots, SLOTS)
+      if (blocks.length < 2 || patternMaxBreakHours(day.slots, SLOTS) < SPLIT_GAP_MIN_HOURS) continue
+
+      const date = dInfo.date, dow = dInfo.dayOfWeek, wl = dInfo.weekLabel
+      const req = result.coverageRequired?.[date] ?? []
+      const cov = result.coverageActual[date] ?? []
+      const blk = blockedBitmap(timeOff, ds.dispatcher, date, dow)
+      const deficit = (c: number[]) => c.reduce((u, v, i) => u + ((req[i] ?? 0) > 0 ? Math.max(0, (req[i] ?? 0) - v) : 0), 0)
+      // Coverage WITHOUT the trainee's current split.
+      const bare = cov.map((c, i) => c - (day.slots[i] ? 1 : 0))
+      const baseDef = deficit(cov)
+
+      let best: { bool: boolean[]; def: number; hours: number } | null = null
+      for (const raw of DAY_TEMPLATES[dow].shiftPatterns) {
+        const bool = raw.map((v) => v === 1)
+        // continuous only, legal for a Trainee, and holdable by them
+        if (patternMaxBreakHours(bool, SLOTS) >= SPLIT_GAP_MIN_HOURS) continue
+        if (!isValidShiftShape(bool, dow, MIN_TOTAL_SHIFT_HOURS, 'Trainee')) continue
+        if (blk && bool.some((on, i) => on && blk[i])) continue
+        const hours = slotHours(bool)
+        if ((ds.weeklyHours[wl] ?? 0) - day.totalHours + hours > WEEKLY_CAP_HOURS) continue
+        const trial = bare.map((c, i) => c + (bool[i] ? 1 : 0))
+        // never open a zero on a required slot…
+        if (trial.some((c, i) => (req[i] ?? 0) > 0 && c === 0)) continue
+        // …and never deepen a shortfall past 1 (hierarchy: any shortfall is at
+        // most 1 dispatcher deep). A candidate that would newly cut a slot to
+        // 2-below-target is rejected outright.
+        if (trial.some((c, i) => (req[i] ?? 0) > 0 && c < (req[i] ?? 0) - 1 && c < (cov[i] ?? 0))) continue
+        const def = deficit(trial)
+        if (!best || def < best.def || (def === best.def && hours > best.hours)) best = { bool, def, hours }
+      }
+      void baseDef
+      if (!best) continue
+      // A continuous shape cannot reproduce a split's two-peak coverage. Where
+      // adopting it would drop a PEAK below target, BACKFILL first: an eligible
+      // peer picks up that peak slot (over-coverage is fine — peaks beat
+      // leanness). Only if no legal backfill exists do we RETAIN the split,
+      // flagged: the no-trainee-split rule is operational and yields to the
+      // inviolable peak tier, exactly like the law-forced off-cap exception.
+      const trialOf = (b: boolean[]) => bare.map((c, i) => c + (b[i] ? 1 : 0))
+      const peakDrops = (t: number[]) =>
+        t.map((c, i) => (PEAK_SLOT_SET.has(i) && (req[i] ?? 0) > 0 && c < (req[i] ?? 0) && (cov[i] ?? 0) >= (req[i] ?? 0) ? i : -1)).filter((i) => i >= 0)
+
+      for (const s of peakDrops(trialOf(best.bool))) {
+        // eligible peer: any non-trainee working today who can legally stretch
+        // over slot s (continuous fill from their nearest edge).
+        for (const peer of result.dispatcherSchedules) {
+          if (peer.dispatcher.level === 'Trainee' || peer === ds) continue
+          const pday = peer.days.find((d) => d.date === date)
+          if (!pday || pday.isOff || pday.slots[s]) continue
+          const pf = pday.slots.findIndex(Boolean)
+          let pl = -1; for (let i = pday.slots.length - 1; i >= 0; i--) if (pday.slots[i]) { pl = i; break }
+          if (pf < 0) continue
+          const t = [...pday.slots]
+          if (s < pf) for (let i = s; i <= pf; i++) t[i] = true
+          else if (s > pl) for (let i = pl; i <= s; i++) t[i] = true
+          else t[s] = true
+          const pblk = blockedBitmap(timeOff, peer.dispatcher, date, dow)
+          if (pblk && t.some((on, i) => on && pblk[i])) continue
+          if (!isValidShiftShape(t, dow, MIN_TOTAL_SHIFT_HOURS, peer.dispatcher.level)) continue
+          if ((peer.weeklyHours[wl] ?? 0) - pday.totalHours + slotHours(t) > WEEKLY_CAP_HOURS) continue
+          // commit backfill
+          pday.slots.forEach((on, i) => { if (on && cov[i] != null) cov[i]--; if (on) bare[i]-- })
+          t.forEach((on, i) => { if (on && cov[i] != null) cov[i]++; if (on) bare[i]++ })
+          const ph = pday.totalHours, nh = slotHours(t)
+          pday.slots = t; pday.totalHours = nh
+          peer.weeklyHours[wl] = (peer.weeklyHours[wl] ?? 0) + (nh - ph); peer.totalHours += nh - ph
+          break
+        }
+      }
+
+      if (peakDrops(trialOf(best.bool)).length > 0) {
+        // No legal backfill — RETAIN the split rather than break a peak. Flagged.
+        const warns = (result.coverageWarnings ??= {})
+        warns[date] = [...(warns[date] ?? []), {
+          peak: 'trainee-split' as const,
+          reason: `${ds.dispatcher.name} (Trainee) split retained — the only legal way to hold the dinner/lunch peak at target (no peer could backfill: all capped, blocked, or rest-locked). The no-trainee-split rule yields to the inviolable peak tier. Flagged, not silent.`,
+        }]
+        continue
+      }
+      day.slots.forEach((on, i) => { if (on && cov[i] != null) cov[i]-- })
+      best.bool.forEach((on, i) => { if (on && cov[i] != null) cov[i]++ })
+      const oldH = day.totalHours, newH = slotHours(best.bool)
+      day.slots = [...best.bool]; day.totalHours = newH
+      ds.weeklyHours[wl] = (ds.weeklyHours[wl] ?? 0) + (newH - oldH)
+      ds.totalHours += newH - oldH
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3914,6 +4053,10 @@ export function generateSchedule(
     // coverage-identical shape swap between the carrier and an eligible peer).
     if (rotateEnvelopes) rotateEnvelopeBurden(result, timeOff, seed)
   }
+
+  // Trainees never work split shifts — enforced ONCE, last, where no
+  // assignment path can bypass it (the per-site guards are belt-and-suspenders).
+  repairTraineeSplits(result, timeOff)
 
   return { ...result, secondOffLog: finalLog }
 }
