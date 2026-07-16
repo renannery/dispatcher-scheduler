@@ -56,39 +56,41 @@ const schedule = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42)
 const isWeekendDow = (dow: number) => dow === 0 || dow === 6
 const DOW_NAMES: Record<number, string> = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' }
 
-// ── Production-config fixture — the REAL config the team runs, made a
-// permanent gate fixture. Three shape/off-cap leaks (Kimberly, Adorre, and
-// the 12–2 PM weekend split) all slipped the synthetic gate scenarios and
-// only surfaced on the actual roster: recurringBlocks (personal fixed days
-// off) + weekend-peaked coverage overrides + seed 86. Asserting Gate S on
-// this exact config catches "real config differs from synthetic gate."
+// ── Production-config fixture — a PHOTO of the REAL config the team runs, made
+// a permanent gate fixture (updated whenever the live operation changes). The
+// leaks that motivated it (Kimberly, Adorre, the 12–2 PM weekend split, the
+// Jul 22 missed staircase) all slipped the synthetic scenarios and only
+// surfaced on the actual roster: recurringBlocks (personal fixed days off) +
+// the team's weekend-peaked overrides + the live seed. Refreshed to the current
+// operation: adorre/shamika are now FULL-DAY blocks (their Saturday partials
+// were removed), and the live seed is 94.
 const fullDay = () => new Array(20).fill(true)
 const openDay = () => new Array(20).fill(false)
-const eveBlock = () => Array.from({ length: 20 }, (_, i) => i >= 10) // 8 AM–4 PM open, evenings blocked
 const prodRoster: Dispatcher[] = [
-  { id: 'mq1uenf', name: 'adorre',   color: '#ec4899', level: 'Regular', recurringBlocks: [openDay(), openDay(), openDay(), fullDay(), fullDay(), openDay(), eveBlock()] }, // Wed+Thu full, Sat partial
+  { id: 'mq1uenf', name: 'adorre',   color: '#ec4899', level: 'Regular', recurringBlocks: [openDay(), openDay(), openDay(), fullDay(), fullDay(), openDay(), openDay()] }, // Wed+Thu full
   { id: '0gjtabx', name: 'ayrton',   color: '#3b82f6', level: 'Senior',  recurringBlocks: [fullDay(), openDay(), fullDay(), openDay(), openDay(), openDay(), openDay()] }, // Sun+Tue
   { id: 'fmvecxr', name: 'kimberly', color: '#ef4444', level: 'Senior',  recurringBlocks: [openDay(), fullDay(), openDay(), openDay(), openDay(), fullDay(), openDay()] }, // Mon+Fri
   { id: 'xb9f7rj', name: 'michelle', color: '#06b6d4', level: 'Senior',  recurringBlocks: [openDay(), openDay(), openDay(), fullDay(), openDay(), openDay(), fullDay()] }, // Wed+Sat
   { id: '75pmgeu', name: 'paula',    color: '#8b5cf6', level: 'Senior',  recurringBlocks: [openDay(), fullDay(), openDay(), openDay(), openDay(), openDay(), fullDay()] }, // Mon+Sat
   { id: 'zfqp9my', name: 'resgie',   color: '#f59e0b', level: 'Regular', recurringBlocks: [openDay(), openDay(), fullDay(), openDay(), fullDay(), openDay(), openDay()] }, // Tue+Thu
-  { id: 'foczori', name: 'shamika',  color: '#ec4899', level: 'Trainee', recurringBlocks: [openDay(), fullDay(), openDay(), openDay(), openDay(), openDay(), eveBlock()] }, // Mon full, Sat partial
+  { id: 'foczori', name: 'shamika',  color: '#ec4899', level: 'Trainee', recurringBlocks: [openDay(), fullDay(), openDay(), openDay(), openDay(), openDay(), openDay()] }, // Mon full
 ]
-// Weekend-peaked overrides (midday+evening +1 on weekends) — the profile that
-// pushed trim to shave a split's morning leg to a 2h lunch block on weekends.
+// The team's actual weekend-peaked overrides (from the live snapshots) — higher
+// weekday baseline than the old synthetic profile, dinner-peaked on Fri/Sun.
 const prodOverrides: Record<number, number[]> = {
-  0: [1, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 1, 2, 1, 1],
-  1: [0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
-  2: [0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
-  3: [0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
-  4: [0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
-  5: [0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 1, 2, 1, 1],
-  6: [1, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 1, 2, 1, 1],
+  0: [1, 2, 2, 1, 2, 2, 3, 1, 2, 2, 2, 3, 3, 3, 3, 2, 2, 3, 1, 1],
+  1: [0, 2, 2, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+  2: [0, 2, 2, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+  3: [0, 2, 2, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 1, 1],
+  4: [0, 2, 2, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 1, 1],
+  5: [0, 2, 2, 1, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 1, 1],
+  6: [1, 2, 2, 1, 2, 2, 2, 1, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 1, 1],
 }
-const prodSchedule = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, 86, prodOverrides, 101)
+const PROD_SEED = 94 // live weekendRotationOffset(92) + regen(2)
+const prodSchedule = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101)
 // No-staircase baselines (applyStaircase = false) for the FIFO gate diff.
 const scheduleBase = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, false)
-const prodBase = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, 86, prodOverrides, 101, false)
+const prodBase = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101, false)
 
 // ── Gate S: emitted shift shapes (asserted on BOTH schedules) ───────────
 function collectShapeViolations(sch: typeof schedule): string[] {
@@ -142,7 +144,7 @@ const shapeViolations = [...mainViol.slice(0, 4), ...prodViol.map((v) => `[prod-
 console.log('══════════════════════════════════════════════════════════════════════')
 console.log(' Gate S — two-team shift shapes on every emitted shift')
 console.log('══════════════════════════════════════════════════════════════════════')
-console.log(`  synthetic roster: ${mainViol.length} · prod-config fixture (recurringBlocks + weekend-peaked, seed 86): ${prodViol.length}`)
+console.log(`  synthetic roster: ${mainViol.length} · prod-config fixture (recurringBlocks + weekend-peaked, seed ${PROD_SEED}): ${prodViol.length}`)
 console.log(`  Violations: ${gateSFail}${gateSFail === 0 ? ' ✓' : ' ← FAIL'}`)
 for (const v of shapeViolations) console.log(`    ${v}`)
 
