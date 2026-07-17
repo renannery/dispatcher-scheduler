@@ -3414,6 +3414,557 @@ function repairTraineeSplits(
 }
 
 // ---------------------------------------------------------------------------
+// Trainee supervision — ONE rule, one chokepoint.
+//
+// RULE: a Trainee requires SENIOR concurrency, with a single CONDITIONED
+// exception — up to SUPERVISION_BRIDGE_HOURS (1.5h) without a Senior ONLY
+// while a Regular is actively working alongside her (the typical case: the
+// Senior takes their meal break while a Regular supervises). "ALONE" (no
+// Senior AND no bridging Regular) is the same rule's hardest violation:
+// illegal at ANY duration, yielding only to never-zero (if she is the sole
+// legal body for a slot, alone-flagged beats uncovered).
+//
+// LADDER, in order:
+//   step-0  break placement — a Senior's break may only land where a Regular
+//           is concurrently active with her; Senior- and Regular-breaks never
+//           overlap on top of her. Relocating the offending break is
+//           coverage-neutral and prevents the violation rather than repairing
+//           its symptom. Also covers the closer-swap case (she is the sole
+//           scheduled body) by handing the closer role to a peer.
+//   step-1  realign — swap her shift with a Regular's already-supervised window.
+//   step-2  senior-morning by construction — restructure the day so a Senior
+//           opens beside her.
+//   step-3  flagged (last resort), with the reason.
+// Never shrink her hours/days (trainee-works-more outranks supervision), never
+// a zero, peaks strict. Senior caps (45h/9h, blocks, night→morning rest) are
+// never violated to supervise.
+//
+// Every slot this pass ADDS for supervision is stamped in
+// result.supervisionSlots (who/when/why) — the gates exempt ONLY marked slots,
+// never a raised tolerance. Which Senior supervises is chosen by SEEDED
+// ROTATION on the least-loaded supervisor, so training load spreads.
+export const SUPERVISION_BRIDGE_HOURS = 1.5
+
+function enforceTraineeSupervision(
+  result: GeneratedSchedule,
+  timeOff: DispatcherTimeOff,
+  seed: number,
+): void {
+  const all = result.dispatcherSchedules
+  const trainees = all.filter((d) => d.dispatcher.level === 'Trainee')
+  if (trainees.length === 0) return
+  const seniors = all.filter((d) => d.dispatcher.level === 'Senior')
+  const marks = (result.supervisionSlots ??= {})
+  const concessions = (result.supervisionConcessions ??= {})
+  const warnings = (result.coverageWarnings ??= {})
+  const B = SUPERVISION_BRIDGE_HOURS
+  const supHours = new Map<string, number>(seniors.map((s) => [s.dispatcher.id, 0]))
+  const seniorPos = new Map(seniors.map((s, i) => [s.dispatcher.id, i]))
+  const rank = (id: string) =>
+    seniors.length ? (((seniorPos.get(id) ?? 0) + seed) % seniors.length + seniors.length) % seniors.length : 0
+  const dayOf = (ds: DispatcherSchedule, date: string) => ds.days.find((x) => x.date === date)
+  const firstOn = (sl: boolean[]) => sl.findIndex(Boolean)
+  const lastOn = (sl: boolean[]) => { for (let i = sl.length - 1; i >= 0; i--) if (sl[i]) return i; return -1 }
+  /** Seniors ordered by least supervision load so far (seeded tiebreak) — this
+   *  is the rotation: no accidental fixed mentor. */
+  const byLoad = () => [...seniors].sort((a, b) =>
+    (supHours.get(a.dispatcher.id)! - supHours.get(b.dispatcher.id)!) || (rank(a.dispatcher.id) - rank(b.dispatcher.id)))
+
+  /** Can `ds` legally hold `bitmap` today? (blocks, level-valid shape,
+   *  night↔morning rest both sides, 45h week) */
+  const canHold = (ds: DispatcherSchedule, bitmap: boolean[], di: number): boolean => {
+    const dInfo = result.dates[di]
+    const blk = blockedBitmap(timeOff, ds.dispatcher, dInfo.date, dInfo.dayOfWeek)
+    if (blk && bitmap.some((on, s) => on && blk[s])) return false
+    if (!isValidShiftShape(bitmap, dInfo.dayOfWeek, MIN_TOTAL_SHIFT_HOURS, ds.dispatcher.level)) return false
+    const end = lastOn(bitmap)
+    if (end >= NIGHT_SLOT_THRESHOLD && di + 1 < result.dates.length) {
+      const n = dayOf(ds, result.dates[di + 1].date)
+      if (n && !n.isOff) { const f = n.slots.findIndex(Boolean); if (f >= 0 && f <= MORNING_SLOT_THRESHOLD) return false }
+    }
+    const st = firstOn(bitmap)
+    if (st >= 0 && st <= MORNING_SLOT_THRESHOLD && di - 1 >= 0) {
+      const p = dayOf(ds, result.dates[di - 1].date)
+      if (p && !p.isOff && lastOn(p.slots) >= NIGHT_SLOT_THRESHOLD) return false
+    }
+    const wl = dInfo.weekLabel
+    if ((ds.weeklyHours[wl] ?? 0) - (dayOf(ds, dInfo.date)?.totalHours ?? 0) + slotHours(bitmap) > WEEKLY_CAP_HOURS) return false
+    return true
+  }
+  const commit = (ds: DispatcherSchedule, date: string, wl: string, bitmap: boolean[]) => {
+    const day = dayOf(ds, date)!
+    const cov = result.coverageActual[date]
+    day.slots.forEach((on, s) => { if (on && cov?.[s] != null) cov[s]-- })
+    bitmap.forEach((on, s) => { if (on && cov?.[s] != null) cov[s]++ })
+    const oldH = day.totalHours, newH = slotHours(bitmap)
+    day.slots = [...bitmap]; day.totalHours = newH
+    ds.weeklyHours[wl] = (ds.weeklyHours[wl] ?? 0) + (newH - oldH)
+    ds.totalHours += newH - oldH
+  }
+  const mark = (date: string, slot: number, sen: DispatcherSchedule, tr: DispatcherSchedule, reason: string) => {
+    marks[date] = [...(marks[date] ?? []), { slot, seniorId: sen.dispatcher.id, traineeId: tr.dispatcher.id, reason }]
+    supHours.set(sen.dispatcher.id, (supHours.get(sen.dispatcher.id) ?? 0) + SLOTS[slot].hours)
+  }
+
+  result.dates.forEach((dInfo, di) => {
+    const date = dInfo.date, wl = dInfo.weekLabel
+    const req = result.coverageRequired?.[date] ?? []
+    const cov = result.coverageActual[date] ?? []
+    for (const tds of trainees) {
+      const tday = dayOf(tds, date)
+      if (!tday || tday.isOff) continue
+      const peers = all.filter((d) => d !== tds)
+      const activeAt = (lvl: DispatcherLevel, s: number) =>
+        peers.some((p) => { const d = dayOf(p, date)!; return p.dispatcher.level === lvl && !d.isOff && d.slots[s] })
+
+      // The coverage floor no supervision plan may breach: never below
+      // target, and never below where coverage already is.
+      const floorAt = (s: number) => Math.min(req[s] ?? 0, cov[s] ?? 0)
+      /** Set for the second ladder run, when the 8–9 PM shoulder concession is
+       *  on the table. Pass-level, because a day is bought by a SEQUENCE of
+       *  moves — no single plan resolves Friday — and the transaction at the
+       *  bottom is what guarantees we only keep a concession that paid off. */
+      let relaxing = false
+      /** Floor used for debt accounting while planning. When the concession is
+       *  available, a shoulder slot is not a debt the enricher must pay off —
+       *  otherwise it gives up there and never reaches the debts it CAN pay. */
+      const debtFloor = (s: number) =>
+        relaxing && STAIRCASE_SHOULDER.has(s) && !PEAK_SLOT_SET.has(s)
+          ? Math.max(1, floorAt(s) - 1)
+          : floorAt(s)
+
+      // ── THE RULE ────────────────────────────────────────────────────────
+      // A Trainee requires Senior concurrency. ONE conditioned exception: up
+      // to 1.5h without a Senior, and only while a Regular is actively working
+      // alongside her. "Alone" (no Senior AND no Regular) is the same rule's
+      // hardest violation — illegal at any duration.
+      const assess = () => {
+        const alone: number[] = []
+        const runs: number[][] = []
+        let cur: number[] = []
+        let daily = 0
+        const flush = () => { if (cur.length) { runs.push(cur); cur = [] } }
+        for (let s = 0; s < SLOTS.length; s++) {
+          if (!tday.slots[s]) { flush(); continue }
+          if (activeAt('Senior', s)) { flush(); continue }
+          if (!activeAt('Regular', s)) { alone.push(s); flush(); continue }
+          cur.push(s); daily += SLOTS[s].hours
+        }
+        flush()
+        const contigMax = runs.reduce((m, r) => Math.max(m, r.reduce((a, i) => a + SLOTS[i].hours, 0)), 0)
+        return { alone, daily, contigMax, ok: alone.length === 0 && daily <= B + 1e-9 && contigMax <= B + 1e-9 }
+      }
+      // Violation metric. An alone dominates any amount of over-bridge, so the
+      // ladder never trades a legal bridge for an alone.
+      const score = () => {
+        const a = assess()
+        return a.alone.length * 100 + Math.max(0, a.daily - B) + Math.max(0, a.contigMax - B)
+      }
+
+      // A rung proposes a PLAN: one or more dispatchers' new bitmaps, applied
+      // together. Multi-dispatcher plans exist because the cheapest mechanism
+      // available — the trainee↔Senior swap — is inherently a two-body move.
+      type Move = { ds: DispatcherSchedule; bitmap: boolean[] }
+      type Plan = { moves: Move[]; reason: string }
+
+      /** True if a plan pushes a slot the Trainee does NOT work above both
+       *  target and where it already sits — over-coverage that no supervision
+       *  mark could honestly cover. Only a Senior standing beside HER may
+       *  exceed target, and only with a mark; coverage bought anywhere else
+       *  (including during her own meal break) is just waste wearing the
+       *  supervision badge. */
+      const overshoots = (moves: Move[]): boolean => {
+        const delta = new Array<number>(SLOTS.length).fill(0)
+        for (const m of moves) {
+          const cur = dayOf(m.ds, date)!.slots
+          for (let s = 0; s < SLOTS.length; s++) delta[s] += (m.bitmap[s] ? 1 : 0) - (cur[s] ? 1 : 0)
+        }
+        /** Does this plan newly place a SENIOR at s? Only that earns a mark,
+         *  and only a marked slot may sit above target. Over-coverage at her
+         *  slot caused by a Regular enabler is still just waste — it would
+         *  carry no mark and no gate would excuse it. */
+        const seniorAdded = (s: number) =>
+          moves.some((m) => m.ds.dispatcher.level === 'Senior' && m.bitmap[s] && !dayOf(m.ds, date)!.slots[s])
+        for (let s = 0; s < SLOTS.length; s++) {
+          if (tday.slots[s] && seniorAdded(s)) continue
+          const ceiling = Math.max(req[s] ?? 0, cov[s] ?? 0)
+          if ((cov[s] ?? 0) + delta[s] > ceiling) return true
+        }
+        return false
+      }
+
+      /** The single legality chokepoint every rung goes through.
+       *
+       *  A plan is legal only if it never drops any slot below
+       *  min(target, current) — coverage is never traded for supervision —
+       *  and every mover can legally hold its new shift. Returns the
+       *  violation score the plan would leave behind, how many slots it adds,
+       *  and its per-slot coverage delta. */
+      const evaluate = (
+        plan: Plan,
+      ): { score: number; added: number; delta: number[]; saved: boolean[][]; dips: number[] } | null => {
+        const saved = plan.moves.map((m) => [...dayOf(m.ds, date)!.slots])
+        const delta = new Array<number>(SLOTS.length).fill(0)
+        plan.moves.forEach((m, i) => {
+          for (let s = 0; s < SLOTS.length; s++) delta[s] += (m.bitmap[s] ? 1 : 0) - (saved[i][s] ? 1 : 0)
+        })
+        /** Is ANY Trainee working s after this plan? A swap moves her, so this
+         *  is not simply tday — and with more than one Trainee on the roster,
+         *  a concession bought for HER must not strand a different Trainee as
+         *  the last body standing. */
+        const traineeAt = (s: number) =>
+          trainees.some((tr) => {
+            const d = dayOf(tr, date)
+            if (!d || d.isOff) return false
+            return (plan.moves.find((m) => m.ds === tr)?.bitmap ?? d.slots)[s]
+          })
+        const dips: number[] = []
+        for (let s = 0; s < SLOTS.length; s++) {
+          const after = (cov[s] ?? 0) + delta[s]
+          if (after >= floorAt(s)) continue
+          // ── THE SHOULDER CONCESSION ──────────────────────────────────────
+          // The 8–9 PM shoulder may fall to 1 body, and ONLY:
+          //   · when it buys a fully supervised window — enforced by the
+          //     TRANSACTION below, not here: the concession is handed back
+          //     wholesale unless the day ends fully supervised,
+          //   · never below 1, never a zero,
+          //   · never inside a peak,
+          //   · and never leaving the TRAINEE as the last body standing —
+          //     that would recreate the very alone the concession exists to
+          //     dissolve.
+          // Everything else keeps the inviolable floor.
+          if (!relaxing || !STAIRCASE_SHOULDER.has(s)) return null
+          if (after < 1 || PEAK_SLOT_SET.has(s)) return null
+          if (after === 1 && traineeAt(s)) return null
+          dips.push(s)
+        }
+        if (overshoots(plan.moves)) return null
+        for (const m of plan.moves) if (!canHold(m.ds, m.bitmap, di)) return null
+        plan.moves.forEach((m) => { dayOf(m.ds, date)!.slots = [...m.bitmap] })
+        const sc = score()
+        plan.moves.forEach((m, i) => { dayOf(m.ds, date)!.slots = saved[i] })
+        const added = plan.moves.reduce((n, m, i) => n + m.bitmap.filter((on, s) => on && !saved[i][s]).length, 0)
+        return { score: sc, added, delta, saved, dips }
+      }
+
+      /** Apply a rung's BEST plan — lowest residual score, then fewest added
+       *  slots (minimal authorized over-coverage), then least-loaded Senior
+       *  (plans arrive in rotation order and ties keep the first).
+       *
+       *  Best-of, not first-improvement: a rung that nibbles one slot at a
+       *  time would otherwise consume the ladder's iteration budget and
+       *  starve the rungs below it. `requireResolve` takes only plans that
+       *  leave the day fully legal, which is how the ladder avoids settling
+       *  for a partial fix from a high rung when a lower rung could resolve
+       *  the day outright.
+       *
+       *  A plan must strictly improve, which is what makes a break relocation
+       *  that merely moves the alone onto another of her slots reject itself:
+       *  senior breaks and regular breaks can never overlap on top of her. */
+      const applyBest = (cands: Plan[], requireResolve: boolean): boolean => {
+        const cur = score()
+        let best: { c: Plan; e: NonNullable<ReturnType<typeof evaluate>> } | null = null
+        for (const c of cands) {
+          const e = evaluate(c)
+          if (!e) continue
+          if (requireResolve ? e.score > 1e-9 : e.score >= cur) continue
+          const better =
+            !best ||
+            e.score < best.e.score ||
+            // A plan that concedes nothing always beats one that does.
+            (e.score === best.e.score && e.dips.length < best.e.dips.length) ||
+            (e.score === best.e.score && e.dips.length === best.e.dips.length && e.added < best.e.added)
+          if (better) best = { c, e }
+        }
+        if (!best) return false
+        const chosen = best
+        const saved = chosen.c.moves.map((m) => [...dayOf(m.ds, date)!.slots])
+        chosen.c.moves.forEach((m) => commit(m.ds, date, wl, m.bitmap))
+        // Stamp ONLY slots this plan actually raised coverage on, where a
+        // Senior is newly beside her. A coverage-neutral swap adds no
+        // over-coverage and therefore earns no mark — the exemption stays as
+        // narrow as the thing it excuses.
+        chosen.c.moves.forEach((m, i) => {
+          if (m.ds.dispatcher.level !== 'Senior') return
+          m.bitmap.forEach((on, s) => {
+            if (on && !saved[i][s] && tday.slots[s] && chosen.e.delta[s] > 0) mark(date, s, m.ds, tds, chosen.c.reason)
+          })
+        })
+        // Stamp every conceded shoulder slot with the window it bought, and
+        // flag it: the team will see a 1-body half-hour and must see why.
+        const freed = chosen.c.moves.find((m) => m.ds.dispatcher.level === 'Senior')?.ds ?? tds
+        const win = `${SLOTS[firstOn(tday.slots)].label.split('–')[0]}–${SLOTS[lastOn(tday.slots)].label.split('–')[1]}`
+        for (const s of chosen.e.dips) {
+          const covAfter = cov[s] ?? 0
+          const reason = `8–9 PM shoulder held at ${covAfter} of ${req[s] ?? 0} to buy ${tds.dispatcher.name} a Senior-supervised ${win} (${freed.dispatcher.name} freed to supervise)`
+          concessions[date] = [
+            ...(concessions[date] ?? []),
+            { slot: s, seniorId: freed.dispatcher.id, traineeId: tds.dispatcher.id, coverage: covAfter, required: req[s] ?? 0, reason },
+          ]
+          warnings[date] = [...(warnings[date] ?? []), { peak: 'supervision', reason, slotIndex: s }]
+        }
+        return true
+      }
+
+      // ── rung 1 — BREAK PLACEMENT (never-alone: the stagger) ─────────────
+      // A meal break that lands on her is relocated to another legal trough.
+      // Preferred over every other rung: it is hours-neutral for everyone.
+      const breakCands = (): Plan[] => {
+        const out: Plan[] = []
+        for (const p of [...byLoad(), ...peers.filter((x) => x.dispatcher.level !== 'Senior')]) {
+          const d = dayOf(p, date)!
+          if (d.isOff) continue
+          const f = firstOn(d.slots), l = lastOn(d.slots)
+          if (f < 0) continue
+          const brk: number[] = []
+          for (let s = f + 1; s < l; s++) if (!d.slots[s]) brk.push(s)
+          // meal breaks only — a 2–3h split gap is a shape, not a placement
+          if (!brk.length || Math.abs(brk.reduce((a, s) => a + SLOTS[s].hours, 0) - MEAL_BREAK_HOURS) > 1e-9) continue
+          for (const t of BREAK_TROUGH_SLOTS) {
+            if (t <= f || t >= l || !d.slots[t] || brk.includes(t)) continue
+            if (Math.abs(SLOTS[t].hours - MEAL_BREAK_HOURS) > 1e-9) continue
+            const bm = [...d.slots]
+            brk.forEach((x) => { bm[x] = true })
+            bm[t] = false
+            out.push({ moves: [{ ds: p, bitmap: bm }], reason: `meal break moved to ${SLOTS[t].label} so a Senior stays concurrent with the Trainee (break placement)` })
+          }
+        }
+        return out
+      }
+
+      // ── rung 2 — EXTEND (closer-swap at the tail, realign at either edge) ─
+      // A Senior already on shift stretches to reach her unsupervised edge.
+      // Adds slots only, so coverage can only rise — that rise is authorized
+      // supervision over-coverage and is stamped in supervisionSlots.
+      const extendCands = (): Plan[] => {
+        const out: Plan[] = []
+        const tf = firstOn(tday.slots), tl = lastOn(tday.slots)
+        for (const p of byLoad()) {
+          const d = dayOf(p, date)!
+          if (d.isOff) continue
+          const f = firstOn(d.slots), l = lastOn(d.slots)
+          if (f < 0) continue
+          const opts: { ns: number; ne: number }[] = []
+          for (let ne = l + 1; ne <= tl; ne++) opts.push({ ns: f, ne })
+          for (let ns = f - 1; ns >= tf; ns--) opts.push({ ns, ne: l })
+          for (let ns = f - 1; ns >= tf; ns--) for (let ne = l + 1; ne <= tl; ne++) opts.push({ ns, ne })
+          for (const o of opts) {
+            const bm = [...d.slots]
+            for (let s = o.ns; s < f; s++) bm[s] = true
+            for (let s = l + 1; s <= o.ne; s++) bm[s] = true
+            out.push({ moves: [{ ds: p, bitmap: bm }], reason: `shift extended to stay concurrent with the Trainee (supervision)` })
+          }
+        }
+        return out
+      }
+
+      // ── rung 3 — REALIGN HER TO A SUPERVISED WINDOW (the swap) ──────────
+      // Trade whole bitmaps with a Senior. This is EXACTLY coverage-neutral —
+      // the day's multiset of worked slots is untouched, so every target,
+      // peak and trough lands precisely where it did before — and it costs
+      // zero over-coverage, which is why it outranks re-cutting a Senior.
+      // Guarded so it can never shrink her: the Senior's shift must be at
+      // least as long as hers. Her days are never touched at all.
+      const swapCands = (): Plan[] => {
+        const out: Plan[] = []
+        for (const p of byLoad()) {
+          const d = dayOf(p, date)!
+          if (d.isOff) continue
+          if (slotHours(d.slots) + 1e-9 < slotHours(tday.slots)) continue
+          out.push({
+            moves: [{ ds: tds, bitmap: [...d.slots] }, { ds: p, bitmap: [...tday.slots] }],
+            reason: `windows swapped with ${p.dispatcher.name} so the Trainee works a Senior-covered window (realign, coverage-neutral)`,
+          })
+        }
+        return out
+      }
+
+      /** Slots a plan would push below min(target, current) — the coverage
+       *  debt it must pay off before it can be legal. */
+      const deficitsOf = (moves: Move[]): number[] => {
+        const delta = new Array<number>(SLOTS.length).fill(0)
+        for (const m of moves) {
+          const cur = dayOf(m.ds, date)!.slots
+          for (let s = 0; s < SLOTS.length; s++) delta[s] += (m.bitmap[s] ? 1 : 0) - (cur[s] ? 1 : 0)
+        }
+        const out: number[] = []
+        for (let s = 0; s < SLOTS.length; s++) if ((cov[s] ?? 0) + delta[s] < debtFloor(s)) out.push(s)
+        return out
+      }
+
+      /** Ways a shift could come to cover slot `u`: by taking its meal break
+       *  somewhere else, or by starting earlier / ending later. */
+      const amend = (base: boolean[], u: number): boolean[][] => {
+        const out: boolean[][] = []
+        const f = firstOn(base), l = lastOn(base)
+        if (f < 0 || base[u]) return out
+        if (u > f && u < l) {
+          for (const t of BREAK_TROUGH_SLOTS) {
+            if (t === u || t <= f || t >= l || !base[t]) continue
+            if (Math.abs(SLOTS[t].hours - SLOTS[u].hours) > 1e-9) continue
+            const bm = [...base]; bm[u] = true; bm[t] = false
+            out.push(bm)
+          }
+        } else {
+          const bm = [...base]
+          if (u < f) { for (let s = u; s < f; s++) bm[s] = true } else { for (let s = l + 1; s <= u; s++) bm[s] = true }
+          out.push(bm)
+        }
+        return out
+      }
+
+      /** Pay off a plan's coverage debt by recruiting peers to cover the slots
+       *  it vacates ("…and paula starts an hour earlier").
+       *
+       *  Without this, freeing a Senior for the morning is impossible on a
+       *  tight day: every single-body re-cut drops some evening slot below
+       *  target and is rejected, even when the day as a whole has the bodies
+       *  to absorb the move. A recruited peer can be amended again in a later
+       *  round (start earlier AND move their break), so the plan keeps its
+       *  options. Each round must strictly reduce the debt, so the plan
+       *  converges or is abandoned; coverage is never traded away, only
+       *  re-sourced. */
+      const enrich = (plan: Plan): Plan => {
+        const primary = plan.moves[0].ds
+        for (let round = 0; round < 5; round++) {
+          const defs = deficitsOf(plan.moves)
+          if (!defs.length) break
+          const u = defs[0]
+          let took = false
+          for (const q of peers) {
+            if (q === primary) continue
+            const d = dayOf(q, date)!
+            if (d.isOff) continue
+            const base = plan.moves.find((m) => m.ds === q)?.bitmap ?? d.slots
+            for (const bm of amend(base, u)) {
+              const trial = [...plan.moves.filter((m) => m.ds !== q), { ds: q, bitmap: bm }]
+              const nd = deficitsOf(trial)
+              if (nd.includes(u) || nd.length >= defs.length) continue
+              // An enabler RESTORES coverage the plan vacated; it must never
+              // manufacture new over-coverage. Only a Senior standing beside
+              // the Trainee may exceed target, and only with a mark — an
+              // enabler can be a Regular, so it gets no such licence.
+              if (overshoots(trial)) continue
+              if (!canHold(q, bm, di)) continue
+              plan.moves = trial
+              took = true
+              break
+            }
+            if (took) break
+          }
+          if (!took) break
+        }
+        return plan
+      }
+
+      // ── rung 4 — SENIOR MORNING BY CONSTRUCTION ─────────────────────────
+      // No Senior overlaps her enough and no swap is legal. Re-cut one
+      // Senior's day onto her window, meal break placed where a Regular
+      // bridges. Only taken when vacating the old window is coverage-safe —
+      // the evening peak is never robbed to supervise.
+      const morningCands = (): Plan[] => {
+        const out: Plan[] = []
+        const tf = firstOn(tday.slots), tl = lastOn(tday.slots)
+        if (tf < 0) return out
+        const base = new Array<boolean>(SLOTS.length).fill(false)
+        for (let s = tf; s <= tl; s++) base[s] = true
+        for (const p of byLoad()) {
+          const d = dayOf(p, date)!
+          if (d.isOff) continue
+          const shapes: boolean[][] = [[...base]]
+          for (const t of BREAK_TROUGH_SLOTS) {
+            if (t <= tf || t >= tl) continue
+            const bm = [...base]; bm[t] = false
+            shapes.push(bm)
+          }
+          for (const bm of shapes) {
+            out.push(enrich({ moves: [{ ds: p, bitmap: bm }], reason: `assigned alongside the Trainee for her whole window (senior-morning by construction)` }))
+          }
+        }
+        return out
+      }
+
+      // The ladder, in order. A rung that RESOLVES the day outright always
+      // beats a higher rung that only improves it — otherwise a cheap partial
+      // fix locks the day into a local optimum the lower rungs can't escape.
+      const RUNGS = [breakCands, extendCands, swapCands, morningCands]
+      const runLadder = (relax: boolean) => {
+        relaxing = relax
+        for (let guard = 0; guard < 12 && !assess().ok; guard++) {
+          if (RUNGS.some((r) => applyBest(r(), true))) continue
+          if (RUNGS.some((r) => applyBest(r(), false))) continue
+          break
+        }
+        relaxing = false
+      }
+
+      // Everything this day's repair touches, so a ladder run can be undone.
+      const snapshot = () => ({
+        slots: all.map((ds) => [...dayOf(ds, date)!.slots]),
+        totals: all.map((ds) => dayOf(ds, date)!.totalHours),
+        weekly: all.map((ds) => ds.weeklyHours[wl] ?? 0),
+        grand: all.map((ds) => ds.totalHours),
+        cov: [...cov],
+        marks: [...(marks[date] ?? [])],
+        cons: [...(concessions[date] ?? [])],
+        warns: [...(warnings[date] ?? [])],
+        sup: new Map(supHours),
+      })
+      const restore = (snap: ReturnType<typeof snapshot>) => {
+        all.forEach((ds, i) => {
+          const d = dayOf(ds, date)!
+          d.slots = [...snap.slots[i]]
+          d.totalHours = snap.totals[i]
+          ds.weeklyHours[wl] = snap.weekly[i]
+          ds.totalHours = snap.grand[i]
+        })
+        cov.splice(0, cov.length, ...snap.cov)
+        marks[date] = snap.marks
+        concessions[date] = snap.cons
+        warnings[date] = snap.warns
+        supHours.clear()
+        snap.sup.forEach((v, k) => supHours.set(k, v))
+      }
+
+      // Try the day at full coverage first. Only if that leaves her
+      // unsupervised do we rewind and re-run allowing the 8–9 PM shoulder
+      // concession — and if THAT still fails to fully supervise her, we hand
+      // the concession back and keep the strict result. The shoulder is spent
+      // only on a day it actually buys, never on a partial improvement that
+      // was going to fall short anyway.
+      const entry = snapshot()
+      runLadder(false)
+      if (!assess().ok) {
+        const strict = snapshot()
+        restore(entry)
+        runLadder(true)
+        if (!assess().ok) restore(strict)
+      }
+
+      const a = assess()
+      if (!a.ok) {
+        const parts: string[] = []
+        if (a.alone.length) {
+          parts.push(`${tds.dispatcher.name} works ${a.alone.map((s) => SLOTS[s].label).join(', ')} with no Senior and no Regular on shift`)
+        }
+        if (a.daily > B + 1e-9 || a.contigMax > B + 1e-9) {
+          parts.push(`${a.daily}h of her day is Regular-bridged (max ${B}h)`)
+        }
+        warnings[date] = [
+          ...(warnings[date] ?? []),
+          {
+            peak: 'supervision',
+            reason: `Supervision: ${parts.join('; ')} — no legal Senior arrangement exists (roster exhausted)`,
+            slotIndex: a.alone[0] ?? firstOn(tday.slots),
+          },
+        ]
+      }
+    }
+  })
+}
+
+
+// ---------------------------------------------------------------------------
 // Rotating 2nd day off — plan → generate → audit → defer wrapper.
 //
 // Exactly one Regular/Senior dispatcher per week is up for a 2nd day off,
@@ -3450,6 +4001,10 @@ export function generateSchedule(
   // Fairness rotation over irreducible envelopes — default on. Off measures
   // the pre-rotation carrier distribution (coverage-identical either way).
   rotateEnvelopes = true,
+  // Trainee-supervision ladder toggle — default on. Off measures the
+  // no-supervision baseline the gates diff against, and lets the negative
+  // tests build over-coverage that carries NO supervision mark.
+  superviseTrainees = true,
 ): GeneratedSchedule {
   const start = parseISO(startDate)
   const nDays = differenceInDays(parseISO(endDate), start) + 1
@@ -4057,6 +4612,9 @@ export function generateSchedule(
   // Trainees never work split shifts — enforced ONCE, last, where no
   // assignment path can bypass it (the per-site guards are belt-and-suspenders).
   repairTraineeSplits(result, timeOff)
+
+  // Trainee supervision — one rule, one chokepoint (see enforceTraineeSupervision).
+  if (superviseTrainees) enforceTraineeSupervision(result, timeOff, seed)
 
   return { ...result, secondOffLog: finalLog }
 }

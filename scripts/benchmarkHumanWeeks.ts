@@ -99,6 +99,18 @@ let peakResidualFails = 0
 const PEAK_SLOTS = new Set<number>([...LUNCH_PEAK_SLOTS, ...DINNER_PEAK_SLOTS])
 let dinnerFails = 0
 let edgeFails: string[] = []
+
+/** Units at (date, slot) a Senior is holding SOLELY to supervise a Trainee,
+ *  by provenance — never by category or tolerance.
+ *
+ *  The human matrix predates the supervision rule: where the rule now puts a
+ *  Senior beside a Trainee, the humans put nobody. Comparing that extra body
+ *  against the human shape would measure the rule, not the scheduler. So the
+ *  benchmark subtracts exactly the marked units and NOTHING else — every
+ *  threshold below is unchanged, and unmarked over-coverage still counts in
+ *  full. `supervisionNegative` proves it. */
+const supAt = (sch: typeof s, date: string, slot: number) =>
+  (sch.supervisionSlots?.[date] ?? []).filter((m) => m.slot === slot).length
 let absSum = 0
 let absN = 0
 const residuals: string[] = []
@@ -120,7 +132,7 @@ for (const [date, human] of Object.entries(HUMAN)) {
     const a = act[i] ?? 0
     const r = req[i] ?? 0
     if ((r > 0 || h > 0) && a === 0) zeroFails++
-    if (h > 0 || r > 0) { absSum += Math.abs(a - h); absN++ }
+    if (h > 0 || r > 0) { absSum += Math.abs(a - supAt(s, date, i) - h); absN++ }
     if (r > 0 && a < r) {
       dayUnder += r - a
       if (r - a > 1) depthFails++
@@ -137,7 +149,8 @@ for (const [date, human] of Object.entries(HUMAN)) {
 
   // B3 — weekend staggered edges
   if (dInfo.dayOfWeek === 0 || dInfo.dayOfWeek === 6) {
-    if ((act[0] ?? 0) !== 1) edgeFails.push(`${date}: open has ${act[0]} (want 1)`)
+    const open = (act[0] ?? 0) - supAt(s, date, 0)
+    if (open !== 1) edgeFails.push(`${date}: open has ${open} (want 1)${supAt(s, date, 0) ? ` [+${supAt(s, date, 0)} supervision, exempt]` : ''}`)
     const morningShifts = s.dispatcherSchedules
       .map((ds) => ds.days.find((x) => x.date === date))
       .filter((d): d is NonNullable<typeof d> => !!d && !d.isOff)

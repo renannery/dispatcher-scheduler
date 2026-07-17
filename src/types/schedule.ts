@@ -88,10 +88,40 @@ export interface GeneratedSchedule {
   coverageWarnings?: Record<
     string,
     {
-      peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest' | 'handoff' | 'constrained-shift' | 'envelope' | 'trainee-split'
+      peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest' | 'handoff' | 'constrained-shift' | 'envelope' | 'trainee-split' | 'supervision'
       reason: string
       slotIndex?: number
     }[]
+  >
+  /** PROVENANCE for trainee-supervision coverage — the exemption key.
+   *
+   *  Every slot the supervision pass ADDS (a Senior extended/placed beside a
+   *  Trainee) is stamped here with who/when/why. The gates exempt ONLY slots on
+   *  this list, matched on (date, slot, seniorId) — never by raising a
+   *  tolerance or widening a category. Any over-coverage NOT carrying a mark
+   *  still fails exactly as before; the per-gate negative tests prove it.
+   *
+   *  This is deliberately provenance, not a threshold: an imprecise exemption
+   *  is how the "law-forced" flag once swallowed a real off-cap bug. */
+  supervisionSlots?: Record<
+    string,
+    { slot: number; seniorId: string; traineeId: string; reason: string }[]
+  >
+  /** PROVENANCE for the 8–9 PM shoulder CONCESSION — the other exemption key.
+   *
+   *  Governance: the 8–9 PM shoulder may drop to 1 body (never below, never
+   *  inside a peak, never a zero) when — and only when — that is what buys a
+   *  Trainee a fully Senior-supervised window. Every such dip is stamped here
+   *  with the Trainee window it bought and the Senior it freed, and is always
+   *  flagged. An unmarked shoulder dip below target−1 is a hard failure.
+   *
+   *  Deliberately NOT merged into `supervisionSlots`: that list exempts
+   *  over-coverage a Senior ADDS beside the Trainee, this one records
+   *  under-coverage the schedule GAVE UP for her. Opposite signs, opposite
+   *  gates — one list would let a gate excuse the wrong thing. */
+  supervisionConcessions?: Record<
+    string,
+    { slot: number; seniorId: string; traineeId: string; coverage: number; required: number; reason: string }[]
   >
   /** Per-week record of the rotating 2nd-day-off perk: who was up in the
    *  rotation, whether the grant passed the feasibility bar (≤ +1

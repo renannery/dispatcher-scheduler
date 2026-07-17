@@ -89,8 +89,20 @@ const prodOverrides: Record<number, number[]> = {
 const PROD_SEED = 94 // live weekendRotationOffset(92) + regen(2)
 const prodSchedule = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101)
 // No-staircase baselines (applyStaircase = false) for the FIFO gate diff.
-const scheduleBase = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, false)
-const prodBase = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101, false)
+// Gate T isolates the STAIRCASE pass, so both of its sides run with trainee
+// supervision OFF. Diffing a staircase-on run against a staircase-off run
+// while a LATER pass reshuffles bodies in both measures that later pass's
+// noise, not the staircase: supervision legitimately lands different bodies
+// in each run, and the diff reads those as the staircase worsening slots it
+// never touched. Gate U below owns supervision, diffed against its own
+// no-supervision baseline. One pass per gate, one baseline per pass.
+// Gate U's own baseline: identical inputs, supervision OFF.
+const noSup = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, true, true, false)
+const prodNoSup = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101, true, true, false)
+const stairOn = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, true, true, false)
+const stairOff = generateSchedule(roster, '2026-06-25', '2026-09-09', {}, 42, {}, 0, false, true, false)
+const prodStairOn = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101, true, true, false)
+const prodStairOff = generateSchedule(prodRoster, '2026-07-16', '2026-08-05', {}, PROD_SEED, prodOverrides, 101, false, true, false)
 
 // ── Gate S: emitted shift shapes (asserted on BOTH schedules) ───────────
 function collectShapeViolations(sch: typeof schedule): string[] {
@@ -265,6 +277,13 @@ for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`)
 //     (slots 15/16), which may fall by at most 1 (never below target−1),
 //     and every such dip is flagged — the bounded, flagged −1 the governance
 //     change permits solely to dissolve an envelope.
+//
+// EXEMPTION BY PROVENANCE, never by tolerance: the 8–9 PM shoulder may go a
+// second unit down ONLY on a slot carrying a `supervisionConcessions` record —
+// the governance line that lets the shoulder reach 1 body when that is what
+// buys a Trainee a fully Senior-supervised window. The threshold below is
+// untouched; an unmarked target−2 dip fails exactly as it always did, which
+// `gateTNegative` proves by planting one.
 const STAIRCASE_SHOULDER = new Set([15, 16])
 function presencesT(slots: boolean[]): Array<{ start: number; end: number }> {
   const runs: Array<[number, number]> = []
@@ -301,6 +320,7 @@ function gateT(name: string, withS: typeof schedule, base: typeof schedule): boo
   let totWith = 0, totBase = 0, silent = 0, deep = 0, worsened = 0
   for (const dInfo of withS.dates) {
     const date = dInfo.date
+    const conceded = (s: number) => (withS.supervisionConcessions?.[date] ?? []).some((c) => c.slot === s)
     const cW = closingBandT(withS, date), cB = closingBandT(base, date)
     totWith += cW; totBase += cB
     if (cW > 0 && !(withS.coverageWarnings?.[date] ?? []).some((w) => w.peak === 'envelope')) silent++
@@ -308,8 +328,8 @@ function gateT(name: string, withS: typeof schedule, base: typeof schedule): boo
     const a = withS.coverageActual[date] ?? [], b = base.coverageActual[date] ?? []
     for (let s = 0; s < 20; s++) {
       if (STAIRCASE_SHOULDER.has(s)) {
-        if ((a[s] ?? 0) < (req[s] ?? 0) - 1) deep++              // never below target−1
-        if ((a[s] ?? 0) < (b[s] ?? 0) - 1) worsened++           // never more than −1 vs baseline
+        if ((a[s] ?? 0) < (req[s] ?? 0) - 1 && !conceded(s)) deep++   // never below target−1 unless bought
+        if ((a[s] ?? 0) < (b[s] ?? 0) - 1 && !conceded(s)) worsened++  // never more than −1 vs baseline
       } else if ((a[s] ?? 0) < (b[s] ?? 0)) worsened++          // non-shoulder never worsens
     }
   }
@@ -320,9 +340,164 @@ function gateT(name: string, withS: typeof schedule, base: typeof schedule): boo
 console.log('\n══════════════════════════════════════════════════════════════════════')
 console.log(' Gate T — FIFO/staircase: closing-band ↓ (0 silent) · only 8–9 PM shoulder −1, flagged')
 console.log('══════════════════════════════════════════════════════════════════════')
-const gateTPass = gateT('synthetic', schedule, scheduleBase) && gateT('prod-config', prodSchedule, prodBase)
+const gateTPass = gateT('synthetic', stairOn, stairOff) && gateT('prod-config', prodStairOn, prodStairOff)
 const gateTFail = gateTPass ? 0 : 1
 
-const allPass = gateSFail === 0 && gateHFail === 0 && gateOFail === 0 && gateTFail === 0
-console.log(`\n FINAL — Gate S: ${gateSFail === 0 ? 'PASS' : 'FAIL'}   Gate H: ${gateHFail === 0 ? 'PASS' : 'FAIL'}   Gate O: ${gateOFail === 0 ? 'PASS' : 'FAIL'}   Gate T: ${gateTFail === 0 ? 'PASS' : 'FAIL'}`)
+
+// ── Gate U — trainee supervision (the one rule) ─────────────────────────
+// A Trainee requires SENIOR concurrency. One conditioned exception: up to
+// 1.5h without a Senior, and only while a Regular is actively working
+// alongside her. "Alone" (no Senior AND no Regular) is the same rule's
+// hardest violation — illegal at any duration, yielding only to never-zero,
+// and then only FLAGGED.
+//
+//   U1 — a Trainee alone with no flag = hard fail (flagged = surfaced, legal)
+//   U2 — Regular-only bridge > 1.5h contiguous OR > 1.5h daily = hard fail
+//   U3 — over-coverage the pass added carries a supervisionSlots mark naming
+//        the Senior; unmarked over-coverage is NOT exempt anywhere
+//   U4 — a shoulder dip below target−1 carries a supervisionConcessions
+//        record; unmarked = hard fail; and the Trainee is never the last body
+//        standing at a conceded slot (that would recreate the alone it bought)
+//   U5 — the pass never worsens a non-shoulder slot vs the no-supervision
+//        baseline, and never shrinks a Trainee's hours or days
+//
+// SCOPE, stated plainly rather than hidden in an exemption: U2 is hard-asserted
+// on SINGLE-Trainee rosters — the shape the rule was written for and the shape
+// the live operation has. The synthetic fixture is a coverage-shape stressor
+// with one Senior for two Trainees: it is arithmetically unsupervisable (its
+// lone Senior has 476h against 816h of Trainee hours needing concurrent cover,
+// and works 14 days on which a Trainee works and no Senior is rostered at all).
+// Asserting U2 there would assert a fiction, and reshaping the fixture until it
+// passed would be fixture-shopping. So on multi-Trainee rosters U2 is REPORTED,
+// not asserted — while U1/U3/U4/U5 stay hard on every roster, because
+// provenance, surfacing and never-shrink hold regardless of arithmetic. If the
+// team ever runs two Trainees for real, U2 becomes a live question and this
+// scope must be revisited, not quietly kept.
+const SUP_BRIDGE = 1.5
+const SHOULDER_U = new Set([15, 16])
+function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): boolean {
+  let aloneUnflagged = 0, bridgeFail = 0, unmarkedOver = 0, unmarkedDeep = 0, soleTrainee = 0, worsened = 0, shrunk = 0
+  let unsupervisable = 0, silentOnExempt = 0, bridgeReport = 0
+  const trainees = withSup.dispatcherSchedules.filter((d) => d.dispatcher.level === 'Trainee')
+  const seniorsU = withSup.dispatcherSchedules.filter((d) => d.dispatcher.level === 'Senior')
+  const soleTraineeRoster = trainees.length <= 1
+  for (const t of trainees) {
+    const t0 = noSup.dispatcherSchedules.find((d) => d.dispatcher.id === t.dispatcher.id)!
+    if (t.totalHours + 1e-9 < t0.totalHours) shrunk++
+    if (t.days.filter((d) => !d.isOff).length < t0.days.filter((d) => !d.isOff).length) shrunk++
+  }
+  for (const dInfo of withSup.dates) {
+    const date = dInfo.date
+    const req = withSup.coverageRequired?.[date] ?? []
+    const a = withSup.coverageActual[date] ?? []
+    const b = noSup.coverageActual[date] ?? []
+    const marks = withSup.supervisionSlots?.[date] ?? []
+    const cons = withSup.supervisionConcessions?.[date] ?? []
+    const flags = (withSup.coverageWarnings?.[date] ?? []).filter((w) => w.peak === 'supervision')
+    const traineeOn = trainees.some((t) => { const d = t.days.find((x) => x.date === date); return d && !d.isOff })
+    const seniorOn = seniorsU.some((p) => { const d = p.days.find((x) => x.date === date); return d && !d.isOff })
+    if (traineeOn && !seniorOn) unsupervisable++
+
+    for (let s = 0; s < SLOTS.length; s++) {
+      // U3 — over-coverage added by the pass must be marked
+      if ((a[s] ?? 0) > (req[s] ?? 0) && (a[s] ?? 0) > (b[s] ?? 0) && !marks.some((m) => m.slot === s)) unmarkedOver++
+      // U4 — a target−2 dip must be a recorded concession, on the shoulder
+      if ((a[s] ?? 0) < (req[s] ?? 0) - 1 && !cons.some((c) => c.slot === s)) unmarkedDeep++
+      if (cons.some((c) => c.slot === s) && !SHOULDER_U.has(s)) unmarkedDeep++
+      // U5 — nothing outside the shoulder may worsen vs no-supervision
+      if (!SHOULDER_U.has(s) && (a[s] ?? 0) < (b[s] ?? 0) && (a[s] ?? 0) < (req[s] ?? 0)) worsened++
+    }
+    for (const t of trainees) {
+      const day = t.days.find((d) => d.date === date)
+      if (!day || day.isOff) continue
+      const peers = withSup.dispatcherSchedules.filter((d) => d !== t)
+      const at = (lvl: string, s: number) =>
+        peers.some((p) => { const d = p.days.find((x) => x.date === date)!; return p.dispatcher.level === lvl && !d.isOff && d.slots[s] })
+      let run = 0, daily = 0
+      for (let s = 0; s < SLOTS.length; s++) {
+        if (!day.slots[s]) { run = 0; continue }
+        if (at('Senior', s)) { run = 0; continue }
+        if (!at('Regular', s)) {
+          run = 0
+          // U1 — alone: legal only when surfaced
+          if (!flags.length) aloneUnflagged++
+          // U4 — never the last body standing at a slot we conceded FOR her
+          if (cons.some((c) => c.slot === s) && (a[s] ?? 0) === 1) soleTrainee++
+          continue
+        }
+        run += SLOTS[s].hours; daily += SLOTS[s].hours
+        if (run > SUP_BRIDGE + 1e-9 || daily > SUP_BRIDGE + 1e-9) {
+          bridgeReport++
+          if (soleTraineeRoster) bridgeFail++
+          else if (!flags.length) silentOnExempt++ // out of scope is not unspoken
+          run = 0; daily = 0
+        }
+      }
+    }
+  }
+  const pass = aloneUnflagged === 0 && bridgeFail === 0 && unmarkedOver === 0 && unmarkedDeep === 0 && soleTrainee === 0 && worsened === 0 && shrunk === 0 && silentOnExempt === 0
+  console.log(`  ${name.padEnd(16)} alone-unflagged ${aloneUnflagged} · bridge>1.5h ${bridgeFail} · unmarked-over ${unmarkedOver} · unmarked−2 ${unmarkedDeep} · sole-trainee ${soleTrainee} · worsened ${worsened} · shrunk ${shrunk} ${pass ? '✓' : '← FAIL'}`)
+  if (!soleTraineeRoster) console.log(`  ${' '.padEnd(16)} └─ ${trainees.length} Trainees / ${seniorsU.length} Senior(s): U2 REPORTED not asserted (see scope note) — ${bridgeReport} bridge>1.5h, ${silentOnExempt} silent, ${unsupervisable} day(s) with no Senior rostered at all`)
+  return pass
+}
+
+/** NEGATIVE TESTS — the net must not loosen, even transiently.
+ *
+ *  Provenance-keyed exemptions are only trustworthy if the un-provenanced
+ *  case still fails. Each test plants a synthetic violation that carries NO
+ *  mark and asserts the gate still rejects it. If one of these ever "passes",
+ *  the exemption has widened into a tolerance and the gate is now decorative.
+ *  (This is the discipline the once-imprecise "law-forced" flag taught us:
+ *  it swallowed a real off-cap bug because it excused a category, not a fact.) */
+function clone<T>(x: T): T { return JSON.parse(JSON.stringify(x)) as T }
+function negatives(): boolean {
+  let ok = true
+  const day = prodSchedule.dates[3].date
+
+  // 1. Unmarked over-coverage must still fail Gate U (U3).
+  const overNoMark = clone(prodSchedule)
+  const victim = overNoMark.dispatcherSchedules.find((d) => d.dispatcher.level === 'Senior')!
+  const vd = victim.days.find((x) => x.date === day)!
+  const free = vd.slots.findIndex((on) => !on)
+  vd.slots[free] = true
+  overNoMark.coverageActual[day][free] = (overNoMark.coverageActual[day][free] ?? 0) + 3
+  const r1 = gateU('  neg: unmarked over', overNoMark, prodNoSup)
+  if (r1) { console.log('    ✗ NEGATIVE TEST FAILED — unmarked over-coverage was exempted'); ok = false }
+
+  // 2. Unmarked target−2 shoulder dip must still fail Gate U (U4) and Gate T.
+  const deepNoMark = clone(prodSchedule)
+  deepNoMark.supervisionConcessions = {}
+  const r2 = gateU('  neg: unmarked −2', deepNoMark, prodNoSup)
+  if (r2 && Object.values(prodSchedule.supervisionConcessions ?? {}).some((v) => v.length)) {
+    console.log('    ✗ NEGATIVE TEST FAILED — a target−2 dip passed with its provenance stripped'); ok = false
+  }
+  const deepT = clone(prodStairOn)
+  deepT.supervisionConcessions = {}
+  deepT.coverageActual[day][15] = 0
+  const r3 = gateT('  neg: unmarked −2 (T)', deepT, prodStairOff)
+  if (r3) { console.log('    ✗ NEGATIVE TEST FAILED — Gate T exempted an unmarked shoulder collapse'); ok = false }
+
+  // 3. An alone with no flag must still fail Gate U (U1).
+  const silentAlone = clone(prodSchedule)
+  for (const d of silentAlone.dates) {
+    silentAlone.coverageWarnings![d.date] = (silentAlone.coverageWarnings?.[d.date] ?? []).filter((w) => w.peak !== 'supervision')
+  }
+  const anyAlone = Object.values(prodSchedule.coverageWarnings ?? {}).some((ws) => ws.some((w) => w.peak === 'supervision'))
+  const r4 = gateU('  neg: unflagged alone', silentAlone, prodNoSup)
+  if (r4 && anyAlone) { console.log('    ✗ NEGATIVE TEST FAILED — an unflagged alone passed'); ok = false }
+  return ok
+}
+
+console.log('\n══════════════════════════════════════════════════════════════════════')
+console.log(' Gate U — trainee supervision: Senior concurrency, ≤1.5h Regular bridge')
+console.log('══════════════════════════════════════════════════════════════════════')
+const uSyn = gateU('synthetic', schedule, noSup)
+const uProd = gateU('prod-config', prodSchedule, prodNoSup)
+const gateUPass = uSyn && uProd
+console.log('\n  negative tests (the exemption must not have widened into a tolerance):')
+const negPass = negatives()
+const gateUFail = gateUPass && negPass ? 0 : 1
+
+const allPass = gateSFail === 0 && gateHFail === 0 && gateOFail === 0 && gateTFail === 0 && gateUFail === 0
+console.log(`\n FINAL — Gate S: ${gateSFail === 0 ? 'PASS' : 'FAIL'}   Gate H: ${gateHFail === 0 ? 'PASS' : 'FAIL'}   Gate O: ${gateOFail === 0 ? 'PASS' : 'FAIL'}   Gate T: ${gateTFail === 0 ? 'PASS' : 'FAIL'}   Gate U: ${gateUFail === 0 ? 'PASS' : 'FAIL'}`)
 if (!allPass) process.exit(1)
