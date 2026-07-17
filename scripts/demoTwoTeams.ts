@@ -346,15 +346,16 @@ const gateTFail = gateTPass ? 0 : 1
 
 // ── Gate U — trainee supervision (the one rule) ─────────────────────────
 // A Trainee requires SENIOR concurrency. One conditioned exception: up to
-// 1.5h without a Senior, and only while a Regular is actively working
+// 1h without a Senior, and only while a Regular is actively working
 // alongside her. "Alone" (no Senior AND no Regular) is the same rule's
 // hardest violation — illegal at any duration, yielding only to never-zero,
 // and then only FLAGGED.
 //
 //   U1 — a Trainee alone with no flag = hard fail (flagged = surfaced, legal)
-//   U2 — Regular-only bridge > 1.5h contiguous OR > 1.5h daily = hard fail
+//   U2 — Regular-only bridge > 1h contiguous OR > 1h daily = hard fail
 //   U3 — over-coverage the pass added carries a supervisionSlots mark naming
-//        the Senior; unmarked over-coverage is NOT exempt anywhere
+//        the guardian, and that guardian must actually WORK the slot;
+//        unmarked over-coverage is NOT exempt anywhere
 //   U4 — a shoulder dip below target−1 carries a supervisionConcessions
 //        record; unmarked = hard fail; and the Trainee is never the last body
 //        standing at a conceded slot (that would recreate the alone it bought)
@@ -385,7 +386,7 @@ const gateTFail = gateTPass ? 0 : 1
 // When a second Trainee is rostered for real, build the ladder and tighten
 // this — do not quietly keep the exemption.
 
-const SUP_BRIDGE = 1.5
+const SUP_BRIDGE = 1
 const SHOULDER_U = new Set([15, 16])
 function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): boolean {
   let aloneUnflagged = 0, bridgeFail = 0, unmarkedOver = 0, unmarkedDeep = 0, soleTrainee = 0, worsened = 0, shrunk = 0
@@ -412,7 +413,15 @@ function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): 
 
     for (let s = 0; s < SLOTS.length; s++) {
       // U3 — over-coverage added by the pass must be marked
-      if ((a[s] ?? 0) > (req[s] ?? 0) && (a[s] ?? 0) > (b[s] ?? 0) && !marks.some((m) => m.slot === s)) unmarkedOver++
+      // Match on (slot, guardian-actually-present), not slot alone: a mark for
+      // one body must not exempt over-coverage another body caused.
+      const marked = marks.some((m) => {
+        if (m.slot !== s) return false
+        const g = withSup.dispatcherSchedules.find((x) => x.dispatcher.id === m.guardianId)
+        const gd = g?.days.find((x) => x.date === date)
+        return !!gd && !gd.isOff && gd.slots[s]
+      })
+      if ((a[s] ?? 0) > (req[s] ?? 0) && (a[s] ?? 0) > (b[s] ?? 0) && !marked) unmarkedOver++
       // U4 — a target−2 dip must be a recorded concession, on the shoulder
       if ((a[s] ?? 0) < (req[s] ?? 0) - 1 && !cons.some((c) => c.slot === s)) unmarkedDeep++
       if (cons.some((c) => c.slot === s) && !SHOULDER_U.has(s)) unmarkedDeep++
@@ -448,8 +457,8 @@ function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): 
     }
   }
   const pass = aloneUnflagged === 0 && bridgeFail === 0 && unmarkedOver === 0 && unmarkedDeep === 0 && soleTrainee === 0 && worsened === 0 && shrunk === 0 && silentOnExempt === 0
-  console.log(`  ${name.padEnd(16)} alone-unflagged ${aloneUnflagged} · bridge>1.5h ${bridgeFail} · unmarked-over ${unmarkedOver} · unmarked−2 ${unmarkedDeep} · sole-trainee ${soleTrainee} · worsened ${worsened} · shrunk ${shrunk} ${pass ? '✓' : '← FAIL'}`)
-  if (!soleTraineeRoster) console.log(`  ${' '.padEnd(16)} └─ ${trainees.length} Trainees / ${seniorsU.length} Senior(s): U2 REPORTED not asserted (see scope note) — ${bridgeReport} bridge>1.5h, ${silentOnExempt} silent, ${unsupervisable} day(s) with no Senior rostered at all`)
+  console.log(`  ${name.padEnd(16)} alone-unflagged ${aloneUnflagged} · bridge>${SUP_BRIDGE}h ${bridgeFail} · unmarked-over ${unmarkedOver} · unmarked−2 ${unmarkedDeep} · sole-trainee ${soleTrainee} · worsened ${worsened} · shrunk ${shrunk} ${pass ? '✓' : '← FAIL'}`)
+  if (!soleTraineeRoster) console.log(`  ${' '.padEnd(16)} └─ ${trainees.length} Trainees / ${seniorsU.length} Senior(s): U2 REPORTED not asserted (see scope note) — ${bridgeReport} bridge>${SUP_BRIDGE}h, ${silentOnExempt} silent, ${unsupervisable} day(s) with no Senior rostered at all`)
   return pass
 }
 
@@ -501,7 +510,7 @@ function negatives(): boolean {
 }
 
 console.log('\n══════════════════════════════════════════════════════════════════════')
-console.log(' Gate U — trainee supervision: Senior concurrency, ≤1.5h Regular bridge')
+console.log(' Gate U — trainee supervision: Senior concurrency, ≤1h Regular bridge')
 console.log('══════════════════════════════════════════════════════════════════════')
 const uSyn = gateU('synthetic', schedule, noSup)
 const uProd = gateU('prod-config', prodSchedule, prodNoSup)
