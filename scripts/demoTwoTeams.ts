@@ -370,9 +370,21 @@ const gateTFail = gateTPass ? 0 : 1
 // Asserting U2 there would assert a fiction, and reshaping the fixture until it
 // passed would be fixture-shopping. So on multi-Trainee rosters U2 is REPORTED,
 // not asserted — while U1/U3/U4/U5 stay hard on every roster, because
-// provenance, surfacing and never-shrink hold regardless of arithmetic. If the
-// team ever runs two Trainees for real, U2 becomes a live question and this
-// scope must be revisited, not quietly kept.
+// provenance, surfacing and never-shrink hold regardless of arithmetic.
+//
+// THIS SCOPE IS TEMPORARY, and the exit is designed (see the MULTI-TRAINEE
+// ladder on enforceTraineeSupervision): distribute 1:1 into different Seniors'
+// windows → prefer one Trainee on senior-thin days → GROUP the cohort into one
+// shared Senior-supervised window → flagged. Under that ladder the multi-
+// Trainee case becomes ASSERTABLE, and this note must be replaced by the real
+// assertion: every Trainee is either senior-paired, the sole Trainee that day,
+// grouped-supervised, or flagged — no fifth outcome. Grouping is what makes it
+// assertable: supervision demand collapses to one window per cohort, so the
+// arithmetic that defeats the 1-Senior/2-Trainee fixture today (two windows
+// needing concurrent cover from one body) stops being the question asked.
+// When a second Trainee is rostered for real, build the ladder and tighten
+// this — do not quietly keep the exemption.
+
 const SUP_BRIDGE = 1.5
 const SHOULDER_U = new Set([15, 16])
 function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): boolean {

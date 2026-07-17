@@ -3424,25 +3424,56 @@ function repairTraineeSplits(
 // illegal at ANY duration, yielding only to never-zero (if she is the sole
 // legal body for a slot, alone-flagged beats uncovered).
 //
-// LADDER, in order:
-//   step-0  break placement — a Senior's break may only land where a Regular
-//           is concurrently active with her; Senior- and Regular-breaks never
-//           overlap on top of her. Relocating the offending break is
-//           coverage-neutral and prevents the violation rather than repairing
-//           its symptom. Also covers the closer-swap case (she is the sole
-//           scheduled body) by handing the closer role to a peer.
-//   step-1  realign — swap her shift with a Regular's already-supervised window.
-//   step-2  senior-morning by construction — restructure the day so a Senior
-//           opens beside her.
-//   step-3  flagged (last resort), with the reason.
+// LADDER, in order (each rung proposes a PLAN; one chokepoint judges it):
+//   1. break placement — a meal break landing on her moves to another trough.
+//      A Senior's break may only sit where a Regular is concurrently active
+//      with her: Senior-breaks and Regular-breaks never overlap on top of her.
+//      Hours-neutral for everyone, so it outranks every rung below.
+//   2. extend — a Senior already on shift stretches to reach her unsupervised
+//      edge (closer-swap at the tail, realign at either edge). Adds slots, so
+//      the coverage it adds is authorized over-coverage and is marked.
+//   3. swap — trade whole bitmaps with a Senior. EXACTLY coverage-neutral (the
+//      day's multiset of worked slots is untouched), so it costs zero
+//      over-coverage and needs no exemption — which is why it outranks 4.
+//   4. senior-morning by construction — re-cut a Senior onto her window,
+//      recruiting peers to cover what it vacates. Single-body re-cuts are
+//      impossible on a tight day: each drops some evening slot below target
+//      even when the day has the bodies to absorb the move.
+//   5. flagged (last resort), with the reason.
 // Never shrink her hours/days (trainee-works-more outranks supervision), never
 // a zero, peaks strict. Senior caps (45h/9h, blocks, night→morning rest) are
 // never violated to supervise.
 //
+// MULTI-TRAINEE — decided design, NOT YET BUILT (the roster has one Trainee).
+// This pass repairs each Trainee independently, so a Senior freed for one can
+// be the Senior another needs. When a second Trainee arrives, build this
+// ladder rather than adding another rung above:
+//   1. DISTRIBUTE first — pair each Trainee into a different Senior's window.
+//      1:1 is the quality bar: training one person beats training two at once.
+//   2. On senior-thin days (the Friday/Saturday deserts), prefer only ONE
+//      Trainee rostered — offset the Trainees' days off from each other so the
+//      days that already need a concession never carry two.
+//   3. GROUP as fallback — where separate supervised windows aren't legally
+//      constructible, co-schedule the Trainees into ONE shared window with one
+//      Senior covering the cohort. Supervision demand collapses to a single
+//      window, the 1.5h Regular bridge covers the whole cohort during the
+//      Senior's break, and a concession bought for the group's window serves
+//      every Trainee in it — which also dissolves the stranding-bug class the
+//      synthetic fixture caught (a concession bought for one Trainee leaving
+//      another as the last body standing).
+//   4. flagged last resort, as everywhere else.
+// Rationale: 1:1 trains better, grouping costs less — take 1:1 where it's free,
+// fall back to grouping where separate windows would double the Friday
+// concession or the Saturday residual. Under this ladder the multi-Trainee case
+// becomes ASSERTABLE (see Gate U's scope note): every Trainee is either
+// senior-paired, the sole Trainee that day, grouped-supervised, or flagged.
+//
 // Every slot this pass ADDS for supervision is stamped in
 // result.supervisionSlots (who/when/why) — the gates exempt ONLY marked slots,
 // never a raised tolerance. Which Senior supervises is chosen by SEEDED
-// ROTATION on the least-loaded supervisor, so training load spreads.
+// ROTATION on the least-loaded supervisor, so training load spreads across the
+// Seniors legally able to take it (rest and recurring days off, not the
+// rotation, are what skew the share).
 export const SUPERVISION_BRIDGE_HOURS = 1.5
 
 function enforceTraineeSupervision(
