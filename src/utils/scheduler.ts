@@ -3417,7 +3417,7 @@ function repairTraineeSplits(
 // Trainee supervision — ONE rule, one chokepoint.
 //
 // RULE: a Trainee requires SENIOR concurrency, with a single CONDITIONED
-// exception — up to SUPERVISION_BRIDGE_HOURS (1.5h) without a Senior ONLY
+// exception — up to SUPERVISION_BRIDGE_HOURS (1h) without a Senior ONLY
 // while a Regular is actively working alongside her (the typical case: the
 // Senior takes their meal break while a Regular supervises). "ALONE" (no
 // Senior AND no bridging Regular) is the same rule's hardest violation:
@@ -3456,7 +3456,7 @@ function repairTraineeSplits(
 //   3. GROUP as fallback — where separate supervised windows aren't legally
 //      constructible, co-schedule the Trainees into ONE shared window with one
 //      Senior covering the cohort. Supervision demand collapses to a single
-//      window, the 1.5h Regular bridge covers the whole cohort during the
+//      window, the 1h Regular bridge covers the whole cohort during the
 //      Senior's break, and a concession bought for the group's window serves
 //      every Trainee in it — which also dissolves the stranding-bug class the
 //      synthetic fixture caught (a concession bought for one Trainee leaving
@@ -3474,7 +3474,15 @@ function repairTraineeSplits(
 // ROTATION on the least-loaded supervisor, so training load spreads across the
 // Seniors legally able to take it (rest and recurring days off, not the
 // rotation, are what skew the share).
-export const SUPERVISION_BRIDGE_HOURS = 1.5
+// Tightened 1.5h → 1h (governance, measured before the change): the bridge is a
+// QUALITY TOLERANCE — a Trainee beside a Regular is acceptable in doses — not a
+// prohibition; ALONE is the prohibition. Measured cost of the tightening across
+// three live windows: 3 currently-legal bridges became violations, ALL absorbed
+// by the ladder's senior extensions (+5 marked slots ≈ 2.5h of paid training
+// presence), with zero new flags, zero new bridge failures, and no Friday
+// resolution regressed — the concession arithmetic depends on specific move
+// sequences and was left intact.
+export const SUPERVISION_BRIDGE_HOURS = 1
 
 function enforceTraineeSupervision(
   result: GeneratedSchedule,
@@ -3575,7 +3583,7 @@ function enforceTraineeSupervision(
 
       // ── THE RULE ────────────────────────────────────────────────────────
       // A Trainee requires Senior concurrency. ONE conditioned exception: up
-      // to 1.5h without a Senior, and only while a Regular is actively working
+      // to 1h without a Senior, and only while a Regular is actively working
       // alongside her. "Alone" (no Senior AND no Regular) is the same rule's
       // hardest violation — illegal at any duration.
       const assess = () => {
