@@ -354,7 +354,8 @@ const gateTFail = gateTPass ? 0 : 1
 //   U1 — a Trainee alone with no flag = hard fail (flagged = surfaced, legal)
 //   U2 — Regular-only bridge > 1.5h contiguous OR > 1.5h daily = hard fail
 //   U3 — over-coverage the pass added carries a supervisionSlots mark naming
-//        the Senior; unmarked over-coverage is NOT exempt anywhere
+//        the guardian, and that guardian must actually WORK the slot;
+//        unmarked over-coverage is NOT exempt anywhere
 //   U4 — a shoulder dip below target−1 carries a supervisionConcessions
 //        record; unmarked = hard fail; and the Trainee is never the last body
 //        standing at a conceded slot (that would recreate the alone it bought)
@@ -412,7 +413,15 @@ function gateU(name: string, withSup: typeof schedule, noSup: typeof schedule): 
 
     for (let s = 0; s < SLOTS.length; s++) {
       // U3 — over-coverage added by the pass must be marked
-      if ((a[s] ?? 0) > (req[s] ?? 0) && (a[s] ?? 0) > (b[s] ?? 0) && !marks.some((m) => m.slot === s)) unmarkedOver++
+      // Match on (slot, guardian-actually-present), not slot alone: a mark for
+      // one body must not exempt over-coverage another body caused.
+      const marked = marks.some((m) => {
+        if (m.slot !== s) return false
+        const g = withSup.dispatcherSchedules.find((x) => x.dispatcher.id === m.guardianId)
+        const gd = g?.days.find((x) => x.date === date)
+        return !!gd && !gd.isOff && gd.slots[s]
+      })
+      if ((a[s] ?? 0) > (req[s] ?? 0) && (a[s] ?? 0) > (b[s] ?? 0) && !marked) unmarkedOver++
       // U4 — a target−2 dip must be a recorded concession, on the shoulder
       if ((a[s] ?? 0) < (req[s] ?? 0) - 1 && !cons.some((c) => c.slot === s)) unmarkedDeep++
       if (cons.some((c) => c.slot === s) && !SHOULDER_U.has(s)) unmarkedDeep++

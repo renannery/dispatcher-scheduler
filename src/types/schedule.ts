@@ -93,19 +93,32 @@ export interface GeneratedSchedule {
       slotIndex?: number
     }[]
   >
-  /** PROVENANCE for trainee-supervision coverage — the exemption key.
+  /** PROVENANCE for trainee-rule coverage — the exemption key.
    *
-   *  Every slot the supervision pass ADDS (a Senior extended/placed beside a
-   *  Trainee) is stamped here with who/when/why. The gates exempt ONLY slots on
-   *  this list, matched on (date, slot, seniorId) — never by raising a
-   *  tolerance or widening a category. Any over-coverage NOT carrying a mark
-   *  still fails exactly as before; the per-gate negative tests prove it.
+   *  Every slot the supervision pass ADDS beside a Trainee is stamped here with
+   *  who/when/why. Two kinds of guardian, both rule-mandated:
+   *    · a SENIOR placed for supervision (the rule's positive requirement), and
+   *    · any body — Senior OR REGULAR — placed to break an ALONE, the rule's
+   *      hardest violation. An alone is satisfied by ANYONE, so a Regular who
+   *      steps in earns the same provenance a Senior does; `guardianLevel`
+   *      records which, and the reason says why.
+   *
+   *  The gates exempt ONLY slots on this list, matched on (date, slot,
+   *  guardianId) with the guardian actually working that slot — never by
+   *  raising a tolerance or widening a category. Any over-coverage NOT carrying
+   *  a mark still fails exactly as before; the per-gate negative tests prove it.
    *
    *  This is deliberately provenance, not a threshold: an imprecise exemption
    *  is how the "law-forced" flag once swallowed a real off-cap bug. */
   supervisionSlots?: Record<
     string,
-    { slot: number; seniorId: string; traineeId: string; reason: string }[]
+    {
+      slot: number
+      guardianId: string
+      guardianLevel: DispatcherLevel
+      traineeId: string
+      reason: string
+    }[]
   >
   /** PROVENANCE for the 8–9 PM shoulder CONCESSION — the other exemption key.
    *

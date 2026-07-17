@@ -110,7 +110,14 @@ let edgeFails: string[] = []
  *  threshold below is unchanged, and unmarked over-coverage still counts in
  *  full. `supervisionNegative` proves it. */
 const supAt = (sch: typeof s, date: string, slot: number) =>
-  (sch.supervisionSlots?.[date] ?? []).filter((m) => m.slot === slot).length
+  (sch.supervisionSlots?.[date] ?? []).filter((m) => {
+    if (m.slot !== slot) return false
+    // The marked guardian must actually be working the slot — a mark for one
+    // body must never discount another body's presence.
+    const g = sch.dispatcherSchedules.find((x) => x.dispatcher.id === m.guardianId)
+    const gd = g?.days.find((x) => x.date === date)
+    return !!gd && !gd.isOff && gd.slots[slot]
+  }).length
 let absSum = 0
 let absN = 0
 const residuals: string[] = []

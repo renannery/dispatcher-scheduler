@@ -3532,9 +3532,18 @@ function enforceTraineeSupervision(
     ds.weeklyHours[wl] = (ds.weeklyHours[wl] ?? 0) + (newH - oldH)
     ds.totalHours += newH - oldH
   }
-  const mark = (date: string, slot: number, sen: DispatcherSchedule, tr: DispatcherSchedule, reason: string) => {
-    marks[date] = [...(marks[date] ?? []), { slot, seniorId: sen.dispatcher.id, traineeId: tr.dispatcher.id, reason }]
-    supHours.set(sen.dispatcher.id, (supHours.get(sen.dispatcher.id) ?? 0) + SLOTS[slot].hours)
+  /** Stamp a body this pass placed beside the Trainee. Seniors also accrue
+   *  supervision hours (the rotation's ledger); a Regular breaking an alone is
+   *  not supervising, so it earns provenance but no supervision credit. */
+  const mark = (date: string, slot: number, g: DispatcherSchedule, tr: DispatcherSchedule, reason: string) => {
+    marks[date] = [...(marks[date] ?? []), {
+      slot,
+      guardianId: g.dispatcher.id,
+      guardianLevel: g.dispatcher.level,
+      traineeId: tr.dispatcher.id,
+      reason,
+    }]
+    if (g.dispatcher.level === 'Senior') supHours.set(g.dispatcher.id, (supHours.get(g.dispatcher.id) ?? 0) + SLOTS[slot].hours)
   }
 
   result.dates.forEach((dInfo, di) => {
@@ -3610,14 +3619,21 @@ function enforceTraineeSupervision(
           const cur = dayOf(m.ds, date)!.slots
           for (let s = 0; s < SLOTS.length; s++) delta[s] += (m.bitmap[s] ? 1 : 0) - (cur[s] ? 1 : 0)
         }
-        /** Does this plan newly place a SENIOR at s? Only that earns a mark,
-         *  and only a marked slot may sit above target. Over-coverage at her
-         *  slot caused by a Regular enabler is still just waste — it would
-         *  carry no mark and no gate would excuse it. */
+        /** Does this plan newly place a SENIOR at s? That earns a supervision
+         *  mark, and only a marked slot may sit above target. */
         const seniorAdded = (s: number) =>
           moves.some((m) => m.ds.dispatcher.level === 'Senior' && m.bitmap[s] && !dayOf(m.ds, date)!.slots[s])
+        /** Is she ALONE at s right now, and does this plan put ANY body there?
+         *  An alone is the rule's hardest violation and is satisfied by anyone,
+         *  so the body that breaks it — Regular included — earns the same
+         *  licence to exceed target as a Senior does, and the same mark. Any
+         *  OTHER over-coverage a Regular creates is still just waste: it would
+         *  carry no mark and no gate would excuse it. */
+        const aloneBroken = (s: number) =>
+          tday.slots[s] && !activeAt('Senior', s) && !activeAt('Regular', s) &&
+          moves.some((m) => m.ds !== tds && m.bitmap[s] && !dayOf(m.ds, date)!.slots[s])
         for (let s = 0; s < SLOTS.length; s++) {
-          if (tday.slots[s] && seniorAdded(s)) continue
+          if (tday.slots[s] && (seniorAdded(s) || aloneBroken(s))) continue
           const ceiling = Math.max(req[s] ?? 0, cov[s] ?? 0)
           if ((cov[s] ?? 0) + delta[s] > ceiling) return true
         }
@@ -3711,12 +3727,12 @@ function enforceTraineeSupervision(
         const chosen = best
         const saved = chosen.c.moves.map((m) => [...dayOf(m.ds, date)!.slots])
         chosen.c.moves.forEach((m) => commit(m.ds, date, wl, m.bitmap))
-        // Stamp ONLY slots this plan actually raised coverage on, where a
-        // Senior is newly beside her. A coverage-neutral swap adds no
-        // over-coverage and therefore earns no mark — the exemption stays as
-        // narrow as the thing it excuses.
+        // Stamp ONLY slots this plan actually raised coverage on, where a body
+        // is newly beside her — Senior (supervision) or Regular (never-alone
+        // guard). A coverage-neutral swap adds no over-coverage and therefore
+        // earns no mark: the exemption stays as narrow as the thing it excuses.
         chosen.c.moves.forEach((m, i) => {
-          if (m.ds.dispatcher.level !== 'Senior') return
+          if (m.ds === tds) return
           m.bitmap.forEach((on, s) => {
             if (on && !saved[i][s] && tday.slots[s] && chosen.e.delta[s] > 0) mark(date, s, m.ds, tds, chosen.c.reason)
           })
@@ -3764,13 +3780,23 @@ function enforceTraineeSupervision(
       }
 
       // ── rung 2 — EXTEND (closer-swap at the tail, realign at either edge) ─
-      // A Senior already on shift stretches to reach her unsupervised edge.
+      // A peer already on shift stretches to reach her unsupervised edge.
       // Adds slots only, so coverage can only rise — that rise is authorized
-      // supervision over-coverage and is stamped in supervisionSlots.
+      // and is stamped in supervisionSlots.
+      //
+      // EVERY legal body, not just Seniors. A Senior fixes both halves of the
+      // rule (no-Senior AND alone); a Regular fixes only the alone — but ALONE
+      // is the rule's hardest violation, "illegal at any duration", and it is
+      // satisfied by ANYONE. A Senior-only candidate set means a day where no
+      // Senior could be found gets flagged "roster exhausted" while a Regular
+      // extension sat one slot away — the flag then means "no way out among the
+      // candidates I looked at", not "no way out". Seniors are offered first
+      // and the score prefers them (they clear alone AND bridge, a Regular only
+      // converts alone → bridge), so this never trades a Senior for a Regular.
       const extendCands = (): Plan[] => {
         const out: Plan[] = []
         const tf = firstOn(tday.slots), tl = lastOn(tday.slots)
-        for (const p of byLoad()) {
+        for (const p of [...byLoad(), ...peers.filter((x) => x.dispatcher.level !== 'Senior')]) {
           const d = dayOf(p, date)!
           if (d.isOff) continue
           const f = firstOn(d.slots), l = lastOn(d.slots)
@@ -3783,7 +3809,12 @@ function enforceTraineeSupervision(
             const bm = [...d.slots]
             for (let s = o.ns; s < f; s++) bm[s] = true
             for (let s = l + 1; s <= o.ne; s++) bm[s] = true
-            out.push({ moves: [{ ds: p, bitmap: bm }], reason: `shift extended to stay concurrent with the Trainee (supervision)` })
+            out.push({
+              moves: [{ ds: p, bitmap: bm }],
+              reason: p.dispatcher.level === 'Senior'
+                ? `shift extended to stay concurrent with the Trainee (supervision)`
+                : `shift extended so the Trainee is never alone on the floor (never-alone guard — not supervision)`,
+            })
           }
         }
         return out
@@ -3985,7 +4016,14 @@ function enforceTraineeSupervision(
           ...(warnings[date] ?? []),
           {
             peak: 'supervision',
-            reason: `Supervision: ${parts.join('; ')} — no legal Senior arrangement exists (roster exhausted)`,
+            // Say which thing was impossible. An ALONE surviving means no
+            // legal body of ANY level could stand with her — that is the
+            // never-zero case. A surviving bridge means no legal SENIOR
+            // arrangement existed. Conflating them is how a flag comes to mean
+            // "no way out among the candidates I looked at".
+            reason: `Supervision: ${parts.join('; ')} — ${a.alone.length
+              ? 'no legal arrangement exists with ANY body beside her (roster exhausted)'
+              : 'no legal Senior arrangement exists (roster exhausted)'}`,
             slotIndex: a.alone[0] ?? firstOn(tday.slots),
           },
         ]
