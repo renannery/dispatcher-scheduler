@@ -3751,12 +3751,17 @@ function enforceTraineeSupervision(
         const win = `${SLOTS[firstOn(tday.slots)].label.split('–')[0]}–${SLOTS[lastOn(tday.slots)].label.split('–')[1]}`
         for (const s of chosen.e.dips) {
           const covAfter = cov[s] ?? 0
-          const reason = `8–9 PM shoulder held at ${covAfter} of ${req[s] ?? 0} to buy ${tds.dispatcher.name} a Senior-supervised ${win} (${freed.dispatcher.name} freed to supervise)`
+          // Operational wording (a dispatcher reads this on the day chip): name
+          // the trade, name who it's for, and say plainly it's planned — the
+          // team was reading these as bugs. peak 'supervision-concession' is
+          // the DELIBERATE trade-off, rendered distinct from a genuine
+          // 'supervision' gap (roster-exhausted) so the two never look alike.
+          const reason = `Planned trade-off (not an error): 8–9 PM coverage held at ${covAfter} of ${req[s] ?? 0} for 30 min so ${freed.dispatcher.name} is freed to give ${tds.dispatcher.name} a Senior-supervised ${win}. Coverage stays above the peak floor and this is the only way she isn't left unsupervised.`
           concessions[date] = [
             ...(concessions[date] ?? []),
             { slot: s, seniorId: freed.dispatcher.id, traineeId: tds.dispatcher.id, coverage: covAfter, required: req[s] ?? 0, reason },
           ]
-          warnings[date] = [...(warnings[date] ?? []), { peak: 'supervision', reason, slotIndex: s }]
+          warnings[date] = [...(warnings[date] ?? []), { peak: 'supervision-concession', reason, slotIndex: s }]
         }
         return true
       }
