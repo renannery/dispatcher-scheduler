@@ -14,7 +14,7 @@ import { RecurringBlocksEditor } from '@/components/RecurringBlocksEditor'
 import { AbsenceRangeForm } from '@/components/AbsenceRangeForm'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 
-import { addDriverIncremental, analyzeCoverageHealth, generateDriverSchedule, hoursStatusBg, slideScheduleDates } from '../scheduler'
+import { addDriverIncremental, analyzeCoverageHealth, coverageStatus, generateDriverSchedule, hoursStatusBg, slideScheduleDates } from '../scheduler'
 import { shuffleDriverSchedules } from '../shuffler'
 import { useDriverStore } from '../store'
 import { displayName } from '../utils'
@@ -1968,11 +1968,18 @@ export function DriverScheduleGrid() {
               // coverage targets are hard minimums (no ±15% allowance),
               // so every gap is a real gap — no "severe vs mild" split.
               const required = effectiveCoverage(dateInfo.dayOfWeek, coverageScale, coverageOverrides)
+              // Only HARD-FLOOR shortfalls raise the day flag — the same
+              // 'short' (red) status the expanded coverage pill uses. The
+              // low-priority afternoon lull (3-4 PM) reads 'short-low-priority'
+              // (amber): under-coverage there is acceptable by ops policy, so
+              // it shows amber in the expanded row but must NOT count as a
+              // "gap" in the day header. Counting it sent the team hunting a
+              // gap that policy says is fine.
               let gapSlots = 0
               let gapBodies = 0
               for (let i = 0; i < required.length; i++) {
                 const diff = required[i] - (actual[i] ?? 0)
-                if (diff > 0) {
+                if (diff > 0 && coverageStatus(actual[i] ?? 0, required[i], dateInfo.dayOfWeek, i) === 'short') {
                   gapSlots++
                   gapBodies += diff
                 }
