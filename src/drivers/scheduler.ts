@@ -2901,6 +2901,44 @@ export function coverageStatus(
   return 'over'
 }
 
+/**
+ * The hour-slot columns the driver day-grid should render, as the UNION of
+ * non-empty slots across EVERY day in the schedule. A slot is visible if, on
+ * any day, it has driver demand, driver coverage, shopper demand, or shopper
+ * coverage.
+ *
+ * Union (not per-day trimming) so the column set — and the left edge — is
+ * identical on every day: trimming each day independently opened weekdays at
+ * 9am (8-9 AM empty) but weekends at 8am (staffed), sliding every driver's
+ * cells a column sideways between days. The grid renders headers AND body
+ * cells from this one array, so header position N and body position N always
+ * reference the same slot — the alignment invariant `demoDriverGrid` guards.
+ */
+export function driverGridVisibleSlots(
+  schedule: GeneratedDriverSchedule,
+  coverageScale: number,
+  coverageOverrides: Record<number, number[]>,
+): number[] {
+  const n = DRIVER_SLOTS.length
+  const show = new Array<boolean>(n).fill(false)
+  for (const di of schedule.dates) {
+    const req = effectiveCoverage(di.dayOfWeek, coverageScale, coverageOverrides)
+    const act = schedule.coverageActual[di.date] ?? []
+    const shReq = SHOPPER_COVERAGE[di.dayOfWeek] ?? []
+    const shAct = new Array<number>(n).fill(0)
+    for (const ds of schedule.driverSchedules) {
+      if (!ds.driver.isShopper) continue
+      const e = ds.days.find((d) => d.date === di.date)
+      if (!e || e.isOff) continue
+      e.slots.forEach((on, i) => { if (on) shAct[i]++ })
+    }
+    for (let i = 0; i < n; i++) {
+      if ((req[i] ?? 0) > 0 || (act[i] ?? 0) > 0 || (shReq[i] ?? 0) > 0 || shAct[i] > 0) show[i] = true
+    }
+  }
+  return DRIVER_SLOTS.map((_, i) => i).filter((i) => show[i])
+}
+
 export function hoursStatusColor(hours: number, cap: number): string {
   if (hours > cap) return 'text-red-600'
   if (hours >= cap * 0.9) return 'text-emerald-600'

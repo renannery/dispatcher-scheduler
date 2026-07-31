@@ -7,7 +7,7 @@ import { reasonColors, reasonLabel, reasonShort } from '@/utils/absence'
 
 import { DRIVER_SLOTS, LEGAL_DAILY_MAX_HOURS, LEGAL_PT_WEEKLY_MAX_HOURS, LEGAL_WEEKLY_MAX_HOURS, SHOPPER_COVERAGE, effectiveCoverage } from '../coverageTemplate'
 import { patternTotalBreakHours } from '@/data/coverageTemplate'
-import { MAX_BLOCKS_PER_DAY, MAX_BREAK_HOURS, MIN_BLOCK_HOURS, coverageStatus, violatesShape, workBlocks } from '../scheduler'
+import { MAX_BLOCKS_PER_DAY, MAX_BREAK_HOURS, MIN_BLOCK_HOURS, coverageStatus, driverGridVisibleSlots, violatesShape, workBlocks } from '../scheduler'
 import { useDriverStore } from '../store'
 import type { DriverSchedule, GeneratedDriverSchedule } from '../types'
 import { NowLine } from '@/components/NowLine'
@@ -108,8 +108,14 @@ export function DriverDayGrid({ schedule, date, dayLabel, dayOfWeek, driverIdFil
   const shopperRequired = SHOPPER_COVERAGE[dayOfWeek] ?? DRIVER_SLOTS.map(() => 0)
   const hasShoppers = shopperCov.some((v) => v > 0) || shopperRequired.some((v) => v > 0)
 
-  const visibleSlotIndices = DRIVER_SLOTS.map((_, i) => i).filter(
-    (i) => required[i] > 0 || actual[i] > 0 || shopperCov[i] > 0 || shopperRequired[i] > 0,
+  // Which hour columns to show. Computed as the UNION across EVERY day in the
+  // schedule (see driverGridVisibleSlots) so the column set — and the left
+  // edge — is identical on every day; header position N and body position N
+  // always reference the same slot. Shared with the demoDriverGrid gate,
+  // which asserts that alignment invariant.
+  const visibleSlotIndices = useMemo(
+    () => driverGridVisibleSlots(schedule, coverageScale, coverageOverrides),
+    [schedule, coverageScale, coverageOverrides],
   )
 
   // Slots with REAL coverage shortfall — used to tint the entire column
