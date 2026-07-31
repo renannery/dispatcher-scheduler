@@ -19,6 +19,39 @@ function makeId() {
   return Math.random().toString(36).slice(2, 9)
 }
 
+/**
+ * Recount `coverageActual` from the per-driver slot bitmaps, EXCLUDING
+ * shoppers — driver coverage and the shopper pool are separate, and a
+ * shopper must never inflate a driver-coverage cell.
+ *
+ * Some persisted/exported schedules pre-date the Phase-9 shopper-exclusion
+ * fix (old generations bumped driver coverage by 1 whenever Phase-9 extended
+ * a shopper shift into an opening slot), so their stored `coverageActual`
+ * counts shoppers — showing "17/18" when only 16 drivers are actually there
+ * and under-reporting the real shortfall. Every path that ingests a
+ * schedule from outside the current generator (persist rehydrate, Snapshot
+ * upload, cloud load) routes through here so the numbers ops sees always
+ * reflect drivers only. No-op once the data is already clean (the common
+ * case): recounting a correct schedule reproduces it exactly.
+ */
+export function recountDriverCoverage(
+  schedule: GeneratedDriverSchedule,
+): Record<string, number[]> {
+  const recounted: Record<string, number[]> = {}
+  for (const date of Object.keys(schedule.coverageActual ?? {})) {
+    const len = schedule.coverageActual[date]?.length ?? DRIVER_SLOTS.length
+    const fresh = new Array(len).fill(0)
+    for (const ds of schedule.driverSchedules) {
+      if (ds.driver.isShopper) continue
+      const e = ds.days.find((d) => d.date === date)
+      if (!e || e.isOff) continue
+      e.slots.forEach((on, i) => { if (on) fresh[i]++ })
+    }
+    recounted[date] = fresh
+  }
+  return recounted
+}
+
 function nextThursday(): string {
   const d = new Date()
   const day = d.getDay()
@@ -538,7 +571,13 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
       timeOff: data.timeOff ?? {},
       absenceReasons: data.absenceReasons ?? {},
       weekendRotationOffset: data.weekendRotationOffset ?? s.weekendRotationOffset,
-      schedule: data.schedule,
+      // Ingested from outside the current generator (Snapshot upload / cloud
+      // load) — recount driver coverage so a snapshot that pre-dates the
+      // shopper-exclusion fix doesn't display shopper-inflated cells. Mirrors
+      // the same repair on the persist-rehydrate path (onRehydrateStorage).
+      schedule: data.schedule
+        ? { ...data.schedule, coverageActual: recountDriverCoverage(data.schedule) }
+        : data.schedule,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
     })),
@@ -624,19 +663,7 @@ export const useDriverStore = create<DriverSchedulerStore>()(persist((set, get) 
     // stops generating bad data).
     const sch = state.schedule
     if (!sch || !Array.isArray(sch.driverSchedules)) return
-    const recounted: Record<string, number[]> = {}
-    for (const date of Object.keys(sch.coverageActual ?? {})) {
-      const len = sch.coverageActual[date]?.length ?? 15
-      const fresh = new Array(len).fill(0)
-      for (const ds of sch.driverSchedules) {
-        if (ds.driver.isShopper) continue
-        const e = ds.days.find((d) => d.date === date)
-        if (!e || e.isOff) continue
-        e.slots.forEach((on, i) => { if (on) fresh[i]++ })
-      }
-      recounted[date] = fresh
-    }
-    state.schedule = { ...sch, coverageActual: recounted }
+    state.schedule = { ...sch, coverageActual: recountDriverCoverage(sch) }
   },
   // Auto-save the full working set so refresh / browser close doesn't
   // nuke in-flight edits. Excludes the undo/redo stacks (they balloon
