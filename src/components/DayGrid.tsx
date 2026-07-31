@@ -105,7 +105,14 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                   // scannable when several slots are short on a rest day.
                   const restCount = warnings.filter((w) => w.peak === 'mandatory-rest').length
                   const envelopes = warnings.filter((w) => w.peak === 'envelope')
-                  const nonRest = warnings.filter((w) => w.peak !== 'mandatory-rest' && w.peak !== 'envelope')
+                  // Supervision CONCESSIONS are a deliberate, policy-approved
+                  // trade-off — not a violation. Collapse them into one calm
+                  // "planned" chip, visually distinct from genuine gaps so the
+                  // team stops reading a by-design event as a bug.
+                  const supConcessions = warnings.filter((w) => w.peak === 'supervision-concession')
+                  const nonRest = warnings.filter(
+                    (w) => w.peak !== 'mandatory-rest' && w.peak !== 'envelope' && w.peak !== 'supervision-concession',
+                  )
                   return (
                     <>
                       {nonRest.map((w, idx) => {
@@ -143,6 +150,21 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                             </span>
                           )
                         }
+                        if (w.peak === 'supervision') {
+                          // A genuine, unresolved supervision gap (roster
+                          // exhausted) — a real problem, styled as a warning.
+                          // Distinct wording from the "no anchor" fallback so
+                          // it says what it is: the trainee lacks cover.
+                          return (
+                            <span
+                              key={`sup-${idx}`}
+                              className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-300 ring-1 ring-rose-400/50"
+                              title={w.reason}
+                            >
+                              ⚠ trainee cover gap
+                            </span>
+                          )
+                        }
                         return (
                           <span
                             key={`a-${w.peak}`}
@@ -169,6 +191,19 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                           title={envelopes.map((w) => w.reason).join(' · ')}
                         >
                           🪜 evening {envelopes.length}
+                        </span>
+                      )}
+                      {supConcessions.length > 0 && (
+                        // Deliberate, policy-approved coverage trade-off — NOT
+                        // a violation. Calm indigo "planned" styling (no ⚠, no
+                        // alarm red) so the team reads it as by-design; the
+                        // operational reason is in the tooltip.
+                        <span
+                          key="sup-concession-chip"
+                          className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-indigo-300 ring-1 ring-indigo-400/40"
+                          title={supConcessions.map((w) => w.reason).join(' · ')}
+                        >
+                          ◆ planned: supervision trade
                         </span>
                       )}
                     </>

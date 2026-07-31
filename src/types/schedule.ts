@@ -88,7 +88,7 @@ export interface GeneratedSchedule {
   coverageWarnings?: Record<
     string,
     {
-      peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest' | 'handoff' | 'constrained-shift' | 'envelope' | 'trainee-split' | 'supervision'
+      peak: 'lunch' | 'dinner' | 'transition' | 'mandatory-rest' | 'handoff' | 'constrained-shift' | 'envelope' | 'trainee-split' | 'supervision' | 'supervision-concession'
       reason: string
       slotIndex?: number
     }[]
