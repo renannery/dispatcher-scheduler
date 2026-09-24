@@ -7,6 +7,7 @@ import { useSchedulerStore } from '@/store/schedulerStore'
 import { generateSchedule, hoursStatusBg, hoursStatusColor, shuffleDispatcherAssignments } from '@/utils/scheduler'
 import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
+import { sliceSchedule } from '@/utils/replicate'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { ReplicateModal } from '@/components/ReplicateModal'
@@ -142,7 +143,7 @@ function PdfMenu({ dispatchers, loading, onSelect, individualOnly }: PdfMenuProp
 // ---------------------------------------------------------------------------
 
 export function ScheduleGrid() {
-  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
+  const { schedule, dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, replicatedRange, setSchedule, applyShuffledSchedule, undoScheduleEdit, redoScheduleEdit, setStep, setDateRange } =
     useSchedulerStore()
   const isAdmin = useIsAdmin()
   // Track undo/redo button enabled state. Subscribe via stack lengths so the
@@ -168,6 +169,10 @@ export function ScheduleGrid() {
   // "See Rules Applied" modal — static hard rules + per-week 2nd-day-off log.
   const [rulesOpen, setRulesOpen] = useState(false)
   const [replicateOpen, setReplicateOpen] = useState(false)
+  // After a replicate the view focuses on the new block; this reveals the
+  // collapsed source period on demand. Resets whenever the focus range changes.
+  const [showSource, setShowSource] = useState(false)
+  const [snapshotMenuOpen, setSnapshotMenuOpen] = useState(false)
   // Forces a re-render every wall-clock minute so the NowLine slides.
   const [nowTick, setNowTick] = useState(0)
   useEffect(() => {
@@ -197,6 +202,25 @@ export function ScheduleGrid() {
   if (!schedule) return null
 
   const weekLabels = [...new Set(schedule.dates.map((d) => d.weekLabel))]
+  // Replicate view focus: honour the stored target range only while the current
+  // schedule still covers it (ignored after undo/regenerate). The underlying
+  // schedule stays the full continuous block — this just scopes the VIEW and
+  // the default EXPORT to the replicated block.
+  const scheduleDateSet = new Set(schedule.dates.map((d) => d.date))
+  const activeReplicatedRange =
+    replicatedRange && scheduleDateSet.has(replicatedRange.start) && scheduleDateSet.has(replicatedRange.end)
+      ? replicatedRange
+      : null
+  // Week labels shown in the grid: when focused (and not revealing the source),
+  // only weeks containing at least one target-range day. The seam day (first
+  // target day) is in the target range, so its rest chip renders here, computed
+  // from the underlying prior-day data.
+  const inFocus = (d: string) => !!activeReplicatedRange && d >= activeReplicatedRange.start && d <= activeReplicatedRange.end
+  const focusWeekLabels = activeReplicatedRange
+    ? [...new Set(schedule.dates.filter((d) => inFocus(d.date)).map((d) => d.weekLabel))]
+    : weekLabels
+  const visibleWeekLabels = activeReplicatedRange && !showSource ? focusWeekLabels : weekLabels
+  const hiddenSourceWeeks = weekLabels.length - focusWeekLabels.length
 
   // Per-minute tick that drives the current-time indicator. Aligning the
   // first interval to the next wall-clock minute boundary makes the line
@@ -291,13 +315,24 @@ export function ScheduleGrid() {
     return () => window.removeEventListener('keydown', handler)
   }, [undoScheduleEdit, redoScheduleEdit])
 
-  const handleExportJson = () => {
+  // Export scoping: after a replicate, the shareable deliverable is the NEW
+  // block. Exports default to the replicated range; `full` overrides to the
+  // whole continuous schedule. The seam validation already ran against the full
+  // data (its warnings are baked into the sliced day records).
+  const scopedSchedule = (full: boolean) =>
+    activeReplicatedRange && !full
+      ? sliceSchedule(schedule, activeReplicatedRange.start, activeReplicatedRange.end)
+      : schedule
+
+  const handleExportJson = (full = false) => {
+    const s = scopedSchedule(full)
     downloadSnapshot({
       version: SCHEMA_VERSION,
       team: 'dispatchers',
       exportedAt: new Date().toISOString(),
-      data: { dispatchers, startDate, endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, schedule },
+      data: { dispatchers, startDate: s.startDate, endDate: s.endDate, timeOff, absenceReasons, weekendRotationOffset, secondOffRotationOffset, coverageOverrides, schedule: s },
     })
+    setSnapshotMenuOpen(false)
   }
 
   const handlePdfSelect = async (action: PdfAction) => {
@@ -307,10 +342,11 @@ export function ScheduleGrid() {
       // Non-admin users never see total hours in their PDF —
       // matches the on-screen rule (admin PIN required to view hours).
       const hideHours = !isAdmin
-      if (action.type === 'admin')              await mod.exportAdminPDF(schedule)
-      if (action.type === 'team')               await mod.exportTeamPDF(schedule)
-      if (action.type === 'individual')         await mod.exportIndividualPDF(schedule, action.dispatcherId, hideHours)
-      if (action.type === 'individual-compact') await mod.exportIndividualCompactPDF(schedule, action.dispatcherId, hideHours)
+      const s = scopedSchedule(false)
+      if (action.type === 'admin')              await mod.exportAdminPDF(s)
+      if (action.type === 'team')               await mod.exportTeamPDF(s)
+      if (action.type === 'individual')         await mod.exportIndividualPDF(s, action.dispatcherId, hideHours)
+      if (action.type === 'individual-compact') await mod.exportIndividualCompactPDF(s, action.dispatcherId, hideHours)
     } finally {
       setPdfLoading(false)
     }
@@ -472,15 +508,37 @@ export function ScheduleGrid() {
         )}
       </div>
 
+      {/* Replicate focus strip — the view is scoped to the new block; the
+          source period is collapsed but one click away, and the underlying
+          schedule (used for the seam rest-check) is unchanged. */}
+      {activeReplicatedRange && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-800">
+          <CalendarRange className="h-4 w-4 shrink-0 text-blue-600" />
+          <span>
+            Showing the <span className="font-semibold">replicated block {activeReplicatedRange.start} → {activeReplicatedRange.end}</span>.
+            {hiddenSourceWeeks > 0 && !showSource && <> Source period ({schedule.dates[0].date} → {activeReplicatedRange.start}) hidden.</>}
+          </span>
+          {hiddenSourceWeeks > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowSource((v) => !v)}
+              className="ml-auto rounded-md border border-blue-300 bg-white px-2 py-1 font-medium text-blue-700 transition hover:bg-blue-100"
+            >
+              {showSource ? 'Focus on new block' : 'Show source period'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Global per-week fold control — each week header also toggles on its own. */}
       <div className="flex items-center gap-2 text-xs text-slate-500">
-        <span className="mr-auto">{weekLabels.length} week{weekLabels.length === 1 ? '' : 's'}</span>
+        <span className="mr-auto">{visibleWeekLabels.length} week{visibleWeekLabels.length === 1 ? '' : 's'}{activeReplicatedRange && !showSource && hiddenSourceWeeks > 0 ? ` (of ${weekLabels.length})` : ''}</span>
         <button type="button" onClick={expandAllWeeks} className="rounded-md px-2 py-1 font-medium transition hover:bg-slate-100 hover:text-blue-600">Expand all</button>
         <button type="button" onClick={collapseAllWeeks} className="rounded-md px-2 py-1 font-medium transition hover:bg-slate-100 hover:text-blue-600">Collapse all</button>
       </div>
 
       {/* Per-week sections */}
-      {weekLabels.map((wl) => {
+      {visibleWeekLabels.map((wl) => {
         const weekDates = schedule.dates.filter((d) => d.weekLabel === wl)
         const weekDateSet = new Set(weekDates.map((d) => d.date))
         const isWeekCollapsed = collapsedWeeks.has(wl)
@@ -847,21 +905,56 @@ export function ScheduleGrid() {
               Rules
             </button>
             <div className="ml-auto flex shrink-0 items-center gap-2">
-              <button
-                onClick={handleExportJson}
-                title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
-                className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <FileJson className="h-4 w-4" />
-                Snapshot
-              </button>
+              {activeReplicatedRange ? (
+                <div className="relative">
+                  <button
+                    onClick={() => setSnapshotMenuOpen((v) => !v)}
+                    title="Download a snapshot. After a replicate it defaults to the new block; choose the full continuous range if you need it."
+                    className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <FileJson className="h-4 w-4" />
+                    Snapshot
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  {snapshotMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setSnapshotMenuOpen(false)} />
+                      <div className="absolute bottom-full right-0 z-20 mb-1 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+                        <button
+                          onClick={() => handleExportJson(false)}
+                          className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
+                        >
+                          <span className="font-medium text-slate-800">New block only</span>
+                          <span className="text-[11px] text-slate-500">{activeReplicatedRange.start} → {activeReplicatedRange.end} — what you share with the team</span>
+                        </button>
+                        <button
+                          onClick={() => handleExportJson(true)}
+                          className="flex w-full flex-col items-start border-t border-slate-100 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                        >
+                          <span className="font-medium text-slate-800">Full continuous range</span>
+                          <span className="text-[11px] text-slate-500">{schedule.dates[0].date} → {schedule.dates[schedule.dates.length - 1].date} — source + replicated block</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={() => handleExportJson(false)}
+                  title="Download a snapshot of the current schedule (roster, settings, all shifts). Reload it later to pick up exactly where you left off."
+                  className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  <FileJson className="h-4 w-4" />
+                  Snapshot
+                </button>
+              )}
               <PdfMenu
                 dispatchers={dispatchers}
                 loading={pdfLoading}
                 onSelect={handlePdfSelect}
               />
               <button
-                onClick={() => exportScheduleToXLS(schedule)}
+                onClick={() => exportScheduleToXLS(scopedSchedule(false))}
                 className="flex shrink-0 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-blue-700"
               >
                 <Download className="h-4 w-4" />

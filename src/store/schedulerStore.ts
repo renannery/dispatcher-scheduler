@@ -57,6 +57,12 @@ interface SchedulerStore {
    */
   coverageOverrides: Record<number, number[]>
   schedule: GeneratedSchedule | null
+  /** After a replicate, the target block's date range. Presentation hint only:
+   *  the schedule stays the full continuous extended block (so the seam
+   *  rest-check keeps its day-15 data), but the view focuses on this range and
+   *  exports scope to it by default. Cleared on regenerate / new schedule;
+   *  ignored when the current schedule no longer covers it (e.g. after undo). */
+  replicatedRange: { start: string; end: string } | null
   /** History stacks for the schedule view's edits + shuffle. Capped to keep
    *  memory bounded. New generate / hydrate clears both. */
   scheduleUndoStack: GeneratedSchedule[]
@@ -128,6 +134,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   secondOffRotationOffset: 0,
   coverageOverrides: {},
   schedule: null,
+  replicatedRange: null,
   scheduleUndoStack: [],
   scheduleRedoStack: [],
 
@@ -262,7 +269,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   // Fresh generate — drop the in-flight edit history (it pointed at a
   // schedule that no longer exists).
   setSchedule: (schedule) =>
-    set({ schedule, scheduleUndoStack: [], scheduleRedoStack: [] }),
+    set({ schedule, replicatedRange: null, scheduleUndoStack: [], scheduleRedoStack: [] }),
 
   replicateToPeriod: (targetStart, targetEnd) =>
     set((state) => {
@@ -282,6 +289,8 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
         // rest of the UI (period label, exports) stays consistent.
         startDate: schedule.startDate,
         endDate: schedule.endDate,
+        // Presentation hint: focus the view + default exports on the new block.
+        replicatedRange: { start: targetStart, end: targetEnd },
         scheduleUndoStack: nextUndo,
         scheduleRedoStack: [],
       }
@@ -386,6 +395,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       // the legacy weekend override values — rewrite matching cells.
       coverageOverrides: calibrateLegacyWeekendOverrides(data.coverageOverrides) ?? {},
       schedule: data.schedule,
+      replicatedRange: null,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
     })),
@@ -414,6 +424,7 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
       absenceReasons: {},
       coverageOverrides: {},
       schedule: null,
+      replicatedRange: null,
       scheduleUndoStack: [],
       scheduleRedoStack: [],
     }),

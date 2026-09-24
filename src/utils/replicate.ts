@@ -239,6 +239,47 @@ export function applyReplication(
   }
 }
 
+/**
+ * Slice a schedule to a date range [startISO, endISO] inclusive, producing a
+ * self-contained schedule for that window. Used to scope EXPORTS to the
+ * replicated block while the underlying continuous schedule stays intact
+ * (the seam validation already ran against the full data — its warnings are
+ * baked into the day records and travel with the slice). Presentation only:
+ * shifts, coverage and warnings are copied verbatim, never recomputed.
+ */
+export function sliceSchedule(schedule: GeneratedSchedule, startISO: string, endISO: string): GeneratedSchedule {
+  const inRange = (d: string) => d >= startISO && d <= endISO
+  const dates = schedule.dates.filter((d) => inRange(d.date))
+  const dispatcherSchedules = schedule.dispatcherSchedules.map((ds) => {
+    const days = ds.days.filter((d) => inRange(d.date))
+    const weeklyHours: Record<string, number> = {}
+    for (const d of days) {
+      const wl = replicaWeekLabel(new Date(d.date + 'T12:00:00'))
+      weeklyHours[wl] = (weeklyHours[wl] ?? 0) + d.totalHours
+    }
+    const totalHours = Object.values(weeklyHours).reduce((s, h) => s + h, 0)
+    return { dispatcher: ds.dispatcher, days, weeklyHours, totalHours }
+  })
+  const pick = <T>(rec: Record<string, T> | undefined): Record<string, T> => {
+    const out: Record<string, T> = {}
+    for (const [k, v] of Object.entries(rec ?? {})) if (inRange(k)) out[k] = v
+    return out
+  }
+  return {
+    startDate: startISO,
+    endDate: endISO,
+    seed: schedule.seed,
+    dates,
+    dispatcherSchedules,
+    coverageActual: pick(schedule.coverageActual),
+    coverageRequired: pick(schedule.coverageRequired),
+    coverageWarnings: pick(schedule.coverageWarnings),
+    ...(schedule.supervisionSlots ? { supervisionSlots: pick(schedule.supervisionSlots) } : {}),
+    ...(schedule.supervisionConcessions ? { supervisionConcessions: pick(schedule.supervisionConcessions) } : {}),
+    secondOffLog: schedule.secondOffLog,
+  }
+}
+
 const first = (sl: boolean[]) => sl.findIndex(Boolean)
 const last = (sl: boolean[]) => { for (let i = sl.length - 1; i >= 0; i--) if (sl[i]) return i; return -1 }
 
