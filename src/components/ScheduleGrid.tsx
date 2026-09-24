@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { CalendarCheck2, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, ScrollText, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
+import { CalendarCheck2, CalendarRange, ChevronDown, ChevronRight, Download, FileJson, FileText, Loader2, Redo2, RefreshCw, ScrollText, Search, Shield, Shuffle, Undo2, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DAY_TEMPLATES, SLOTS, effectiveCoverage } from '@/data/coverageTemplate'
@@ -9,6 +9,7 @@ import { caymanNow, caymanTimeLabel } from '@/utils/caymanTime'
 import { downloadSnapshot, SCHEMA_VERSION } from '@/utils/snapshot'
 import { exportScheduleToXLS } from '@/utils/xlsExporter'
 import { DateRangePicker } from '@/components/DateRangePicker'
+import { ReplicateModal } from '@/components/ReplicateModal'
 import { SavedScheduleBadge } from '@/components/SavedScheduleBadge'
 import { useIsAdmin } from '@/store/adminStore'
 import { DayGrid } from './DayGrid'
@@ -166,6 +167,7 @@ export function ScheduleGrid() {
   const [dispatcherDetailId, setDispatcherDetailId] = useState<string | null>(null)
   // "See Rules Applied" modal — static hard rules + per-week 2nd-day-off log.
   const [rulesOpen, setRulesOpen] = useState(false)
+  const [replicateOpen, setReplicateOpen] = useState(false)
   // Forces a re-render every wall-clock minute so the NowLine slides.
   const [nowTick, setNowTick] = useState(0)
   useEffect(() => {
@@ -829,6 +831,14 @@ export function ScheduleGrid() {
               Regenerate
             </button>
             <button
+              onClick={() => setReplicateOpen(true)}
+              title="Stamp this schedule's pattern onto a new date range by day-of-week, keeping shifts identical. Conflicts in the new period are flagged, not auto-fixed."
+              className="flex shrink-0 items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-100"
+            >
+              <CalendarRange className="h-4 w-4" />
+              Replicate
+            </button>
+            <button
               onClick={() => setRulesOpen(true)}
               title="See the scheduling rules this schedule was built under, plus the week-by-week rotating 2nd-day-off decisions."
               className="flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
@@ -1129,6 +1139,7 @@ export function ScheduleGrid() {
       {/* "See Rules Applied" — the standing hard rules the generator runs
           under, plus this schedule's week-by-week rotating 2nd-day-off
           decisions (grant / skip-and-defer with the reason). */}
+      {replicateOpen && <ReplicateModal onClose={() => setReplicateOpen(false)} />}
       {rulesOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
