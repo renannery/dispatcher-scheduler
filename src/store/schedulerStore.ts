@@ -5,6 +5,7 @@ import { DAY_TEMPLATES, SLOTS, calibrateLegacyWeekendOverrides } from '@/data/co
 import type { Dispatcher, DispatcherLevel, DispatcherTimeOff, GeneratedSchedule, Step } from '@/types/schedule'
 import type { AbsenceReason } from '@/utils/absence'
 import { datesInRange } from '@/utils/absence'
+import { replicateToNewPeriod } from '@/utils/replicate'
 import type { DispatcherSnapshotData } from '@/utils/snapshot'
 
 const DISPATCHER_COLORS = [
@@ -86,6 +87,10 @@ interface SchedulerStore {
    *  the undo stack so Cmd+Z reverses it (unlike setSchedule which clears
    *  the stacks). */
   applyShuffledSchedule: (s: GeneratedSchedule) => void
+  /** Replicate the current schedule's pattern onto a new period by day-of-week
+   *  (see utils/replicate). Stamps + validates without repair; extends the
+   *  working schedule to cover source + replicated block. Undoable. */
+  replicateToPeriod: (targetStart: string, targetEnd: string) => void
   toggleDispatcherSlot: (dispatcherId: string, date: string, slotIndex: number) => void
   undoScheduleEdit: () => void
   redoScheduleEdit: () => void
@@ -258,6 +263,29 @@ export const useSchedulerStore = create<SchedulerStore>()(persist((set, get) => 
   // schedule that no longer exists).
   setSchedule: (schedule) =>
     set({ schedule, scheduleUndoStack: [], scheduleRedoStack: [] }),
+
+  replicateToPeriod: (targetStart, targetEnd) =>
+    set((state) => {
+      if (!state.schedule) return state
+      const { schedule } = replicateToNewPeriod(
+        state.schedule,
+        state.dispatchers,
+        state.timeOff,
+        state.coverageOverrides,
+        targetStart,
+        targetEnd,
+      )
+      const nextUndo = [...state.scheduleUndoStack, state.schedule].slice(-SCHEDULE_HISTORY_MAX)
+      return {
+        schedule,
+        // Extend the working range to cover source + replicated block so the
+        // rest of the UI (period label, exports) stays consistent.
+        startDate: schedule.startDate,
+        endDate: schedule.endDate,
+        scheduleUndoStack: nextUndo,
+        scheduleRedoStack: [],
+      }
+    }),
 
   // Shuffle / re-roll: preserve undo history so the user can Cmd+Z back
   // to the prior shuffled state.

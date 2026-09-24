@@ -165,6 +165,33 @@ export function DayGrid({ schedule, date, dayLabel, dayOfWeek, dispatcherIdFilte
                             </span>
                           )
                         }
+                        if (w.peak === 'rest-violation') {
+                          // Illegal night→morning turnaround (incl. the seam of a
+                          // replicated block). Real violation — rose warning.
+                          return (
+                            <span
+                              key={`rest-${idx}`}
+                              className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-300 ring-1 ring-rose-400/50"
+                              title={w.reason}
+                            >
+                              ⚠ rest violation
+                            </span>
+                          )
+                        }
+                        if (w.peak === 'block-conflict') {
+                          // A stamped shift landing on a slot the period now
+                          // blocks (new time-off / edited recurring block). Kept
+                          // as stamped, surfaced for manual adjustment — amber.
+                          return (
+                            <span
+                              key={`blk-${idx}`}
+                              className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-300 ring-1 ring-amber-400/50"
+                              title={w.reason}
+                            >
+                              ⚠ blocked shift
+                            </span>
+                          )
+                        }
                         return (
                           <span
                             key={`a-${w.peak}`}
